@@ -1,0 +1,68 @@
+{
+  "enabled": true,
+  "channels": {
+    "email": {
+      "enabled": false,
+      "address": "your-email@example.com",
+      "smtp_server": "smtp.gmail.com",
+      "smtp_port": 587,
+      "username": "YOUR_EMAIL_USERNAME",
+      "password": "YOUR_EMAIL_PASSWORD"
+    },
+    "sms": {
+      "enabled": false,
+      "phone_number": "+1234567890",
+      "provider": "twilio",
+      "account_sid": "YOUR_TWILIO_ACCOUNT_SID",
+      "auth_token": "YOUR_TWILIO_AUTH_TOKEN"
+    },
+    "slack": {
+      "enabled": true,
+      "webhook_url": "YOUR_SLACK_WEBHOOK_URL",
+      "app_token": "YOUR_SLACK_APP_TOKEN",
+      "bot_token": "YOUR_SLACK_BOT_TOKEN"
+    }
+  },
+  "alert_thresholds": {
+    "defcon_5": false,
+    "defcon_4": false,
+    "defcon_3": false,
+    "defcon_2": true,
+    "defcon_1": true,
+    "portfolio_down_10": true,
+    "portfolio_down_20": true,
+    "portfolio_up_10": true,
+    "high_conviction_signal": true
+  },
+  "quiet_hours": {
+    "enabled": true,
+    "start": "22:00",
+    "end": "08:00",
+    "timezone": "America/Los_Angeles"
+  },
+  "rate_limits": {
+    "max_alerts_per_hour": 10,
+    "max_alerts_per_day": 50
+  },
+  "notification_preferences": {
+    "defcon_changes": true,
+    "trade_executions": true,
+    "portfolio_updates": true,
+    "system_errors": true,
+    "daily_summary": true,
+    "weekly_summary": true
+  },
+  "message_templates": {
+    "defcon_change": "🚨 DEFCON Level changed from {old_level} to {new_level}\nReason: {reason}\nTime: {timestamp}",
+    "trade_execution": "💰 Trade Executed: {action} {quantity} {symbol} @ ${price}\nStrategy: {strategy}\nTime: {timestamp}",
+    "portfolio_update": "📊 Portfolio Update\nValue: ${value}\nChange: {change}%\nTime: {timestamp}",
+    "daily_summary": "📈 Daily Summary\nPortfolio Value: ${value}\nDaily P/L: {pnl}%\nTrades: {num_trades}\nDefcon: {defcon_level}"
+  },
+  "escalation_rules": {
+    "defcon_1": ["slack", "sms", "email"],
+    "defcon_2": ["slack", "sms"],
+    "defcon_3": ["slack"],
+    "portfolio_down_20": ["slack", "sms"],
+    "system_critical": ["slack", "sms"]
+  }
+}

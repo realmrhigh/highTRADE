@@ -1,0 +1,349 @@
+#!/usr/bin/env python3
+"""
+HighTrade Alert System - Multi-Channel Notifications
+Send SMS, Email, and Slack alerts for DEFCON escalations
+"""
+
+import sqlite3
+import json
+from pathlib import Path
+from datetime import datetime
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import requests
+from typing import List, Dict, Any
+
+DB_PATH = Path.home() / 'trading_data' / 'trading_history.db'
+CONFIG_PATH = Path.home() / 'trading_data' / 'alert_config.json'
+
+class AlertSystem:
+    """Multi-channel alert notification system"""
+
+    def __init__(self, config_path=CONFIG_PATH):
+        self.config_path = config_path
+        self.config = self.load_config()
+
+    def load_config(self) -> Dict[str, Any]:
+        """Load alert configuration"""
+        if self.config_path.exists():
+            with open(self.config_path, 'r') as f:
+                return json.load(f)
+
+        # Default configuration
+        default_config = {
+            'enabled': True,
+            'channels': {
+                'email': {
+                    'enabled': False,
+                    'address': 'stantonhigh@gmail.com',
+                    'smtp_server': 'smtp.gmail.com',
+                    'smtp_port': 587,
+                    'username': '',  # Set this
+                    'password': ''   # Set this (or use app password)
+                },
+                'sms': {
+                    'enabled': True,
+                    'phone_number': '+1',  # Add your phone number
+                    'provider': 'twilio',  # twilio or other
+                    'account_sid': '',     # Twilio Account SID
+                    'auth_token': ''       # Twilio Auth Token
+                },
+                'slack': {
+                    'enabled': False,
+                    'webhook_url': ''
+                }
+            },
+            'alert_thresholds': {
+                'defcon_5': False,  # PEACETIME - no alerts
+                'defcon_4': False,  # ELEVATED - optional
+                'defcon_3': False,  # CRISIS - optional
+                'defcon_2': True,   # PRE-BOTTOM - alert
+                'defcon_1': True    # EXECUTE - critical alert
+            },
+            'alert_history': []
+        }
+
+        # Save default config
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.config_path, 'w') as f:
+            json.dump(default_config, f, indent=2)
+
+        return default_config
+
+    def save_config(self):
+        """Save updated configuration"""
+        with open(self.config_path, 'w') as f:
+            json.dump(self.config, f, indent=2)
+
+    def should_alert_for_defcon(self, defcon_level: int) -> bool:
+        """Check if alert should be sent for this DEFCON level"""
+        if not self.config['enabled']:
+            return False
+
+        threshold_key = f'defcon_{defcon_level}'
+        return self.config['alert_thresholds'].get(threshold_key, False)
+
+    def get_defcon_description(self, level: int) -> str:
+        """Get human-readable DEFCON description"""
+        descriptions = {
+            5: 'PEACETIME - Normal monitoring',
+            4: 'ELEVATED - >2% market drop or significant news',
+            3: 'CRISIS - >4% drop or signal clustering',
+            2: 'PRE-BOTTOM - 3+ tells detected, ready to execute',
+            1: 'EXECUTE - 80%+ confidence, BUY SIGNAL'
+        }
+        return descriptions.get(level, 'UNKNOWN')
+
+    def send_sms(self, message: str, defcon_level: int) -> bool:
+        """Send SMS alert via Twilio"""
+        if not self.config['channels']['sms']['enabled']:
+            return False
+
+        sms_config = self.config['channels']['sms']
+        provider = sms_config.get('provider', 'twilio')
+
+        if provider == 'twilio':
+            try:
+                from twilio.rest import Client
+
+                account_sid = sms_config.get('account_sid')
+                auth_token = sms_config.get('auth_token')
+                phone_number = sms_config.get('phone_number')
+
+                if not all([account_sid, auth_token, phone_number]):
+                    print("⚠️  SMS not configured (missing credentials)")
+                    return False
+
+                client = Client(account_sid, auth_token)
+
+                # Twilio sender number (your Twilio number)
+                from_number = '+1234567890'  # Replace with your Twilio number
+
+                body = f"🚨 HighTrade Alert\n\nDEFCON {defcon_level}: {self.get_defcon_description(defcon_level)}\n\n{message}"
+
+                message = client.messages.create(
+                    body=body,
+                    from_=from_number,
+                    to=phone_number
+                )
+
+                print(f"✅ SMS sent: {message.sid}")
+                self._log_alert('sms', defcon_level, True)
+                return True
+
+            except ImportError:
+                print("⚠️  Twilio library not installed: pip install twilio")
+                return False
+            except Exception as e:
+                print(f"❌ SMS failed: {e}")
+                self._log_alert('sms', defcon_level, False, str(e))
+                return False
+        else:
+            print(f"⚠️  SMS provider '{provider}' not implemented")
+            return False
+
+    def send_email(self, subject: str, message: str, defcon_level: int) -> bool:
+        """Send email alert"""
+        if not self.config['channels']['email']['enabled']:
+            return False
+
+        email_config = self.config['channels']['email']
+
+        try:
+            # Create message
+            msg = MIMEMultipart('alternative')
+            msg['Subject'] = subject
+            msg['From'] = email_config['username']
+            msg['To'] = email_config['address']
+
+            # Email body
+            email_body = f"""
+            <html>
+                <body>
+                    <h2>🚨 HighTrade Alert</h2>
+                    <h3>DEFCON {defcon_level}: {self.get_defcon_description(defcon_level)}</h3>
+                    <p>{message}</p>
+                    <hr>
+                    <p>Timestamp: {datetime.now().isoformat()}</p>
+                    <p><a href="file://{Path.home() / 'trading_data' / 'dashboard.html'}">View Dashboard</a></p>
+                </body>
+            </html>
+            """
+
+            msg.attach(MIMEText(email_body, 'html'))
+
+            # Send email
+            with smtplib.SMTP(email_config['smtp_server'], email_config['smtp_port']) as server:
+                server.starttls()
+                server.login(email_config['username'], email_config['password'])
+                server.send_message(msg)
+
+            print(f"✅ Email sent to {email_config['address']}")
+            self._log_alert('email', defcon_level, True)
+            return True
+
+        except Exception as e:
+            print(f"❌ Email failed: {e}")
+            self._log_alert('email', defcon_level, False, str(e))
+            return False
+
+    def send_slack(self, message: str, defcon_level: int) -> bool:
+        """Send Slack message"""
+        if not self.config['channels']['slack']['enabled']:
+            return False
+
+        slack_config = self.config['channels']['slack']
+        webhook_url = slack_config.get('webhook_url')
+
+        if not webhook_url:
+            print("⚠️  Slack webhook URL not configured")
+            return False
+
+        try:
+            # Color based on DEFCON level
+            colors = {
+                5: '#28a745',  # Green
+                4: '#ffc107',  # Yellow
+                3: '#fd7e14',  # Orange
+                2: '#dc3545',  # Red
+                1: '#8b0000'   # Dark red
+            }
+
+            payload = {
+                'attachments': [
+                    {
+                        'color': colors.get(defcon_level, '#808080'),
+                        'title': f'🚨 HighTrade DEFCON {defcon_level}',
+                        'text': f"{self.get_defcon_description(defcon_level)}\n\n{message}",
+                        'footer': 'HighTrade Alert System',
+                        'ts': int(datetime.now().timestamp())
+                    }
+                ]
+            }
+
+            response = requests.post(webhook_url, json=payload, timeout=5)
+
+            if response.status_code == 200:
+                print("✅ Slack message sent")
+                self._log_alert('slack', defcon_level, True)
+                return True
+            else:
+                print(f"❌ Slack failed: {response.status_code}")
+                self._log_alert('slack', defcon_level, False, f"Status {response.status_code}")
+                return False
+
+        except Exception as e:
+            print(f"❌ Slack failed: {e}")
+            self._log_alert('slack', defcon_level, False, str(e))
+            return False
+
+    def send_defcon_alert(self, defcon_level: int, signal_score: float, details: str = ""):
+        """Send comprehensive alert for DEFCON escalation"""
+        if not self.should_alert_for_defcon(defcon_level):
+            return
+
+        print(f"\n📢 Sending alerts for DEFCON {defcon_level}...")
+
+        # Craft message
+        message = f"""
+Signal Score: {signal_score:.1f}/100
+Status: {self.get_defcon_description(defcon_level)}
+Time: {datetime.now().isoformat()}
+
+{details}
+
+View full dashboard for details.
+        """.strip()
+
+        subject = f"HighTrade Alert: DEFCON {defcon_level} - {self.get_defcon_description(defcon_level)}"
+
+        # Send via enabled channels
+        results = {}
+
+        if self.config['channels']['sms']['enabled']:
+            results['sms'] = self.send_sms(message, defcon_level)
+
+        if self.config['channels']['email']['enabled']:
+            results['email'] = self.send_email(subject, message, defcon_level)
+
+        if self.config['channels']['slack']['enabled']:
+            results['slack'] = self.send_slack(message, defcon_level)
+
+        return results
+
+    def _log_alert(self, channel: str, defcon_level: int, success: bool, error: str = ""):
+        """Log alert to history"""
+        log_entry = {
+            'timestamp': datetime.now().isoformat(),
+            'channel': channel,
+            'defcon_level': defcon_level,
+            'success': success,
+            'error': error
+        }
+
+        self.config['alert_history'].append(log_entry)
+
+        # Keep only last 100 alerts
+        if len(self.config['alert_history']) > 100:
+            self.config['alert_history'] = self.config['alert_history'][-100:]
+
+        self.save_config()
+
+    def get_alert_history(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get recent alert history"""
+        return self.config['alert_history'][-limit:]
+
+    def print_config(self):
+        """Print current configuration"""
+        print("\n" + "="*70)
+        print("ALERT SYSTEM CONFIGURATION")
+        print("="*70)
+        print(f"System Enabled: {self.config['enabled']}")
+        print("\nChannels:")
+        for channel, settings in self.config['channels'].items():
+            print(f"  {channel.upper()}:")
+            print(f"    Enabled: {settings.get('enabled', False)}")
+            if channel == 'sms':
+                print(f"    Phone: {settings.get('phone_number', 'NOT SET')}")
+            elif channel == 'email':
+                print(f"    Address: {settings.get('address', 'NOT SET')}")
+            elif channel == 'slack':
+                print(f"    Webhook: {'SET' if settings.get('webhook_url') else 'NOT SET'}")
+
+        print("\nAlert Thresholds:")
+        for level, enabled in self.config['alert_thresholds'].items():
+            level_num = int(level.split('_')[1])
+            status = "✓ ALERT" if enabled else "✗ NO ALERT"
+            print(f"  DEFCON {level_num}: {status}")
+
+        print("\nRecent Alerts:")
+        if self.config['alert_history']:
+            for alert in self.config['alert_history'][-3:]:
+                status = "✓" if alert['success'] else "✗"
+                print(f"  {status} {alert['channel'].upper()} @ {alert['timestamp']}")
+        else:
+            print("  (none)")
+
+        print("="*70 + "\n")
+
+if __name__ == '__main__':
+    import sys
+
+    alerts = AlertSystem()
+
+    if len(sys.argv) > 1 and sys.argv[1] == 'config':
+        alerts.print_config()
+    elif len(sys.argv) > 1 and sys.argv[1] == 'test':
+        # Test alert
+        print("📤 Sending test alert...")
+        alerts.send_defcon_alert(
+            defcon_level=2,
+            signal_score=65.5,
+            details="This is a test alert to verify notification system."
+        )
+    else:
+        alerts.print_config()
+        print("Usage:")
+        print("  python3 alerts.py config     - Show configuration")
+        print("  python3 alerts.py test       - Send test alert")
