@@ -18,7 +18,8 @@ import logging
 from pathlib import Path
 from datetime import datetime
 
-CMD_DIR = Path.home() / 'trading_data' / 'commands'
+SCRIPT_DIR = Path(__file__).parent.resolve()
+CMD_DIR = SCRIPT_DIR / 'trading_data' / 'commands'
 CMD_FILE = CMD_DIR / 'pending_command.json'
 RESPONSE_FILE = CMD_DIR / 'command_response.json'
 LOG_FILE = CMD_DIR / 'command_history.json'
@@ -433,7 +434,41 @@ class CommandProcessor:
             'Bond Yield':       f"{status.get('bond_yield', '?')}%",
             'VIX':              status.get('vix', '?'),
         }
+
+        # Add tracked holdings with current prices
+        holdings_info = self._get_holdings_prices()
+        if holdings_info:
+            data['Holdings'] = holdings_info
+
         return {'ok': True, 'message': 'System Status', 'data': data}
+
+    def _get_holdings_prices(self) -> str:
+        """Get current prices for all open positions (holdings)."""
+        open_positions = self.orchestrator.paper_trading.get_open_positions()
+
+        if not open_positions:
+            return None
+
+        prices_list = []
+        for pos in open_positions:
+            symbol = pos['asset_symbol']
+            entry_price = pos['entry_price']
+
+            # Get current price
+            try:
+                current_price = self.orchestrator.paper_trading._get_current_price(symbol)
+                if current_price and current_price > 0:
+                    pnl_pct = ((current_price - entry_price) / entry_price) * 100
+                    arrow = '📈' if pnl_pct >= 0 else '📉'
+                    prices_list.append(
+                        f"{symbol}: ${current_price:.2f} ({pnl_pct:+.1f}%) {arrow}"
+                    )
+                else:
+                    prices_list.append(f"{symbol}: Price unavailable")
+            except Exception:
+                prices_list.append(f"{symbol}: ${entry_price:.2f} (entry)")
+
+        return '\n    '.join([''] + prices_list) if prices_list else None
 
     def _handle_portfolio(self, args: str) -> dict:
         perf = orch_perf = self.orchestrator.paper_trading.get_portfolio_performance()

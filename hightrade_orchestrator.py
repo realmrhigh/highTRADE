@@ -24,9 +24,10 @@ from news_signals import NewsSignalGenerator
 from config_validator import ConfigValidator
 
 # Configuration
-DB_PATH = Path.home() / 'trading_data' / 'trading_history.db'
-LOGS_PATH = Path.home() / 'trading_data' / 'logs'
-CONFIG_PATH = Path.home() / 'trading_data' / 'orchestrator_config.json'
+SCRIPT_DIR = Path(__file__).parent.resolve()
+DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
+LOGS_PATH = SCRIPT_DIR / 'trading_data' / 'logs'
+CONFIG_PATH = SCRIPT_DIR / 'trading_data' / 'orchestrator_config.json'
 
 # Create logs directory
 LOGS_PATH.mkdir(parents=True, exist_ok=True)

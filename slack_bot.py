@@ -24,8 +24,9 @@ from pathlib import Path
 from datetime import datetime
 
 # ─── Paths ────────────────────────────────────────────────────
-CONFIG_PATH = Path.home() / 'trading_data' / 'alert_config.json'
-CMD_DIR = Path.home() / 'trading_data' / 'commands'
+SCRIPT_DIR = Path(__file__).parent.resolve()
+CONFIG_PATH = SCRIPT_DIR / 'trading_data' / 'alert_config.json'
+CMD_DIR = SCRIPT_DIR / 'trading_data' / 'commands'
 CMD_FILE = CMD_DIR / 'pending_command.json'
 RESPONSE_FILE = CMD_DIR / 'command_response.json'
 

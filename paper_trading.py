@@ -19,7 +19,8 @@ try:
 except ImportError:
     EXIT_STRATEGIES_AVAILABLE = False
 
-DB_PATH = Path.home() / 'trading_data' / 'trading_history.db'
+SCRIPT_DIR = Path(__file__).parent.resolve()
+DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
 
 logger = logging.getLogger(__name__)
 
@@ -380,7 +381,7 @@ class PaperTradingEngine:
             exit_recommendations = []
 
             # Get current DEFCON level for reversion check
-            self.cursor.execute('SELECT defcon_level FROM defcon_history ORDER BY timestamp DESC LIMIT 1')
+            self.cursor.execute('SELECT defcon_level FROM defcon_history ORDER BY created_at DESC LIMIT 1')
             result = self.cursor.fetchone()
             current_defcon = result[0] if result else 5
 
