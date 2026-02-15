@@ -14,8 +14,10 @@ from email.mime.multipart import MIMEMultipart
 import requests
 from typing import List, Dict, Any
 
-DB_PATH = Path.home() / 'trading_data' / 'trading_history.db'
-CONFIG_PATH = Path.home() / 'trading_data' / 'alert_config.json'
+# Use SCRIPT_DIR to ensure we're in the correct project directory
+SCRIPT_DIR = Path(__file__).parent.resolve()
+DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
+CONFIG_PATH = SCRIPT_DIR / 'trading_data' / 'alert_config.json'
 
 class AlertSystem:
     """Multi-channel alert notification system"""
@@ -166,7 +168,7 @@ class AlertSystem:
                     <p>{message}</p>
                     <hr>
                     <p>Timestamp: {datetime.now().isoformat()}</p>
-                    <p><a href="file://{Path.home() / 'trading_data' / 'dashboard.html'}">View Dashboard</a></p>
+                    <p><a href="file://{SCRIPT_DIR / 'trading_data' / 'dashboard.html'}">View Dashboard</a></p>
                 </body>
             </html>
             """
@@ -236,6 +238,79 @@ class AlertSystem:
         except Exception as e:
             print(f"❌ Slack failed: {e}")
             self._log_alert('slack', defcon_level, False, str(e))
+            return False
+
+    def send_silent_log(self, event_type: str, data: dict) -> bool:
+        """Send silent log message to #logs-silent channel (no notifications)"""
+        if 'slack_logging' not in self.config['channels']:
+            return False
+
+        logging_config = self.config['channels']['slack_logging']
+        if not logging_config.get('enabled', False):
+            return False
+
+        webhook_url = logging_config.get('webhook_url')
+        if not webhook_url or 'PLACEHOLDER' in webhook_url:
+            return False
+
+        # Check if this event type should be logged
+        log_events = logging_config.get('log_events', [])
+        if event_type not in log_events:
+            return False
+
+        try:
+            # Format data for logging
+            if event_type == 'status':
+                text = (
+                    f"📊 Status Update\n"
+                    f"DEFCON: {data.get('defcon_level', '?')}/5 | "
+                    f"Signal: {data.get('signal_score', 0):.1f}/100 | "
+                    f"VIX: {data.get('vix', '?')} | "
+                    f"Yield: {data.get('bond_yield', '?')}%"
+                )
+                if 'holdings' in data and data['holdings']:
+                    text += f"\nHoldings: {data['holdings']}"
+
+            elif event_type == 'defcon_change':
+                text = (
+                    f"🚨 DEFCON Changed: {data.get('old_defcon', '?')} → {data.get('new_defcon', '?')}\n"
+                    f"Signal Score: {data.get('signal_score', 0):.1f}/100"
+                )
+
+            elif event_type == 'trade_entry':
+                text = (
+                    f"📈 Trade Entry\n"
+                    f"Assets: {data.get('assets', '?')} | "
+                    f"Size: ${data.get('position_size', 0):,.0f} | "
+                    f"DEFCON: {data.get('defcon', '?')}"
+                )
+
+            elif event_type == 'trade_exit':
+                text = (
+                    f"📉 Trade Exit\n"
+                    f"Asset: {data.get('asset', '?')} | "
+                    f"Reason: {data.get('reason', '?')} | "
+                    f"P&L: {data.get('pnl_pct', 0):+.1f}%"
+                )
+
+            elif event_type == 'monitoring_cycle':
+                text = f"🔄 Monitoring Cycle #{data.get('cycle', '?')} completed"
+
+            else:
+                text = f"{event_type}: {json.dumps(data, indent=2)}"
+
+            # Send with no @channel or notification
+            payload = {
+                'text': text,
+                'username': 'HighTrade Logger',
+                'icon_emoji': ':robot_face:'
+            }
+
+            response = requests.post(webhook_url, json=payload, timeout=5)
+            return response.status_code == 200
+
+        except Exception as e:
+            # Silent failure for logging - don't disrupt main flow
             return False
 
     def send_defcon_alert(self, defcon_level: int, signal_score: float, details: str = ""):

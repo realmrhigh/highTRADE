@@ -13,7 +13,9 @@ from paper_trading import PaperTradingEngine, CrisisAssetIntelligence
 from alerts import AlertSystem
 from quick_money_research import QuickMoneyResearch
 
-DB_PATH = Path.home() / 'trading_data' / 'trading_history.db'
+# Use SCRIPT_DIR to ensure we're in the correct project directory
+SCRIPT_DIR = Path(__file__).parent.resolve()
+DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
 
 logger = logging.getLogger(__name__)
 

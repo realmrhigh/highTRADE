@@ -384,6 +384,14 @@ Check dashboard for detailed analysis.
                     details=alert_message
                 )
                 self.alerts_sent += 1
+
+                # Also log to silent channel
+                self.alerts.send_silent_log('defcon_change', {
+                    'old_defcon': self.previous_defcon,
+                    'new_defcon': current_defcon,
+                    'signal_score': signal_score
+                })
+
                 self.previous_defcon = current_defcon
 
                 # NEW: Broker agent decides on trades (DEFCON 1-2 only)
@@ -456,6 +464,24 @@ Check dashboard for detailed analysis.
                         exits = self.broker.process_exits()
                         if exits > 0:
                             logger.info(f"✅ BROKER: {exits} position(s) exited autonomously")
+
+            # Send silent log to #logs-silent channel
+            try:
+                status = self.monitor.get_status() or {}
+                open_positions = self.paper_trading.get_open_positions()
+                holdings_summary = ', '.join([f"{p['asset_symbol']}" for p in open_positions]) if open_positions else 'None'
+
+                self.alerts.send_silent_log('monitoring_cycle', {
+                    'cycle': self.monitoring_cycles,
+                    'defcon_level': status.get('defcon_level', 5),
+                    'signal_score': status.get('signal_score', 0),
+                    'vix': status.get('vix', '?'),
+                    'bond_yield': status.get('bond_yield', '?'),
+                    'holdings': holdings_summary
+                })
+            except Exception as log_err:
+                # Don't let logging errors break the cycle
+                pass
 
         except Exception as e:
             logger.error(f"Error in monitoring cycle: {e}", exc_info=True)

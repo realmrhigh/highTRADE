@@ -12,7 +12,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import time
 
-DB_PATH = Path.home() / 'trading_data' / 'trading_history.db'
+# Use SCRIPT_DIR to ensure we're in the correct project directory
+SCRIPT_DIR = Path(__file__).parent.resolve()
+DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
 
 # FRED API - Federal Reserve Economic Data (free tier)
 FRED_API_KEY = "98ac4e761ff2e37793f310bcfb4f54c9"  # Get from https://fred.stlouisfed.org/docs/api/fred/

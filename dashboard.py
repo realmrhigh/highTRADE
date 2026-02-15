@@ -10,7 +10,9 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import base64
 
-DB_PATH = Path.home() / 'trading_data' / 'trading_history.db'
+# Use SCRIPT_DIR to ensure we're in the correct project directory
+SCRIPT_DIR = Path(__file__).parent.resolve()
+DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
 
 class Dashboard:
     """Generate interactive HTML dashboard from database"""
@@ -107,7 +109,7 @@ class Dashboard:
         """Get recent log entries from hightrade log file"""
         try:
             from pathlib import Path
-            logs_dir = Path.home() / 'trading_data' / 'logs'
+            logs_dir = SCRIPT_DIR / 'trading_data' / 'logs'
 
             # Find the latest log file
             if logs_dir.exists():
@@ -823,7 +825,7 @@ class Dashboard:
     def save_dashboard(self, output_path=None):
         """Generate and save dashboard HTML"""
         if output_path is None:
-            output_path = Path.home() / 'trading_data' / 'dashboard.html'
+            output_path = SCRIPT_DIR / 'trading_data' / 'dashboard.html'
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
