@@ -673,13 +673,29 @@ class PaperTradingEngine:
 
     def _get_current_price(self, asset_symbol: str) -> Optional[float]:
         """
-        Get current price for an asset (placeholder for real API integration)
-
-        In production, this would fetch from Yahoo Finance, Alpha Vantage, or similar
-        For now, uses simulated prices
+        Get current price for an asset using Alpha Vantage API
+        Falls back to simulated prices if API fails
         """
-        # Simulated prices (in production, fetch from real API)
-        simulated_prices = {
+        try:
+            import requests
+            api_key = "98ac4e761ff2e37793f310bcfb4f54c9"  # Alpha Vantage API key
+            url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={asset_symbol}&apikey={api_key}"
+
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                if 'Global Quote' in data and '05. price' in data['Global Quote']:
+                    price = float(data['Global Quote']['05. price'])
+                    if price > 0:
+                        logger.debug(f"Fetched real-time price for {asset_symbol}: ${price:.2f}")
+                        return price
+
+        except Exception as e:
+            logger.debug(f"Failed to fetch real-time price for {asset_symbol}: {e}")
+
+        # Fallback to simulated prices with slight random variation to show movement
+        import random
+        base_prices = {
             'QQQ': 410.0,
             'NVDA': 920.0,
             'MSFT': 385.0,
@@ -688,7 +704,13 @@ class PaperTradingEngine:
             'IVV': 485.0
         }
 
-        return simulated_prices.get(asset_symbol, 100.0)
+        base_price = base_prices.get(asset_symbol, 100.0)
+        # Add +/- 2% random variation to simulate price movement
+        variation = random.uniform(-0.02, 0.02)
+        simulated_price = base_price * (1 + variation)
+
+        logger.debug(f"Using simulated price for {asset_symbol}: ${simulated_price:.2f}")
+        return simulated_price
 
 
 def main():

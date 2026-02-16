@@ -313,7 +313,7 @@ class HighTradeOrchestrator:
                         logger.info(f"  📊 News Score: {fresh_news_signal['news_score']:.1f}/100")
                         logger.info(f"  📰 Crisis Type: {fresh_news_signal['dominant_crisis_type']}")
                         logger.info(f"  📰 Sentiment: {fresh_news_signal['sentiment_summary']}")
-                        
+
                         # If fresh news has breaking override, use it instead
                         if fresh_news_signal['breaking_news_override']:
                             logger.warning(f"  🚨 BREAKING NEWS DETECTED: {fresh_news_signal['crisis_description']}")
@@ -321,6 +321,37 @@ class HighTradeOrchestrator:
 
                         # Store fresh news signal in database
                         self._record_news_signal(fresh_news_signal)
+
+                        # NEW: Detect if this is genuinely NEW news and send notification
+                        is_new, new_count, latest_articles = self._detect_new_news(fresh_news_signal)
+
+                        if is_new and fresh_news_signal['article_count'] > 0:
+                            # Extract sentiment for notification (handle both formats)
+                            sentiment_text = fresh_news_signal['sentiment_summary']
+                            # Parse "Bearish: 27%, Bullish: 9%, Neutral: 64%" to just dominant sentiment
+                            if ':' in sentiment_text:
+                                # Extract dominant sentiment (highest percentage)
+                                parts = sentiment_text.split(',')
+                                sentiments = {}
+                                for part in parts:
+                                    if ':' in part:
+                                        name, pct = part.split(':')
+                                        sentiments[name.strip()] = float(pct.strip().rstrip('%'))
+                                dominant = max(sentiments, key=sentiments.get).lower()
+                            else:
+                                dominant = sentiment_text.lower()
+
+                            # Send silent notification to #logs-silent
+                            self.alerts.send_silent_log('news_update', {
+                                'news_score': fresh_news_signal['news_score'],
+                                'crisis_type': fresh_news_signal['dominant_crisis_type'],
+                                'sentiment': dominant,
+                                'article_count': fresh_news_signal['article_count'],
+                                'new_article_count': new_count,
+                                'breaking_count': fresh_news_signal['breaking_count'],
+                                'top_articles': latest_articles[:3],  # Show top 3 newest
+                                'timestamp': datetime.now().isoformat()
+                            })
                     else:
                         logger.info("  📰 No recent news articles found")
 
@@ -687,6 +718,99 @@ Check dashboard for detailed analysis.
 
         except Exception as e:
             logger.error(f"Failed to record news signal: {e}")
+
+    def _detect_new_news(self, fresh_news_signal: dict) -> tuple:
+        """
+        Detect if news signal contains genuinely NEW articles worthy of notification.
+
+        Compares current articles against the last recorded news signal to identify
+        new content based on article URLs and timestamps.
+
+        Args:
+            fresh_news_signal: Current news signal dict with contributing_articles
+
+        Returns:
+            Tuple of (is_new: bool, new_article_count: int, latest_articles: list)
+            - is_new: True if notification should be sent
+            - new_article_count: Number of articles not in previous signal
+            - latest_articles: Articles sorted by publish time (newest first)
+        """
+        try:
+            import sqlite3
+            from datetime import datetime, timedelta
+
+            conn = sqlite3.connect(str(DB_PATH))
+            cursor = conn.cursor()
+
+            # Get timestamp and articles from last news signal (within last 2 hours)
+            cursor.execute("""
+                SELECT timestamp, articles_json
+                FROM news_signals
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """)
+
+            last_signal = cursor.fetchone()
+            conn.close()
+
+            # If this is the first news signal ever, it's new
+            if not last_signal:
+                logger.info("  🆕 First news signal - will notify")
+                return (True, fresh_news_signal['article_count'],
+                        fresh_news_signal['contributing_articles'])
+
+            # Calculate time since last signal
+            last_timestamp = datetime.fromisoformat(last_signal[0])
+            time_since_last = (datetime.now() - last_timestamp).total_seconds() / 60
+
+            current_articles = fresh_news_signal['contributing_articles']
+
+            # If last signal was > 60 minutes ago, consider news potentially new
+            if time_since_last > 60:
+                logger.info(f"  ⏰ Last signal was {time_since_last:.0f} min ago - checking for new articles")
+
+            # Parse last signal's articles
+            last_articles_json = json.loads(last_signal[1]) if last_signal[1] else []
+            last_article_urls = {a.get('url') for a in last_articles_json if a.get('url')}
+
+            # Find truly new articles (not in last signal)
+            new_articles = [
+                a for a in current_articles
+                if a.get('url') and a.get('url') not in last_article_urls
+            ]
+
+            new_count = len(new_articles)
+
+            # Consider it "new" if:
+            # 1. We have at least 1 new article, OR
+            # 2. Breaking news appeared (always notify regardless of duplicates)
+            is_breaking_new = (fresh_news_signal['breaking_count'] > 0 and
+                              fresh_news_signal.get('breaking_news_override', False))
+
+            is_new = (new_count > 0) or is_breaking_new
+
+            if is_new:
+                logger.info(f"  🔔 NEW NEWS: {new_count} new articles" +
+                           (" + BREAKING NEWS" if is_breaking_new else ""))
+            else:
+                logger.info(f"  ℹ️  No new articles (same as previous signal)")
+
+            # Sort articles by publish time (newest first) for display
+            articles_to_show = sorted(
+                current_articles,
+                key=lambda x: x.get('published_at', ''),
+                reverse=True
+            )
+
+            return (is_new, new_count, articles_to_show)
+
+        except Exception as e:
+            logger.error(f"Error detecting new news: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            # On error, assume it's new to avoid missing important notifications
+            return (True, fresh_news_signal['article_count'],
+                    fresh_news_signal['contributing_articles'])
 
     def monitor_and_exit_positions(self):
         """Monitor all open positions and detect exit conditions"""

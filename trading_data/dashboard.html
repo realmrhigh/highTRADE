@@ -1,0 +1,415 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HighTrade Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            color: #333;
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        header {
+            color: white;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+
+        .defcon-card {
+            background: linear-gradient(135deg, #28a745 0%, #28a745dd 100%);
+            color: white;
+            text-align: center;
+        }
+
+        .defcon-level {
+            font-size: 3em;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+
+        .defcon-name {
+            font-size: 1.5em;
+            opacity: 0.95;
+        }
+
+        .defcon-status {
+            font-size: 0.9em;
+            margin-top: 10px;
+            opacity: 0.85;
+        }
+
+        .metric {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin: 15px 0;
+            padding: 10px 0;
+            border-bottom: 1px solid #eee;
+        }
+
+        .metric:last-child {
+            border-bottom: none;
+        }
+
+        .metric-label {
+            font-weight: 600;
+            color: #666;
+        }
+
+        .metric-value {
+            font-size: 1.3em;
+            color: #2a5298;
+            font-weight: bold;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 400px;
+            margin-bottom: 30px;
+        }
+
+        .section-title {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: white;
+            margin: 30px 0 20px 0;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .alerts-list {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+
+        .alert-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px;
+            border-left: 4px solid #2a5298;
+            margin-bottom: 10px;
+            background: #f8f9fa;
+            border-radius: 4px;
+        }
+
+        .alert-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .alert-defcon {
+            font-weight: bold;
+            font-size: 1.1em;
+        }
+
+        .alert-time {
+            color: #666;
+            font-size: 0.9em;
+        }
+
+        .logs-container {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            margin-bottom: 30px;
+            max-height: 400px;
+            overflow-y: auto;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 0.85em;
+        }
+
+        .log-entry {
+            padding: 10px;
+            margin-bottom: 8px;
+            border-left: 3px solid #2a5298;
+            background: #f8f9fa;
+            border-radius: 3px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .log-timestamp {
+            color: #666;
+            font-weight: 600;
+            margin-bottom: 3px;
+            font-family: 'Monaco', 'Courier New', monospace;
+        }
+
+        .log-message {
+            color: #333;
+            word-break: break-word;
+            line-height: 1.4;
+        }
+
+        .log-level-info {
+            border-left-color: #28a745;
+        }
+
+        .log-level-warning {
+            border-left-color: #ffc107;
+            background: #fffbea;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+
+        .stat-box {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+
+        .stat-value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #2a5298;
+        }
+
+        .stat-label {
+            color: #666;
+            margin-top: 8px;
+            font-size: 0.9em;
+        }
+
+        .last-update {
+            text-align: center;
+            color: white;
+            margin-top: 20px;
+            font-size: 0.9em;
+            opacity: 0.8;
+        }
+
+        .alert-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: 600;
+        }
+
+        .badge-defcon5 { background: #28a745; color: white; }
+        .badge-defcon4 { background: #ffc107; color: black; }
+        .badge-defcon3 { background: #fd7e14; color: white; }
+        .badge-defcon2 { background: #dc3545; color: white; }
+        .badge-defcon1 { background: #8b0000; color: white; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🚀 HighTrade Dashboard</h1>
+            <p>Real-Time Crisis Trading Bot Monitor</p>
+        </header>
+
+        <!-- Current Status -->
+        <div class="status-grid">
+            <div class="card defcon-card">
+                <div class="defcon-name">PEACETIME</div>
+                <div class="defcon-level">5/5</div>
+                <div class="defcon-status">
+                    Signal Score: 2.0/100<br>
+                    🟢 Monitoring Passive
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="metric">
+                    <span class="metric-label">10Y Bond Yield</span>
+                    <span class="metric-value">4.09%</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">VIX</span>
+                    <span class="metric-value">20.6</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Last Update</span>
+                    <span class="metric-value" style="font-size: 0.85em;">2026-02-15 17:09:19</span>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3 style="margin-bottom: 15px; color: #2a5298;">Historical Crisis Stats</h3>
+                <div class="metric">
+                    <span class="metric-label">Total Crises Tracked</span>
+                    <span class="metric-value">6</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Avg Drop</span>
+                    <span class="metric-value">-18.2%</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Avg Recovery</span>
+                    <span class="metric-value">+24.3%</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Charts -->
+        <div class="section-title">📊 Monitoring History (7 Days)</div>
+
+        <div class="chart-container">
+            <canvas id="defconChart"></canvas>
+        </div>
+
+        <div class="chart-container">
+            <canvas id="scoreChart"></canvas>
+        </div>
+
+        <!-- Recent Alerts -->
+        <div class="section-title">⚠️ Recent DEFCON Changes</div>
+
+        <div class="alerts-list">
+            <p style="color: #666; text-align: center;">No DEFCON changes recorded yet</p>
+        </div>
+
+        <!-- Portfolio Trading Section -->
+        
+        <div class="section-title">📊 Portfolio Trading (No trades yet)</div>
+        <div class="card" style="text-align: center; padding: 30px; color: #666;">
+            <p>Start the monitoring system to begin generating paper trades:</p>
+            <p><code>python3 hightrade_orchestrator.py continuous</code></p>
+        </div>
+        
+
+        <!-- System Logs -->
+        <div class="section-title">📋 Recent System Activity</div>
+
+        <div class="logs-container">
+            <p style="color: #666; text-align: center;">No log entries available yet</p>
+        </div>
+
+        <div class="last-update">
+            Dashboard updated: 2026-02-15 17:09:20 UTC
+        </div>
+    </div>
+
+    <script>
+        // DEFCON Level Chart
+        const defconCtx = document.getElementById('defconChart').getContext('2d');
+        new Chart(defconCtx, {
+            type: 'line',
+            data: {
+                labels: ["2026-02-15 07:50:16", "2026-02-15 08:05:20", "2026-02-15 08:20:24", "2026-02-15 08:35:28", "2026-02-15 08:50:32", "2026-02-15 09:05:36", "2026-02-15 09:20:40", "2026-02-15 09:35:44", "2026-02-15 09:50:49", "2026-02-15 10:05:53", "2026-02-15 10:20:56", "2026-02-15 10:32:27", "2026-02-15 10:47:29", "2026-02-15 11:02:31", "2026-02-15 11:03:52", "2026-02-15 11:18:58", "2026-02-15 11:28:31", "2026-02-15 11:43:37", "2026-02-15 11:58:44", "2026-02-15 12:07:56"],
+                datasets: [{
+                    label: 'DEFCON Level',
+                    data: [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5],
+                    borderColor: '#2a5298',
+                    backgroundColor: 'rgba(42, 82, 152, 0.1)',
+                    borderWidth: 2,
+                    tension: 0.4,
+                    fill: true,
+                    pointRadius: 4,
+                    pointHoverRadius: 6
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: true,
+                        labels: { font: { size: 12 } }
+                    },
+                    title: {
+                        display: true,
+                        text: 'DEFCON Level Over Time (5 = Safe, 1 = Execute)',
+                        font: { size: 14 }
+                    }
+                },
+                scales: {
+                    y: {
+                        min: 0,
+                        max: 5,
+                        ticks: { stepSize: 1 }
+                    }
+                }
+            }
+        });
+
+        // Signal Score Chart
+        const scoreCtx = document.getElementById('scoreChart').getContext('2d');
+        new Chart(scoreCtx, {
+            type: 'line',
+            data: {
+                labels: ["2026-02-15 07:50:16", "2026-02-15 08:05:20", "2026-02-15 08:20:24", "2026-02-15 08:35:28", "2026-02-15 08:50:32", "2026-02-15 09:05:36", "2026-02-15 09:20:40", "2026-02-15 09:35:44", "2026-02-15 09:50:49", "2026-02-15 10:05:53", "2026-02-15 10:20:56", "2026-02-15 10:32:27", "2026-02-15 10:47:29", "2026-02-15 11:02:31", "2026-02-15 11:03:52", "2026-02-15 11:18:58", "2026-02-15 11:28:31", "2026-02-15 11:43:37", "2026-02-15 11:58:44", "2026-02-15 12:07:56"],
+                datasets: [{
+                    label: 'Signal Score',
+                    data: [1.9666666666666661, 1.9666666666666661, 1.9666666666666661, 1.9666666666666661, 1.9666666666666661, 1.9666666666666661, 1.9666666666666661, 1.9666666666666661, 1.9666666666666661, 1.9666666666666661, 1.9666666666666661, 1.9666666666666661, 1.9666666666666661, 1.9666666666666661, 1.9666666666666661, 1.9666666666666661, 1.9666666666666661, 1.9666666666666661, 1.9666666666666661, 1.9666666666666661],
+                    borderColor: '#dc3545',
+                    backgroundColor: 'rgba(220, 53, 69, 0.1)',
+                    borderWidth: 2,
+                    tension: 0.4,
+                    fill: true,
+                    pointRadius: 4,
+                    pointHoverRadius: 6
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: true,
+                        labels: { font: { size: 12 } }
+                    },
+                    title: {
+                        display: true,
+                        text: 'Signal Confidence Score (80+ = Buy Signal)',
+                        font: { size: 14 }
+                    }
+                },
+                scales: {
+                    y: {
+                        min: 0,
+                        max: 100
+                    }
+                }
+            }
+        });
+    </script>
+</body>
+</html>

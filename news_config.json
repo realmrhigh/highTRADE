@@ -1,0 +1,37 @@
+{
+  "sources": {
+    "alpha_vantage": {
+      "enabled": true,
+      "api_key": "E4XWDIHPWMFPPIQM",
+      "topics": ["market", "economy", "crisis"],
+      "max_articles": 50,
+      "timeout_seconds": 10
+    },
+    "rss_feeds": {
+      "enabled": true,
+      "feeds": [
+        "https://feeds.bloomberg.com/markets/news.rss",
+        "https://www.cnbc.com/id/100727362/device/rss/rss.html",
+        "https://www.marketwatch.com/rss/topstories",
+        "https://www.reuters.com/finance",
+        "https://feeds.finance.yahoo.com/rss/2.0/headline"
+      ],
+      "timeout_seconds": 15
+    },
+    "reddit": {
+      "enabled": false,
+      "subreddits": ["wallstreetbets", "stocks", "investing"],
+      "post_limit": 50,
+      "timeout_seconds": 10
+    }
+  },
+  "caching": {
+    "enabled": true,
+    "cache_path": "trading_data/news_cache.db",
+    "ttl_minutes": 15
+  },
+  "deduplication": {
+    "enabled": true,
+    "similarity_threshold": 0.85
+  }
+}

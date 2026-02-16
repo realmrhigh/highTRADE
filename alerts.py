@@ -296,6 +296,35 @@ class AlertSystem:
             elif event_type == 'monitoring_cycle':
                 text = f"🔄 Monitoring Cycle #{data.get('cycle', '?')} completed"
 
+            elif event_type == 'news_update':
+                # Breaking news gets special indicator
+                breaking_indicator = "🚨 BREAKING" if data.get('breaking_count', 0) > 0 else "📰"
+
+                # Extract sentiment (handle both formats: dict or string)
+                sentiment = data.get('sentiment', 'neutral')
+
+                text = (
+                    f"{breaking_indicator} News Update\n"
+                    f"Crisis: {data.get('crisis_type', 'N/A')} | "
+                    f"Score: {data.get('news_score', 0):.1f}/100 | "
+                    f"Sentiment: {sentiment}\n"
+                    f"Articles: {data.get('article_count', 0)} ({data.get('new_article_count', 0)} new)"
+                )
+
+                # Add top 3 latest headlines with urgency indicators
+                if 'top_articles' in data and data['top_articles']:
+                    text += "\n\nLatest Headlines:"
+                    for i, article in enumerate(data['top_articles'][:3], 1):
+                        source = article.get('source', 'Unknown')
+                        title = article.get('title', 'No title')
+                        # Truncate long titles
+                        if len(title) > 80:
+                            title = title[:77] + '...'
+
+                        urgency = article.get('urgency', 'routine')
+                        urgency_emoji = '🔥' if urgency == 'breaking' else '⚡' if urgency == 'high' else '•'
+                        text += f"\n{urgency_emoji} {i}. [{source}] {title}"
+
             else:
                 text = f"{event_type}: {json.dumps(data, indent=2)}"
 
