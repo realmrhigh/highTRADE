@@ -689,7 +689,16 @@ Check dashboard for detailed analysis.
             try:
                 status = self.monitor.get_status() or {}
                 open_positions = self.paper_trading.get_open_positions()
-                holdings_summary = ', '.join([f"{p['asset_symbol']}" for p in open_positions]) if open_positions else 'None'
+                perf = self.paper_trading.get_portfolio_performance()
+
+                # Calculate live portfolio value: cash + open position market values
+                total_capital = self.paper_trading.total_capital
+                deployed = sum(p.get('position_size_dollars', 0) for p in open_positions)
+                realized_pnl = perf.get('total_profit_loss_dollars', 0)
+                # Account value = starting capital + realized P&L + still-deployed capital
+                # (open positions are tracked at cost basis; unrealized P&L not yet computed here)
+                account_value = total_capital + realized_pnl
+                cash_available = account_value - deployed
 
                 self.alerts.send_silent_log('monitoring_cycle', {
                     'cycle': self.monitoring_cycles,
@@ -697,7 +706,16 @@ Check dashboard for detailed analysis.
                     'signal_score': status.get('signal_score', 0),
                     'vix': status.get('vix', '?'),
                     'bond_yield': status.get('bond_yield', '?'),
-                    'holdings': holdings_summary
+                    'open_positions': open_positions,
+                    'total_capital': total_capital,
+                    'account_value': account_value,
+                    'cash_available': cash_available,
+                    'deployed': deployed,
+                    'realized_pnl': realized_pnl,
+                    'total_pnl_pct': perf.get('total_profit_loss_percent', 0),
+                    'win_rate': perf.get('win_rate', 0),
+                    'open_trades': perf.get('open_trades', 0),
+                    'closed_trades': perf.get('closed_trades', 0),
                 })
             except Exception as log_err:
                 # Don't let logging errors break the cycle

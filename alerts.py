@@ -294,7 +294,40 @@ class AlertSystem:
                 )
 
             elif event_type == 'monitoring_cycle':
-                text = f"🔄 Monitoring Cycle #{data.get('cycle', '?')} completed"
+                cycle = data.get('cycle', '?')
+                defcon = data.get('defcon_level', 5)
+                score = data.get('signal_score', 0)
+                vix = data.get('vix', '?')
+                bond = data.get('bond_yield', '?')
+
+                # Account financials
+                account_value = data.get('account_value', 0)
+                cash = data.get('cash_available', 0)
+                deployed = data.get('deployed', 0)
+                realized_pnl = data.get('realized_pnl', 0)
+                pnl_pct = data.get('total_pnl_pct', 0)
+                win_rate = data.get('win_rate', 0)
+                open_trades = data.get('open_trades', 0)
+                closed_trades = data.get('closed_trades', 0)
+
+                pnl_emoji = '📈' if realized_pnl >= 0 else '📉'
+                pnl_sign = '+' if realized_pnl >= 0 else ''
+                defcon_emoji = '🔴' if defcon <= 2 else '🟠' if defcon == 3 else '🟡' if defcon == 4 else '🟢'
+
+                text = (
+                    f"🔄 Cycle #{cycle} | {defcon_emoji} DEFCON {defcon} | Score {score:.1f}/100\n"
+                    f"📡 VIX: {vix} | 10Y: {bond}%\n"
+                    f"💰 Account: ${account_value:,.0f} | Cash: ${cash:,.0f} | Deployed: ${deployed:,.0f}\n"
+                    f"{pnl_emoji} Realized P&L: {pnl_sign}${realized_pnl:,.2f} ({pnl_sign}{pnl_pct:.2f}%) | "
+                    f"Win Rate: {win_rate:.0f}% | {open_trades} open / {closed_trades} closed"
+                )
+
+                # Open positions detail
+                positions = data.get('open_positions', [])
+                if positions:
+                    text += "\n📋 Positions:"
+                    for p in positions:
+                        text += f"\n  • {p.get('asset_symbol','?')} — ${p.get('position_size_dollars',0):,.0f} ({p.get('shares',0)} shares @ ${p.get('entry_price',0):.2f})"
 
             elif event_type == 'news_update':
                 # Breaking news gets special indicator
