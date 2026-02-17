@@ -101,6 +101,16 @@ COMMANDS = {
         'aliases': ['/freq'],
         'category': 'config',
     },
+    '/buy': {
+        'description': 'Manually open a paper position. Usage: /buy TICKER SHARES [@ PRICE]',
+        'aliases': ['/long'],
+        'category': 'decisions',
+    },
+    '/sell': {
+        'description': 'Manually close a paper position. Usage: /sell TICKER [TRADE_ID]',
+        'aliases': ['/exit', '/close'],
+        'category': 'decisions',
+    },
     '/help': {
         'description': 'Show all available commands',
         'aliases': ['/h', '/?'],
@@ -317,6 +327,8 @@ class CommandProcessor:
             '/broker':    self._handle_broker,
             '/mode':      self._handle_mode,
             '/interval':  self._handle_interval,
+            '/buy':       self._handle_buy,
+            '/sell':      self._handle_sell,
         }
 
         handler = handlers.get(cmd)
@@ -584,6 +596,92 @@ class CommandProcessor:
             return {'ok': True, 'message': f'Interval will change to {new_interval} minutes next cycle.'}
         except ValueError:
             return {'ok': False, 'message': 'Usage: /interval <minutes>  (e.g. /interval 5)'}
+
+    def _handle_buy(self, args: str) -> dict:
+        """
+        /buy TICKER SHARES [@PRICE]
+        Examples:
+          /buy MSOS 100
+          /buy AAPL 50 @ 195.00
+          /buy NVDA 10
+        """
+        # Parse: "TICKER SHARES" or "TICKER SHARES @ PRICE"
+        parts = args.upper().replace('@', '').split()
+        if len(parts) < 2:
+            return {'ok': False, 'message': 'Usage: /buy TICKER SHARES  (e.g. /buy MSOS 100)'}
+
+        ticker = parts[0]
+        try:
+            shares = int(parts[1])
+        except ValueError:
+            return {'ok': False, 'message': f'Invalid share count: {parts[1]}'}
+
+        price_override = None
+        if len(parts) >= 3:
+            try:
+                price_override = float(parts[2])
+            except ValueError:
+                pass
+
+        result = self.orchestrator.paper_trading.manual_buy(
+            ticker, shares, price_override=price_override
+        )
+
+        if result['ok']:
+            # Send Slack notification
+            self.orchestrator.alerts.send_silent_log('trade_entry', {
+                'asset': ticker,
+                'shares': shares,
+                'price': result['entry_price'],
+                'size': result['position_size'],
+                'trade_id': result['trade_id'],
+                'reason': 'Manual buy via /buy command'
+            })
+            logger.info(f"🛒 /buy — {result['message']}")
+
+        return {'ok': result['ok'], 'message': result['message']}
+
+    def _handle_sell(self, args: str) -> dict:
+        """
+        /sell TICKER [TRADE_ID] [@PRICE]
+        Examples:
+          /sell MSOS
+          /sell MSOS 7
+          /sell MSFT @ 390.00
+        """
+        parts = args.upper().replace('@', '').split()
+        if not parts:
+            return {'ok': False, 'message': 'Usage: /sell TICKER [TRADE_ID]  (e.g. /sell MSOS)'}
+
+        ticker = parts[0]
+        trade_id = None
+        price_override = None
+
+        for p in parts[1:]:
+            try:
+                val = float(p)
+                if val == int(val) and val < 100000 and trade_id is None:
+                    trade_id = int(val)   # Looks like a trade_id
+                else:
+                    price_override = val  # Looks like a price
+            except ValueError:
+                pass
+
+        result = self.orchestrator.paper_trading.manual_sell(
+            ticker, trade_id=trade_id, price_override=price_override
+        )
+
+        if result['ok']:
+            # Send Slack notification
+            self.orchestrator.alerts.send_silent_log('trade_exit', {
+                'asset': ticker,
+                'reason': 'Manual sell via /sell command',
+                'pnl_pct': result.get('pnl_pct', 0),
+                'pnl_dollars': result.get('pnl_dollars', 0)
+            })
+            logger.info(f"💰 /sell — {result['message']}")
+
+        return {'ok': result['ok'], 'message': result['message']}
 
     # ── Response Writer ───────────────────────────────────────
 

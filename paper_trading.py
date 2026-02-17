@@ -712,6 +712,192 @@ class PaperTradingEngine:
         logger.debug(f"Using simulated price for {asset_symbol}: ${simulated_price:.2f}")
         return simulated_price
 
+    def manual_buy(self, ticker: str, shares: int,
+                   price_override: float = None, notes: str = '') -> dict:
+        """
+        Execute a manual paper buy for any ticker/share count.
+        Used by the /buy slash command.
+
+        Args:
+            ticker:         Stock symbol (e.g. 'MSOS', 'AAPL')
+            shares:         Number of shares to buy
+            price_override: Optional fixed entry price (skips live fetch)
+            notes:          Optional note stored with the trade
+
+        Returns:
+            dict with ok, trade_id, message, entry_price, position_size
+        """
+        ticker = ticker.upper().strip()
+
+        if shares <= 0:
+            return {'ok': False, 'message': 'Shares must be a positive integer.'}
+
+        # Fetch live price (or use override)
+        if price_override and price_override > 0:
+            entry_price = price_override
+            price_source = 'manual override'
+        else:
+            entry_price = self._get_current_price(ticker)
+            price_source = 'live'
+
+        if not entry_price or entry_price <= 0:
+            return {'ok': False, 'message': f'Could not fetch price for {ticker}.'}
+
+        position_size = round(entry_price * shares, 2)
+        entry_time = datetime.now()
+        entry_date = entry_time.strftime('%Y-%m-%d')
+        entry_time_str = entry_time.strftime('%H:%M:%S')
+
+        try:
+            self.connect()
+
+            # Use crisis_id = 0 for manual trades (no signal event)
+            self.cursor.execute('''
+                INSERT INTO trade_records
+                (crisis_id, asset_symbol, entry_date, entry_time, entry_price,
+                 entry_signal_score, defcon_at_entry, shares, position_size_dollars,
+                 exit_reason, status, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                0,                              # crisis_id = 0 → manual
+                ticker,
+                entry_date,
+                entry_time_str,
+                entry_price,
+                0,                              # signal_score: N/A for manual
+                5,                              # defcon: N/A, default 5
+                shares,
+                position_size,
+                None,                           # exit_reason: null until closed
+                'open',
+                notes or f'Manual buy via /buy command ({price_source} price)'
+            ))
+            self.conn.commit()
+            trade_id = self.cursor.lastrowid
+
+            logger.info(
+                f"✅ Manual buy executed: {shares} × {ticker} @ ${entry_price:.2f} "
+                f"= ${position_size:,.2f} (trade_id={trade_id})"
+            )
+            return {
+                'ok': True,
+                'trade_id': trade_id,
+                'ticker': ticker,
+                'shares': shares,
+                'entry_price': entry_price,
+                'position_size': position_size,
+                'message': (
+                    f"Bought {shares} shares of {ticker} @ ${entry_price:.2f} "
+                    f"= ${position_size:,.2f} paper position (trade #{trade_id})"
+                )
+            }
+
+        except Exception as e:
+            logger.error(f"Manual buy failed: {e}", exc_info=True)
+            return {'ok': False, 'message': f'Trade execution failed: {e}'}
+        finally:
+            self.disconnect()
+
+    def manual_sell(self, ticker: str, trade_id: int = None,
+                    price_override: float = None) -> dict:
+        """
+        Exit a manual or system paper position.
+        Used by the /sell slash command.
+
+        Args:
+            ticker:         Stock symbol to exit (closes most recent open position if trade_id omitted)
+            trade_id:       Specific trade_id to close (optional)
+            price_override: Optional fixed exit price
+
+        Returns:
+            dict with ok, message, pnl_dollars, pnl_pct
+        """
+        ticker = ticker.upper().strip()
+
+        try:
+            self.connect()
+
+            # Find the trade to close
+            if trade_id:
+                self.cursor.execute(
+                    "SELECT * FROM trade_records WHERE trade_id=? AND status='open'", (trade_id,)
+                )
+            else:
+                self.cursor.execute(
+                    "SELECT * FROM trade_records WHERE asset_symbol=? AND status='open' "
+                    "ORDER BY entry_date DESC, entry_time DESC LIMIT 1",
+                    (ticker,)
+                )
+
+            row = self.cursor.fetchone()
+            if not row:
+                return {
+                    'ok': False,
+                    'message': f'No open position found for {ticker}' +
+                               (f' (trade #{trade_id})' if trade_id else '')
+                }
+
+            trade = dict(row)
+            actual_trade_id = trade['trade_id']
+            entry_price = trade['entry_price']
+            shares = trade['shares']
+
+            # Get exit price
+            if price_override and price_override > 0:
+                exit_price = price_override
+            else:
+                exit_price = self._get_current_price(ticker)
+
+            if not exit_price or exit_price <= 0:
+                return {'ok': False, 'message': f'Could not fetch exit price for {ticker}.'}
+
+            pnl_dollars = round((exit_price - entry_price) * shares, 2)
+            pnl_pct = round(((exit_price - entry_price) / entry_price) * 100, 4)
+            exit_time = datetime.now()
+
+            self.cursor.execute('''
+                UPDATE trade_records
+                SET exit_date=?, exit_time=?, exit_price=?, exit_reason=?,
+                    profit_loss_dollars=?, profit_loss_percent=?, status=?
+                WHERE trade_id=?
+            ''', (
+                exit_time.strftime('%Y-%m-%d'),
+                exit_time.strftime('%H:%M:%S'),
+                exit_price,
+                'manual',
+                pnl_dollars,
+                pnl_pct,
+                'closed',
+                actual_trade_id
+            ))
+            self.conn.commit()
+
+            direction = '📈' if pnl_dollars >= 0 else '📉'
+            logger.info(
+                f"{direction} Manual sell: {shares} × {ticker} @ ${exit_price:.2f} | "
+                f"P&L: ${pnl_dollars:+,.2f} ({pnl_pct:+.2f}%) (trade #{actual_trade_id})"
+            )
+            return {
+                'ok': True,
+                'trade_id': actual_trade_id,
+                'ticker': ticker,
+                'shares': shares,
+                'entry_price': entry_price,
+                'exit_price': exit_price,
+                'pnl_dollars': pnl_dollars,
+                'pnl_pct': pnl_pct,
+                'message': (
+                    f"Sold {shares} shares of {ticker} @ ${exit_price:.2f} | "
+                    f"P&L: ${pnl_dollars:+,.2f} ({pnl_pct:+.2f}%)"
+                )
+            }
+
+        except Exception as e:
+            logger.error(f"Manual sell failed: {e}", exc_info=True)
+            return {'ok': False, 'message': f'Sell execution failed: {e}'}
+        finally:
+            self.disconnect()
+
 
 def main():
     """Test the paper trading engine"""
