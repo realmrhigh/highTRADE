@@ -299,28 +299,52 @@ class AlertSystem:
             elif event_type == 'news_update':
                 # Breaking news gets special indicator
                 breaking_indicator = "🚨 BREAKING" if data.get('breaking_count', 0) > 0 else "📰"
-
-                # Extract sentiment (handle both formats: dict or string)
                 sentiment = data.get('sentiment', 'neutral')
+                score = data.get('news_score', 0)
+
+                # Score bar visualization (10 blocks)
+                filled = int(score / 10)
+                score_bar = '█' * filled + '░' * (10 - filled)
 
                 text = (
                     f"{breaking_indicator} News Update\n"
-                    f"Crisis: {data.get('crisis_type', 'N/A')} | "
-                    f"Score: {data.get('news_score', 0):.1f}/100 | "
-                    f"Sentiment: {sentiment}\n"
-                    f"Articles: {data.get('article_count', 0)} ({data.get('new_article_count', 0)} new)"
+                    f"Score: [{score_bar}] {score:.1f}/100 | Crisis: {data.get('crisis_type', 'N/A')}\n"
+                    f"Sentiment: {sentiment} | Articles: {data.get('article_count', 0)} ({data.get('new_article_count', 0)} new)"
                 )
 
-                # Add top 3 latest headlines with urgency indicators
+                # Score components breakdown
+                components = data.get('score_components', {})
+                if components:
+                    text += (
+                        f"\n┌ sentiment={components.get('sentiment_net', 0):.0f} "
+                        f"concentration={components.get('signal_concentration', 0):.0f} "
+                        f"urgency={components.get('urgency_premium', 0):.0f} "
+                        f"specificity={components.get('keyword_specificity', 0):.0f}"
+                    )
+
+                # Gemini Flash summary if available
+                gemini = data.get('gemini')
+                if gemini:
+                    action = gemini.get('action', 'WAIT')
+                    coherence = gemini.get('coherence', 0)
+                    confidence = gemini.get('confidence', 0)
+                    theme = gemini.get('theme', '')
+                    reasoning = gemini.get('reasoning', '')
+                    action_emoji = '🟢' if action == 'BUY' else '🔴' if action == 'SELL' else '🟡' if action == 'HOLD' else '⚪'
+                    text += f"\n🤖 Gemini: {action_emoji} {action} | coherence={coherence:.2f} signal_conf={confidence:.2f}"
+                    if theme:
+                        text += f"\n   Theme: {theme}"
+                    if reasoning:
+                        text += f"\n   {reasoning[:180]}..."
+
+                # Top 3 headlines
                 if 'top_articles' in data and data['top_articles']:
                     text += "\n\nLatest Headlines:"
                     for i, article in enumerate(data['top_articles'][:3], 1):
                         source = article.get('source', 'Unknown')
                         title = article.get('title', 'No title')
-                        # Truncate long titles
                         if len(title) > 80:
                             title = title[:77] + '...'
-
                         urgency = article.get('urgency', 'routine')
                         urgency_emoji = '🔥' if urgency == 'breaking' else '⚡' if urgency == 'high' else '•'
                         text += f"\n{urgency_emoji} {i}. [{source}] {title}"

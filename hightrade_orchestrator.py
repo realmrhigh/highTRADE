@@ -88,6 +88,17 @@ class HighTradeOrchestrator:
             logger.warning("   Continuing with quantitative signals only")
             self.news_enabled = False
 
+        # Initialize Gemini AI analyzer
+        try:
+            from gemini_analyzer import GeminiAnalyzer
+            self.gemini = GeminiAnalyzer()
+            self.gemini_enabled = True
+            logger.info("🤖 Gemini AI Analyzer initialized (Flash + Pro)")
+        except Exception as e:
+            logger.warning(f"⚠️  Gemini initialization failed: {e}")
+            self.gemini = None
+            self.gemini_enabled = False
+
         self.previous_defcon = 5
         self.monitoring_cycles = 0
         self.alerts_sent = 0
@@ -310,27 +321,85 @@ class HighTradeOrchestrator:
 
                     if articles:
                         fresh_news_signal = self.news_signal_gen.generate_news_signal(articles, self.news_sentiment)
-                        logger.info(f"  📊 News Score: {fresh_news_signal['news_score']:.1f}/100")
+                        score = fresh_news_signal['news_score']
+                        logger.info(f"  📊 News Score: {score:.1f}/100")
                         logger.info(f"  📰 Crisis Type: {fresh_news_signal['dominant_crisis_type']}")
                         logger.info(f"  📰 Sentiment: {fresh_news_signal['sentiment_summary']}")
+                        components = fresh_news_signal.get('score_components', {})
+                        if components:
+                            logger.info(f"  📊 Components: sentiment={components.get('sentiment_net',0):.1f} concentration={components.get('signal_concentration',0):.1f} urgency={components.get('urgency_premium',0):.1f}")
 
                         # If fresh news has breaking override, use it instead
                         if fresh_news_signal['breaking_news_override']:
                             logger.warning(f"  🚨 BREAKING NEWS DETECTED: {fresh_news_signal['crisis_description']}")
                             news_signal = fresh_news_signal
 
-                        # Store fresh news signal in database
-                        self._record_news_signal(fresh_news_signal)
+                        # --- GEMINI LAYER 1: Flash analysis every cycle ---
+                        gemini_flash_result = None
+                        gemini_pro_result = None
+                        if self.gemini_enabled:
+                            # Build article dicts for Gemini (include description)
+                            articles_for_gemini = [
+                                {
+                                    'title': a.title,
+                                    'description': a.description[:300] if a.description else '',
+                                    'source': a.source,
+                                    'published_at': a.published_at.isoformat(),
+                                    'sentiment': getattr(r, 'sentiment', 'neutral'),
+                                    'urgency': getattr(r, 'urgency', 'routine'),
+                                    'confidence': getattr(r, 'confidence', 0),
+                                    'matched_keywords': getattr(r, 'matched_keywords', [])
+                                }
+                                for a, r in zip(
+                                    articles,
+                                    self.news_sentiment.analyze_batch(articles).get('results', [])
+                                )
+                            ] if articles else []
 
-                        # Detect new articles and send notification every cycle
+                            gemini_flash_result = self.gemini.run_flash_analysis(
+                                articles_for_gemini,
+                                score_components=components,
+                                sentiment_summary=fresh_news_signal['sentiment_summary'],
+                                crisis_type=fresh_news_signal['dominant_crisis_type']
+                            )
+
+                            # --- GEMINI LAYER 2: Pro deep analysis on elevated signals ---
+                            defcon_changed = (self.previous_defcon != self.monitor.defcon_level)
+                            if self.gemini.should_run_pro(score, fresh_news_signal['breaking_count'], defcon_changed):
+                                logger.info(f"  🧠 Elevated signal ({score:.1f}) — triggering Pro analysis...")
+                                open_positions = self.paper_trading.get_open_positions()
+                                gemini_pro_result = self.gemini.run_pro_analysis(
+                                    articles_for_gemini,
+                                    score_components=components,
+                                    sentiment_summary=fresh_news_signal['sentiment_summary'],
+                                    crisis_type=fresh_news_signal['dominant_crisis_type'],
+                                    news_score=score,
+                                    flash_analysis=gemini_flash_result,
+                                    current_defcon=self.previous_defcon,
+                                    positions=open_positions
+                                )
+
+                        # Store full signal with Gemini Flash embedded
+                        signal_id = self._record_news_signal(
+                            fresh_news_signal,
+                            articles_full=articles,
+                            gemini_flash=gemini_flash_result
+                        )
+
+                        # Save Pro analysis to gemini_analysis table
+                        if gemini_pro_result and signal_id and self.gemini_enabled:
+                            self.gemini.save_analysis_to_db(
+                                str(DB_PATH), signal_id, gemini_pro_result,
+                                trigger_type='elevated' if score >= 40 else 'breaking'
+                            )
+
+                        # Detect new articles for Slack notification
                         new_count, latest_articles = self._detect_new_news(fresh_news_signal)
 
                         if fresh_news_signal['article_count'] > 0:
-                            # Extract sentiment for notification (handle both formats)
+                            # Extract dominant sentiment label
                             sentiment_text = fresh_news_signal['sentiment_summary']
-                            # Parse "Bearish: 27%, Bullish: 9%, Neutral: 64%" to just dominant sentiment
                             if ':' in sentiment_text:
-                                # Extract dominant sentiment (highest percentage)
                                 parts = sentiment_text.split(',')
                                 sentiments = {}
                                 for part in parts:
@@ -341,15 +410,28 @@ class HighTradeOrchestrator:
                             else:
                                 dominant = sentiment_text.lower()
 
+                            # Build Gemini summary for Slack if available
+                            gemini_summary = None
+                            if gemini_flash_result:
+                                gemini_summary = {
+                                    'action': gemini_flash_result.get('recommended_action', 'WAIT'),
+                                    'coherence': gemini_flash_result.get('narrative_coherence', 0),
+                                    'confidence': gemini_flash_result.get('confidence_in_signal', 0),
+                                    'theme': gemini_flash_result.get('dominant_theme', ''),
+                                    'reasoning': gemini_flash_result.get('reasoning', '')[:200]
+                                }
+
                             # Send silent notification to #logs-silent every cycle
                             self.alerts.send_silent_log('news_update', {
-                                'news_score': fresh_news_signal['news_score'],
+                                'news_score': score,
                                 'crisis_type': fresh_news_signal['dominant_crisis_type'],
                                 'sentiment': dominant,
                                 'article_count': fresh_news_signal['article_count'],
                                 'new_article_count': new_count,
                                 'breaking_count': fresh_news_signal['breaking_count'],
-                                'top_articles': latest_articles[:3],  # Show top 3 newest
+                                'score_components': components,
+                                'top_articles': latest_articles[:3],
+                                'gemini': gemini_summary,
                                 'timestamp': datetime.now().isoformat()
                             })
                             logger.info(f"  ✅ News notification sent to #logs-silent ({new_count} new, {fresh_news_signal['article_count']} total)")
@@ -687,19 +769,37 @@ Check dashboard for detailed analysis.
             logger.error(traceback.format_exc())
             return None
 
-    def _record_news_signal(self, news_signal):
-        """Store news signal in database"""
+    def _record_news_signal(self, news_signal, articles_full=None, gemini_flash=None):
+        """Store news signal in database with full rich data for LLM access"""
         try:
             import sqlite3
             conn = sqlite3.connect(str(DB_PATH))
             cursor = conn.cursor()
 
+            # Serialize all articles with full description (not just top 5)
+            articles_full_json = None
+            if articles_full:
+                articles_full_json = json.dumps([
+                    {
+                        'title': a.title,
+                        'description': a.description[:400] if a.description else '',
+                        'source': a.source,
+                        'published_at': a.published_at.isoformat(),
+                        'url': a.url,
+                        'relevance_score': a.relevance_score
+                    }
+                    for a in articles_full
+                ])
+
             cursor.execute("""
                 INSERT INTO news_signals
                 (news_score, dominant_crisis_type, crisis_description,
                  breaking_news_override, recommended_defcon, article_count,
-                 breaking_count, avg_confidence, sentiment_summary, articles_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 breaking_count, avg_confidence, sentiment_summary, articles_json,
+                 sentiment_net_score, signal_concentration, crisis_distribution_json,
+                 score_components_json, keyword_hits_json, articles_full_json,
+                 gemini_flash_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 news_signal['news_score'],
                 news_signal['dominant_crisis_type'],
@@ -710,15 +810,27 @@ Check dashboard for detailed analysis.
                 news_signal['breaking_count'],
                 news_signal['avg_confidence'],
                 news_signal['sentiment_summary'],
-                json.dumps(news_signal['contributing_articles'][:5])  # Store top 5
+                json.dumps(news_signal['contributing_articles'][:5]),  # legacy top-5
+                news_signal.get('sentiment_net_score', 50.0),
+                news_signal.get('signal_concentration', 0.0),
+                json.dumps(news_signal.get('crisis_distribution', {})),
+                json.dumps(news_signal.get('score_components', {})),
+                json.dumps(news_signal.get('keyword_hits', {})),
+                articles_full_json,
+                json.dumps(gemini_flash) if gemini_flash else None
             ))
 
             conn.commit()
+            signal_id = cursor.lastrowid
             conn.close()
-            logger.debug("News signal recorded to database")
+            logger.debug(f"News signal recorded to database (ID={signal_id})")
+            return signal_id
 
         except Exception as e:
             logger.error(f"Failed to record news signal: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
 
     def _detect_new_news(self, fresh_news_signal: dict) -> tuple:
         """

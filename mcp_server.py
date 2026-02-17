@@ -255,36 +255,70 @@ class HighTradeMCPServer:
             return {"error": str(e)}
 
     def _get_recent_news(self, limit: int = 10) -> Dict:
-        """Get recent news signals"""
+        """Get recent news signals with full scoring context and Gemini analysis"""
         try:
             conn = sqlite3.connect(str(DB_PATH))
             cursor = conn.cursor()
 
             cursor.execute("""
-                SELECT timestamp, news_score, dominant_crisis_type, crisis_description,
-                       breaking_news_override, recommended_defcon, article_count,
-                       breaking_count, sentiment_summary
+                SELECT news_signal_id, timestamp, news_score, dominant_crisis_type,
+                       crisis_description, breaking_news_override, recommended_defcon,
+                       article_count, breaking_count, avg_confidence, sentiment_summary,
+                       sentiment_net_score, signal_concentration,
+                       crisis_distribution_json, score_components_json, keyword_hits_json
                 FROM news_signals
                 ORDER BY timestamp DESC
                 LIMIT ?
             """, (limit,))
 
+            def safe_json(val):
+                try:
+                    return json.loads(val) if val else None
+                except Exception:
+                    return None
+
             news_signals = []
             for row in cursor.fetchall():
-                news_signals.append({
-                    "timestamp": row[0],
-                    "news_score": round(row[1], 1) if row[1] else 0,
-                    "crisis_type": row[2],
-                    "description": row[3],
-                    "breaking_override": bool(row[4]),
-                    "recommended_defcon": row[5],
-                    "article_count": row[6],
-                    "breaking_count": row[7],
-                    "sentiment": row[8]
-                })
+                signal_id = row[0]
+
+                # Check if any Gemini Pro analysis exists for this signal
+                cursor2 = conn.cursor()
+                cursor2.execute("""
+                    SELECT recommended_action, confidence_in_signal, reasoning
+                    FROM gemini_analysis WHERE news_signal_id = ?
+                    ORDER BY created_at DESC LIMIT 1
+                """, (signal_id,))
+                gemini_row = cursor2.fetchone()
+
+                entry = {
+                    "news_signal_id": signal_id,
+                    "timestamp": row[1],
+                    "news_score": round(row[2], 2) if row[2] else 0,
+                    "crisis_type": row[3],
+                    "description": row[4],
+                    "breaking_override": bool(row[5]),
+                    "recommended_defcon": row[6],
+                    "article_count": row[7],
+                    "breaking_count": row[8],
+                    "avg_confidence": round(row[9], 1) if row[9] else 0,
+                    "sentiment": row[10],
+                    "sentiment_net_score": row[11],
+                    "signal_concentration": row[12],
+                    "crisis_distribution": safe_json(row[13]),
+                    "score_components": safe_json(row[14]),
+                    "keyword_hits": safe_json(row[15]),
+                    "gemini_pro_action": gemini_row[0] if gemini_row else None,
+                    "gemini_pro_confidence": gemini_row[1] if gemini_row else None,
+                    "gemini_pro_reasoning": gemini_row[2][:200] if gemini_row and gemini_row[2] else None
+                }
+                news_signals.append(entry)
 
             conn.close()
-            return {"news": news_signals, "count": len(news_signals)}
+            return {
+                "news": news_signals,
+                "count": len(news_signals),
+                "tip": "Use get_article_details(news_signal_id) for full articles + Gemini analyses"
+            }
 
         except Exception as e:
             logger.error(f"Error getting news: {e}")
@@ -330,40 +364,91 @@ class HighTradeMCPServer:
             return {"error": str(e)}
     
     def _get_article_details(self, news_signal_id: int) -> Dict:
-        """Get full article details for a news signal"""
+        """Get full article details for a news signal including Gemini analyses"""
         try:
             conn = sqlite3.connect(str(DB_PATH))
             cursor = conn.cursor()
-            
+
             cursor.execute("""
-                SELECT timestamp, news_score, dominant_crisis_type, crisis_description,
-                       breaking_news_override, recommended_defcon, article_count,
-                       breaking_count, sentiment_summary
+                SELECT news_signal_id, timestamp, news_score, dominant_crisis_type,
+                       crisis_description, breaking_news_override, recommended_defcon,
+                       article_count, breaking_count, avg_confidence, sentiment_summary,
+                       sentiment_net_score, signal_concentration,
+                       crisis_distribution_json, score_components_json,
+                       keyword_hits_json, articles_full_json, gemini_flash_json
                 FROM news_signals
-                WHERE id = ?
+                WHERE news_signal_id = ?
             """, (news_signal_id,))
-            
+
             row = cursor.fetchone()
-            if row:
-                result = {
-                    "timestamp": row[0],
-                    "news_score": round(row[1], 1) if row[1] else 0,
-                    "crisis_type": row[2],
-                    "description": row[3],
-                    "breaking_override": bool(row[4]),
-                    "recommended_defcon": row[5],
-                    "article_count": row[6],
-                    "breaking_count": row[7],
-                    "sentiment": row[8]
-                }
-            else:
-                result = {"error": "News signal not found"}
-            
+            if not row:
+                conn.close()
+                return {"error": f"News signal {news_signal_id} not found"}
+
+            # Parse JSON fields safely
+            def safe_json(val):
+                try:
+                    return json.loads(val) if val else None
+                except Exception:
+                    return None
+
+            result = {
+                "news_signal_id": row[0],
+                "timestamp": row[1],
+                "news_score": round(row[2], 2) if row[2] else 0,
+                "crisis_type": row[3],
+                "description": row[4],
+                "breaking_override": bool(row[5]),
+                "recommended_defcon": row[6],
+                "article_count": row[7],
+                "breaking_count": row[8],
+                "avg_confidence": round(row[9], 1) if row[9] else 0,
+                "sentiment_summary": row[10],
+                "sentiment_net_score": row[11],
+                "signal_concentration": row[12],
+                "crisis_distribution": safe_json(row[13]),
+                "score_components": safe_json(row[14]),
+                "keyword_hits": safe_json(row[15]),
+                "articles": safe_json(row[16]),   # ALL articles with full descriptions
+                "gemini_flash_analysis": safe_json(row[17])
+            }
+
+            # Fetch any Gemini Pro analyses linked to this signal
+            cursor.execute("""
+                SELECT model_used, trigger_type, narrative_coherence, hidden_risks,
+                       contrarian_signals, market_context, confidence_in_signal,
+                       recommended_action, reasoning, input_tokens, output_tokens, created_at
+                FROM gemini_analysis
+                WHERE news_signal_id = ?
+                ORDER BY created_at DESC
+            """, (news_signal_id,))
+
+            pro_rows = cursor.fetchall()
+            if pro_rows:
+                result["gemini_pro_analyses"] = [
+                    {
+                        "model": r[0],
+                        "trigger_type": r[1],
+                        "narrative_coherence": r[2],
+                        "hidden_risks": safe_json(r[3]),
+                        "contrarian_signals": r[4],
+                        "market_context": r[5],
+                        "confidence_in_signal": r[6],
+                        "recommended_action": r[7],
+                        "reasoning": r[8],
+                        "tokens": {"input": r[9], "output": r[10]},
+                        "created_at": r[11]
+                    }
+                    for r in pro_rows
+                ]
+
             conn.close()
             return result
-            
+
         except Exception as e:
             logger.error(f"Error getting article details: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {"error": str(e)}
     
     def _get_system_architecture(self) -> Dict:
