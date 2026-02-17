@@ -99,6 +99,35 @@ class HighTradeOrchestrator:
             self.gemini = None
             self.gemini_enabled = False
 
+        # Initialize Congressional Trading Tracker
+        try:
+            from congressional_tracker import CongressionalTracker
+            self.congressional = CongressionalTracker(db_path=str(DB_PATH))
+            self.congressional_enabled = True
+            self._congressional_scan_cycle = 0   # Scan every N cycles (not every cycle)
+            self._congressional_scan_interval = 4  # Every ~60 min (4 × 15-min cycles)
+            logger.info("🏛️ Congressional Trading Tracker initialized")
+        except Exception as e:
+            logger.warning(f"⚠️  Congressional tracker init failed: {e}")
+            self.congressional = None
+            self.congressional_enabled = False
+
+        # Initialize FRED Macro Tracker
+        try:
+            from fred_macro import FREDMacroTracker
+            self.fred = FREDMacroTracker(db_path=str(DB_PATH))
+            self.fred_enabled = self.fred.api_key is not None
+            self._fred_scan_cycle = 0
+            self._fred_scan_interval = 4   # Every ~60 min (data updates slowly)
+            if self.fred_enabled:
+                logger.info("📊 FRED Macro Tracker initialized (API key found)")
+            else:
+                logger.info("📊 FRED Macro Tracker initialized (no API key — add fred_api_key to config)")
+        except Exception as e:
+            logger.warning(f"⚠️  FRED macro tracker init failed: {e}")
+            self.fred = None
+            self.fred_enabled = False
+
         self.previous_defcon = 5
         self.monitoring_cycles = 0
         self.alerts_sent = 0
@@ -441,6 +470,83 @@ class HighTradeOrchestrator:
                 except Exception as e:
                     logger.warning(f"  ⚠️  News fetch failed: {e} - continuing with quantitative only")
                     # Keep breaking_db_signal if we have it
+
+            # ── Congressional Trading Tracker (every ~60 min) ──────────────
+            congressional_result = None
+            self._congressional_scan_cycle = getattr(self, '_congressional_scan_cycle', 0) + 1
+            if (self.congressional_enabled and
+                    self._congressional_scan_cycle >= self._congressional_scan_interval):
+                self._congressional_scan_cycle = 0
+                logger.info("🏛️ Running congressional trading scan...")
+                try:
+                    congressional_result = self.congressional.run_full_scan(days_back=30)
+                    if congressional_result.get('has_clusters'):
+                        top = congressional_result['clusters'][0]
+                        logger.info(
+                            f"  🎯 TOP CLUSTER: {top['ticker']} — "
+                            f"{top['buy_count']} politicians, strength={top['signal_strength']:.0f}, "
+                            f"bipartisan={top['bipartisan']}"
+                        )
+                        # Send Slack alert for strong cluster signals
+                        if top['signal_strength'] >= 50:
+                            self.alerts.send_silent_log('congressional_cluster', {
+                                'ticker': top['ticker'],
+                                'buy_count': top['buy_count'],
+                                'politicians': top['politicians'][:5],
+                                'bipartisan': top['bipartisan'],
+                                'committee_relevance': top.get('committee_relevance', []),
+                                'signal_strength': top['signal_strength'],
+                                'total_amount': top.get('total_estimated_amount', 0),
+                                'window_days': top.get('window_days', 30)
+                            })
+                    else:
+                        logger.info(f"  🏛️ {congressional_result['significant_trades']} significant trades, no clusters detected")
+                except Exception as e:
+                    logger.warning(f"  ⚠️ Congressional scan failed: {e}")
+            elif self.congressional_enabled:
+                logger.debug(f"  🏛️ Congressional scan: {self._congressional_scan_interval - self._congressional_scan_cycle} cycles until next scan")
+
+            # ── FRED Macro Tracker (every ~60 min) ────────────────────────
+            macro_result = None
+            self._fred_scan_cycle = getattr(self, '_fred_scan_cycle', 0) + 1
+            if self.fred_enabled and self._fred_scan_cycle >= self._fred_scan_interval:
+                self._fred_scan_cycle = 0
+                logger.info("📊 Running FRED macro analysis...")
+                try:
+                    macro_result = self.fred.run_full_analysis()
+                    self.fred.save_to_db(macro_result)
+                    macro_score = macro_result.get('macro_score', 50)
+                    defcon_mod = macro_result.get('defcon_modifier', 0)
+                    bearish = macro_result.get('bearish_count', 0)
+                    logger.info(f"  📊 Macro Score: {macro_score:.0f}/100 | DEFCON modifier: {defcon_mod:+.1f} | Bearish signals: {bearish}")
+
+                    # Send Slack macro update if there are noteworthy signals
+                    if bearish >= 2 or macro_score < 35:
+                        self.alerts.send_silent_log('macro_update', {
+                            'macro_score': macro_score,
+                            'defcon_modifier': defcon_mod,
+                            'bearish_count': bearish,
+                            'bullish_count': macro_result.get('bullish_count', 0),
+                            'signals': macro_result.get('macro_signals', []),
+                            'yield_curve': macro_result.get('data', {}).get('yield_curve_spread'),
+                            'fed_funds': macro_result.get('data', {}).get('fed_funds_rate'),
+                            'unemployment': macro_result.get('data', {}).get('unemployment_rate'),
+                            'hy_oas_bps': macro_result.get('data', {}).get('hy_oas_bps')
+                        })
+                except Exception as e:
+                    logger.warning(f"  ⚠️ FRED macro scan failed: {e}")
+            elif self.fred_enabled:
+                # Pull latest from DB for DEFCON calculation even if not scanning
+                try:
+                    macro_result = self.fred.get_latest_from_db()
+                    if macro_result:
+                        macro_result = {
+                            'available': True,
+                            'macro_score': macro_result.get('macro_score', 50),
+                            'defcon_modifier': macro_result.get('defcon_modifier', 0)
+                        }
+                except Exception:
+                    pass
 
             # Calculate and record
             logger.info("📈 Calculating signal scores...")

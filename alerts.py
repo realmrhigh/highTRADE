@@ -349,6 +349,65 @@ class AlertSystem:
                         urgency_emoji = '🔥' if urgency == 'breaking' else '⚡' if urgency == 'high' else '•'
                         text += f"\n{urgency_emoji} {i}. [{source}] {title}"
 
+            elif event_type == 'congressional_cluster':
+                ticker = data.get('ticker', '?')
+                count = data.get('buy_count', 0)
+                strength = data.get('signal_strength', 0)
+                bipartisan = data.get('bipartisan', False)
+                committees = data.get('committee_relevance', [])
+                politicians = data.get('politicians', [])
+                amount = data.get('total_amount', 0)
+                window = data.get('window_days', 30)
+
+                bipartisan_flag = " 🤝 BIPARTISAN" if bipartisan else ""
+                committee_flag = f" | Committees: {', '.join(committees)}" if committees else ""
+                strength_bar = '█' * int(strength / 10) + '░' * (10 - int(strength / 10))
+
+                text = (
+                    f"🏛️ Congressional Cluster Buy Signal{bipartisan_flag}\n"
+                    f"Ticker: ${ticker} | {count} politicians in {window}-day window\n"
+                    f"Signal Strength: [{strength_bar}] {strength:.0f}/100{committee_flag}\n"
+                    f"Est. Total: ${amount:,.0f}\n"
+                    f"Politicians: {', '.join(politicians[:5])}"
+                )
+
+            elif event_type == 'macro_update':
+                macro_score = data.get('macro_score', 50)
+                defcon_mod = data.get('defcon_modifier', 0)
+                bearish = data.get('bearish_count', 0)
+                bullish = data.get('bullish_count', 0)
+                signals = data.get('signals', [])
+
+                score_bar = '█' * int(macro_score / 10) + '░' * (10 - int(macro_score / 10))
+                mod_str = f"{defcon_mod:+.1f}" if defcon_mod != 0 else "±0"
+
+                text = (
+                    f"📊 Macro Environment Alert\n"
+                    f"Score: [{score_bar}] {macro_score:.0f}/100 | DEFCON modifier: {mod_str}\n"
+                    f"Signals: {bearish} bearish, {bullish} bullish"
+                )
+
+                # Key indicators
+                yc = data.get('yield_curve')
+                ff = data.get('fed_funds')
+                ur = data.get('unemployment')
+                hy = data.get('hy_oas_bps')
+                if yc is not None:
+                    text += f"\n• Yield Curve: {yc:+.2f}%"
+                if ff is not None:
+                    text += f" | Fed Funds: {ff:.2f}%"
+                if ur is not None:
+                    text += f" | Unemployment: {ur:.1f}%"
+                if hy is not None:
+                    text += f" | HY OAS: {hy:.0f}bps"
+
+                # Top bearish signals
+                bearish_sigs = [s for s in signals if s.get('severity') == 'bearish'][:2]
+                if bearish_sigs:
+                    text += "\n⚠️  Key risks:"
+                    for sig in bearish_sigs:
+                        text += f"\n  🔴 {sig.get('description', '')}"
+
             else:
                 text = f"{event_type}: {json.dumps(data, indent=2)}"
 

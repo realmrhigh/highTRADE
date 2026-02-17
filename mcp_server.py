@@ -142,6 +142,39 @@ class HighTradeMCPServer:
                         "properties": {}
                     }
                 ),
+                Tool(
+                    name="get_congressional_trades",
+                    description="Get recent congressional stock trades, cluster buy signals, and political alpha indicators",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "days_back": {
+                                "type": "number",
+                                "description": "How many days back to look (default: 30)",
+                                "default": 30
+                            },
+                            "min_signal_strength": {
+                                "type": "number",
+                                "description": "Minimum cluster signal strength to include (default: 0)",
+                                "default": 0
+                            }
+                        }
+                    }
+                ),
+                Tool(
+                    name="get_macro_environment",
+                    description="Get FRED macroeconomic indicators: yield curve, fed funds rate, unemployment, M2, credit spreads, and composite macro score",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "limit": {
+                                "type": "number",
+                                "description": "Number of historical macro snapshots to include (default: 5)",
+                                "default": 5
+                            }
+                        }
+                    }
+                ),
             ]
 
         @self.server.call_tool()
@@ -162,6 +195,13 @@ class HighTradeMCPServer:
                     result = self._get_article_details(arguments.get("news_signal_id"))
                 elif name == "get_system_architecture":
                     result = self._get_system_architecture()
+                elif name == "get_congressional_trades":
+                    days_back = arguments.get("days_back", 30)
+                    min_strength = arguments.get("min_signal_strength", 0)
+                    result = self._get_congressional_trades(days_back, min_strength)
+                elif name == "get_macro_environment":
+                    limit = arguments.get("limit", 5)
+                    result = self._get_macro_environment(limit)
                 else:
                     result = {"error": f"Unknown tool: {name}"}
 
@@ -466,12 +506,138 @@ class HighTradeMCPServer:
             ],
             "components": {
                 "monitoring": "Real-time DEFCON and signal scoring",
-                "news_analysis": "Multi-source news aggregation and sentiment",
-                "claude_feedback": "Enhanced analysis and confidence adjustments",
+                "news_analysis": "Multi-source news aggregation and sentiment (Gemini Flash/Pro)",
+                "congressional_tracker": "House/Senate stock disclosures + cluster buy detection",
+                "fred_macro": "FRED macroeconomic indicators: yield curve, M2, credit spreads",
+                "gemini_ai": "Flash analysis every cycle, Pro on elevated signals",
+                "claude_feedback": "Enhanced analysis and confidence adjustments via MCP",
                 "paper_trading": "Simulated trade execution and tracking",
                 "mcp_server": "Remote monitoring via Claude Desktop"
-            }
+            },
+            "data_sources": [
+                "Alpha Vantage (VIX, market prices, bond yields)",
+                "Bloomberg, CNBC, Reuters, MarketWatch, WSJ, FT (news RSS)",
+                "House Stock Watcher + Senate Stock Watcher (congressional trades)",
+                "Capitol Trades API (congressional trade backup)",
+                "FRED API (macroeconomic indicators - requires free API key)",
+                "SEC EDGAR Form 4 (insider trading)",
+                "Gemini 2.5 Flash + Pro (AI market analysis)"
+            ]
         }
+
+    def _get_congressional_trades(self, days_back: int = 30, min_signal_strength: float = 0) -> Dict:
+        """Get congressional trading data from DB"""
+        try:
+            conn = sqlite3.connect(str(DB_PATH))
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            # Recent trades
+            cutoff = (datetime.now() - __import__('datetime').timedelta(days=days_back)).strftime('%Y-%m-%d')
+            cursor.execute('''
+                SELECT source, politician, party, ticker, direction, amount,
+                       disclosure_date, transaction_date, asset_description, committee_hint
+                FROM congressional_trades
+                WHERE disclosure_date >= ?
+                ORDER BY amount DESC, disclosure_date DESC
+                LIMIT 50
+            ''', (cutoff,))
+            trades = [dict(row) for row in cursor.fetchall()]
+
+            # Cluster signals
+            cursor.execute('''
+                SELECT ticker, buy_count, politicians_json, total_amount, bipartisan,
+                       committee_relevance, signal_strength, window_days, created_at
+                FROM congressional_cluster_signals
+                WHERE signal_strength >= ?
+                ORDER BY signal_strength DESC, created_at DESC
+                LIMIT 20
+            ''', (min_signal_strength,))
+            raw_clusters = cursor.fetchall()
+            clusters = []
+            for row in raw_clusters:
+                c = dict(row)
+                try:
+                    c['politicians'] = json.loads(c.get('politicians_json', '[]'))
+                    c['committee_relevance'] = json.loads(c.get('committee_relevance', '[]'))
+                except Exception:
+                    pass
+                clusters.append(c)
+
+            conn.close()
+
+            # Summary stats
+            buy_count = sum(1 for t in trades if t.get('direction') == 'buy')
+            sell_count = sum(1 for t in trades if t.get('direction') == 'sell')
+            tickers_bought = list({t['ticker'] for t in trades if t.get('direction') == 'buy'})[:10]
+
+            return {
+                'days_back': days_back,
+                'total_trades': len(trades),
+                'buy_count': buy_count,
+                'sell_count': sell_count,
+                'top_tickers_bought': tickers_bought,
+                'cluster_signals': clusters,
+                'recent_trades': trades[:25],
+                'data_sources': ['house_stock_watcher', 'senate_stock_watcher', 'capitol_trades']
+            }
+
+        except Exception as e:
+            return {'error': str(e), 'congressional_trades': [], 'clusters': []}
+
+    def _get_macro_environment(self, limit: int = 5) -> Dict:
+        """Get FRED macro economic data from DB"""
+        try:
+            conn = sqlite3.connect(str(DB_PATH))
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                SELECT yield_curve_spread, fed_funds_rate, unemployment_rate,
+                       m2_yoy_change, hy_oas_bps, consumer_sentiment,
+                       rate_10y, rate_2y, macro_score, defcon_modifier,
+                       bearish_signals, bullish_signals, signals_json, created_at
+                FROM macro_indicators
+                ORDER BY created_at DESC
+                LIMIT ?
+            ''', (limit,))
+
+            rows = cursor.fetchall()
+            conn.close()
+
+            snapshots = []
+            for row in rows:
+                d = dict(row)
+                try:
+                    d['signals'] = json.loads(d.get('signals_json', '[]'))
+                except Exception:
+                    d['signals'] = []
+                snapshots.append(d)
+
+            latest = snapshots[0] if snapshots else {}
+
+            return {
+                'has_data': len(snapshots) > 0,
+                'latest': latest,
+                'history': snapshots,
+                'interpretation': {
+                    'yield_curve': 'inverted (recession risk)' if latest.get('yield_curve_spread', 1) < 0
+                                   else 'flat (slowing)' if latest.get('yield_curve_spread', 1) < 0.5
+                                   else 'normal',
+                    'macro_score': latest.get('macro_score', 50),
+                    'defcon_modifier': latest.get('defcon_modifier', 0),
+                    'bearish_signals': latest.get('bearish_signals', 0),
+                    'bullish_signals': latest.get('bullish_signals', 0)
+                },
+                'fred_api_info': 'Get free key at https://fred.stlouisfed.org/docs/api/api_key.html'
+            }
+
+        except Exception as e:
+            return {
+                'error': str(e),
+                'has_data': False,
+                'note': 'Add fred_api_key to orchestrator_config.json to enable FRED macro data'
+            }
 
     async def run(self):
         """Run the MCP server"""
