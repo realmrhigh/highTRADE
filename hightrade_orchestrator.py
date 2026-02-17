@@ -960,9 +960,10 @@ Check dashboard for detailed analysis.
             conn = sqlite3.connect(str(DB_PATH))
             cursor = conn.cursor()
 
-            # Get timestamp and articles from last news signal (within last 2 hours)
+            # Get timestamp and ALL articles from last news signal
+            # Use articles_full_json (full article list), fall back to articles_json (legacy top-5)
             cursor.execute("""
-                SELECT timestamp, articles_json
+                SELECT timestamp, articles_full_json, articles_json
                 FROM news_signals
                 ORDER BY timestamp DESC
                 LIMIT 1
@@ -987,8 +988,9 @@ Check dashboard for detailed analysis.
             if time_since_last > 60:
                 logger.info(f"  ⏰ Last signal was {time_since_last:.0f} min ago - checking for new articles")
 
-            # Parse last signal's articles
-            last_articles_json = json.loads(last_signal[1]) if last_signal[1] else []
+            # Prefer full article list; fall back to legacy top-5
+            last_articles_raw = last_signal[1] or last_signal[2]
+            last_articles_json = json.loads(last_articles_raw) if last_articles_raw else []
             last_article_urls = {a.get('url') for a in last_articles_json if a.get('url')}
 
             # Find truly new articles (not in last signal)

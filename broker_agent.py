@@ -521,10 +521,19 @@ class AutonomousBroker:
             if self.auto_execute:
                 logger.info(f"🤖 BROKER: Executing autonomous sell ({exit['asset_symbol']})...")
 
+                # Map decision type to valid exit_reason
+                _reason_map = {
+                    'SELL_PROFIT_TARGET': 'profit_target',
+                    'SELL_STOP_LOSS': 'stop_loss',
+                    'SELL_EARLY_PROFIT': 'profit_target',
+                    'SELL_MANUAL': 'manual',
+                }
+                exit_reason = _reason_map.get(exit['decision_type'], 'manual')
+
                 # Execute the exit
                 success = self.decision_engine.paper_trading.exit_position(
                     exit['trade_id'],
-                    exit['decision_type'].split('_')[1].lower(),  # Extract reason
+                    exit_reason,
                     exit['current_price']
                 )
 
