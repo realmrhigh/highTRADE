@@ -21,6 +21,101 @@ DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
 logger = logging.getLogger(__name__)
 
 
+# ─── Rebound Watchlist ────────────────────────────────────────────────────────
+
+def _queue_rebound_watchlist(exit: dict) -> None:
+    """
+    Called immediately after a stop-loss exit is confirmed.
+    Queues the ticker into acquisition_watchlist with source='stop_loss_rebound'
+    so the researcher → analyst → verifier pipeline can find a re-entry point
+    and attempt to recoup the loss.
+
+    Entry conditions are seeded with:
+    - The exit price as a soft ceiling (don't re-enter above where we got stopped)
+    - A note to watch for bottoming / reversal signals
+    - The loss amount so the analyst knows the recovery target
+    """
+    ticker      = exit.get('asset_symbol', '')
+    exit_price  = exit.get('current_price', 0)
+    entry_price = exit.get('entry_price', 0)
+    loss_pct    = exit.get('profit_loss_pct', 0) * 100      # e.g. -3.2
+    loss_dollars = exit.get('profit_loss_dollars', 0)
+    date_str    = datetime.now().strftime('%Y-%m-%d')
+
+    if not ticker:
+        return
+
+    entry_conditions = (
+        f"REBOUND ENTRY — exited via stop-loss at ${exit_price:.2f} "
+        f"({loss_pct:.1f}%, ${loss_dollars:,.0f}). "
+        f"Original entry was ${entry_price:.2f}. "
+        f"Look for bottoming pattern and reversal signals below ${exit_price:.2f}. "
+        f"Target: recover the stop-loss loss before seeking new profit."
+    )
+    notes = (
+        f"Auto-queued from stop-loss exit on {date_str}. "
+        f"Loss to recover: ${abs(loss_dollars):,.0f} ({abs(loss_pct):.1f}%)"
+    )
+
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS acquisition_watchlist (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                date_added          TEXT NOT NULL,
+                ticker              TEXT NOT NULL,
+                source              TEXT DEFAULT 'daily_briefing',
+                market_regime       TEXT,
+                model_confidence    REAL,
+                entry_conditions    TEXT,
+                biggest_risk        TEXT,
+                biggest_opportunity TEXT,
+                status              TEXT DEFAULT 'pending',
+                notes               TEXT,
+                created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(date_added, ticker)
+            )
+        """)
+        # Use INSERT OR REPLACE so if the daily briefing already queued
+        # the same ticker today, the rebound context takes precedence.
+        conn.execute("""
+            INSERT OR REPLACE INTO acquisition_watchlist
+                (date_added, ticker, source, market_regime, model_confidence,
+                 entry_conditions, biggest_risk, biggest_opportunity, status, notes)
+            VALUES (?, ?, 'stop_loss_rebound', 'recovery', 0.5, ?, ?, ?, 'pending', ?)
+        """, (
+            date_str,
+            ticker.upper().strip(),
+            entry_conditions,
+            f"Further downside below ${exit_price:.2f} if macro deteriorates.",
+            f"Price recovers to prior entry (${entry_price:.2f}) — pipeline validates re-entry momentum.",
+            notes,
+        ))
+        conn.commit()
+        conn.close()
+        logger.info(
+            f"  📥 Rebound watchlist: {ticker} queued for recovery research "
+            f"(loss: {loss_pct:.1f}%, ${abs(loss_dollars):,.0f})"
+        )
+
+        # Notify #logs-silent so the team sees it immediately
+        try:
+            from alerts import AlertSystem
+            AlertSystem().send_silent_log('rebound_watchlist', {
+                'ticker':       ticker,
+                'loss_pct':     loss_pct,
+                'loss_dollars': loss_dollars,
+                'exit_price':   exit_price,
+                'entry_price':  entry_price,
+            })
+        except Exception:
+            pass  # Never let alert failure block the main flow
+
+    except Exception as e:
+        logger.warning(f"Rebound watchlist insert failed for {ticker}: {e}")
+
+
 class BrokerDecisionEngine:
     """Makes autonomous trading decisions"""
 
@@ -669,6 +764,10 @@ class AutonomousBroker:
                     exits_executed += 1
                     self.notification_engine.send_sell_notification(exit)
                     self.decision_engine.record_decision(exit, executed=True, result="SOLD")
+
+                    # ── Rebound watchlist: queue stop-loss tickers for recovery research ──
+                    if exit_reason == 'stop_loss':
+                        _queue_rebound_watchlist(exit)
 
         return exits_executed
 

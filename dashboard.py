@@ -99,9 +99,17 @@ def fetch_acquisition_watchlist():
     with _conn() as db:
         rows = db.execute("""
             SELECT ticker, source, market_regime, model_confidence,
-                   entry_conditions, status, date_added, created_at
+                   entry_conditions, biggest_risk, biggest_opportunity,
+                   status, notes, date_added, created_at
             FROM acquisition_watchlist
-            ORDER BY created_at DESC LIMIT 20
+            ORDER BY
+                CASE source
+                    WHEN 'stop_loss_rebound'            THEN 1
+                    WHEN 'profit_target_reaccumulation' THEN 2
+                    ELSE 3
+                END,
+                created_at DESC
+            LIMIT 20
         """).fetchall()
         return [dict(r) for r in rows]
 
@@ -329,22 +337,39 @@ def build_closed_rows(closed):
         )
     return ''.join(rows)
 
+def source_badge(source):
+    cfg = {
+        'stop_loss_rebound':           ('#ff4444', '🔄 REBOUND'),
+        'profit_target_reaccumulation':('#00d4ff', '♻️  RE-ACCUM'),
+        'daily_briefing':              ('#c084fc', '🧠 BRIEFING'),
+        'manual':                      ('#ffd700', '✋ MANUAL'),
+    }
+    color, label = cfg.get(source, ('#888', source.upper().replace('_', ' ')))
+    return (
+        f'<span style="background:{color}22;color:{color};border:1px solid {color}55;'
+        f'border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;'
+        f'white-space:nowrap;">{label}</span>'
+    )
+
 def build_wl_rows(watchlist):
     if not watchlist:
-        return '<tr><td colspan="6" style="color:#555;text-align:center;padding:20px;">Watchlist empty — waiting for next daily briefing</td></tr>'
+        return '<tr><td colspan="7" style="color:#555;text-align:center;padding:20px;">Watchlist empty — waiting for next daily briefing</td></tr>'
     rows = []
     for w in watchlist:
-        conf = float(w.get('model_confidence') or 0)
-        conf_c = '#00ff88' if conf >= 0.7 else '#ffd700' if conf >= 0.5 else '#888'
-        stat = w.get('status', 'pending')
+        conf   = float(w.get('model_confidence') or 0)
+        conf_c = '#00ff88' if conf >= 0.7 else '#ffd700' if conf >= 0.5 else '#ff8c00'
+        stat   = w.get('status', 'pending')
         stat_c = {'pending': '#ffd700', 'active': '#00ff88', 'invalidated': '#ff4444'}.get(stat, '#888')
-        cond = (w.get('entry_conditions') or '—')[:90]
+        cond   = (w.get('entry_conditions') or '—')[:100]
+        src    = w.get('source', 'daily_briefing')
         rows.append(
             '<tr class="trow">'
             f'<td class="sym">{w.get("ticker", "?")}</td>'
+            f'<td>{source_badge(src)}</td>'
             f'<td><span style="color:{conf_c};font-weight:700;">{conf:.0%}</span></td>'
             f'<td>{regime_badge(w.get("market_regime"))}</td>'
-            f'<td style="color:#aaa;font-size:11px;">{cond}{"…" if len(w.get("entry_conditions",""))>90 else ""}</td>'
+            f'<td style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;">'
+            f'{cond}{"…" if len(w.get("entry_conditions",""))>100 else ""}</td>'
             f'<td><span style="color:{stat_c};font-size:11px;text-transform:uppercase;">{stat}</span></td>'
             f'<td style="color:#666;font-size:11px;">{w.get("date_added", "—")}</td>'
             '</tr>'
@@ -864,7 +889,7 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
     <div class="scroll-wrap">
       <table>
         <thead><tr>
-          <th>Ticker</th><th>Confidence</th><th>Regime</th><th>Entry Conditions</th><th>Status</th><th>Added</th>
+          <th>Ticker</th><th>Source</th><th>Conf</th><th>Regime</th><th>Entry Conditions</th><th>Status</th><th>Added</th>
         </tr></thead>
         <tbody>{wl_rows}</tbody>
       </table>

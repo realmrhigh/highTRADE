@@ -457,6 +457,19 @@ class AlertSystem:
                     for sig in bearish_sigs:
                         text += f"\n  🔴 {sig.get('description', '')}"
 
+            elif event_type == 'rebound_watchlist':
+                ticker      = data.get('ticker', '?')
+                loss_pct    = data.get('loss_pct', 0)
+                loss_dollars = data.get('loss_dollars', 0)
+                exit_price  = data.get('exit_price', 0)
+                entry_price = data.get('entry_price', 0)
+                text = (
+                    f"🔄 *REBOUND WATCHLIST* — `{ticker}` queued for recovery research\n"
+                    f"Stop-loss exit: `{loss_pct:.1f}%` | `${abs(loss_dollars):,.0f}` loss\n"
+                    f"Exited @ `${exit_price:.2f}` (entered @ `${entry_price:.2f}`)\n"
+                    f"Pipeline: researcher → analyst → verifier will find re-entry below `${exit_price:.2f}`"
+                )
+
             else:
                 text = f"{event_type}: {json.dumps(data, indent=2)}"
 
