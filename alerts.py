@@ -327,7 +327,23 @@ class AlertSystem:
                 if positions:
                     text += "\n📋 Positions:"
                     for p in positions:
-                        text += f"\n  • {p.get('asset_symbol','?')} — ${p.get('position_size_dollars',0):,.0f} ({p.get('shares',0)} shares @ ${p.get('entry_price',0):.2f})"
+                        sym   = p.get('asset_symbol', '?')
+                        shares = p.get('shares', 0)
+                        entry  = p.get('entry_price', 0)
+                        size   = p.get('position_size_dollars', 0)
+                        curr   = p.get('current_price')
+                        upnl   = p.get('unrealized_pnl_dollars')
+                        upct   = p.get('unrealized_pnl_percent')
+
+                        if curr and upnl is not None:
+                            upnl_sign = '+' if upnl >= 0 else ''
+                            upnl_emoji = '📈' if upnl >= 0 else '📉'
+                            text += (
+                                f"\n  • {sym} — {shares} shares | entry ${entry:.2f} → now ${curr:.2f} "
+                                f"| {upnl_emoji} {upnl_sign}${upnl:,.2f} ({upnl_sign}{upct:.1f}%)"
+                            )
+                        else:
+                            text += f"\n  • {sym} — ${size:,.0f} ({shares} shares @ ${entry:.2f})"
 
             elif event_type == 'news_update':
                 # Breaking news gets special indicator
@@ -342,7 +358,7 @@ class AlertSystem:
                 text = (
                     f"{breaking_indicator} News Update\n"
                     f"Score: [{score_bar}] {score:.1f}/100 | Crisis: {data.get('crisis_type', 'N/A')}\n"
-                    f"Sentiment: {sentiment} | Articles: {data.get('article_count', 0)} ({data.get('new_article_count', 0)} new)"
+                    f"Sentiment: {sentiment} | Articles: {data.get('article_count', 0)}"
                 )
 
                 # Score components breakdown

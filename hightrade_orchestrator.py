@@ -134,6 +134,7 @@ class HighTradeOrchestrator:
         self.pending_trade_alerts = []
         self.pending_trade_exits = []
         self._new_interval = None  # Set by /interval command
+        self._daily_briefing_date = None  # Track last briefing date
 
         # Slash command processor
         self.cmd_processor = CommandProcessor(self)
@@ -289,6 +290,68 @@ class HighTradeOrchestrator:
             logger.info("   • Check that webhook is not expired")
             logger.info("   • Make sure you have access to the Slack channel")
             return False
+
+    def _enrich_positions_with_live_prices(self, positions: list) -> list:
+        """
+        Fetch the current market price for each open position and compute
+        unrealized P&L. Updates trade_records in the DB and returns enriched list.
+        Uses the same yfinance/market data source the rest of the system uses.
+        Falls back gracefully — a price fetch failure never blocks the cycle.
+        """
+        if not positions:
+            return positions
+
+        import sqlite3 as _sqlite3
+        from datetime import datetime as _dt
+
+        enriched = []
+        for pos in positions:
+            p = dict(pos)
+            sym = p.get('asset_symbol', '')
+            entry_price = p.get('entry_price', 0) or 0
+            shares = p.get('shares', 0) or 0
+
+            try:
+                import yfinance as yf
+                ticker = yf.Ticker(sym)
+                hist = ticker.history(period='1d', interval='1m')
+                if not hist.empty:
+                    current_price = float(hist['Close'].iloc[-1])
+                else:
+                    # Market closed — use last close
+                    hist = ticker.history(period='5d')
+                    current_price = float(hist['Close'].iloc[-1]) if not hist.empty else None
+
+                if current_price:
+                    cost_basis = entry_price * shares
+                    market_value = current_price * shares
+                    upnl_dollars = market_value - cost_basis
+                    upnl_pct = (upnl_dollars / cost_basis * 100) if cost_basis else 0
+
+                    p['current_price'] = round(current_price, 2)
+                    p['unrealized_pnl_dollars'] = round(upnl_dollars, 2)
+                    p['unrealized_pnl_percent'] = round(upnl_pct, 2)
+
+                    # Persist to DB
+                    try:
+                        conn = _sqlite3.connect(str(self.paper_trading.db_path))
+                        conn.execute("""
+                            UPDATE trade_records
+                            SET current_price = ?, unrealized_pnl_dollars = ?,
+                                unrealized_pnl_percent = ?, last_price_updated = ?
+                            WHERE trade_id = ? AND status = 'open'
+                        """, (current_price, upnl_dollars, upnl_pct,
+                              _dt.now().isoformat(), p.get('trade_id')))
+                        conn.commit()
+                        conn.close()
+                    except Exception:
+                        pass
+
+            except Exception as e:
+                logger.debug(f"Price fetch failed for {sym}: {e}")
+
+            enriched.append(p)
+        return enriched
 
     def run_monitoring_cycle(self):
         """Execute one monitoring cycle with alerts"""
@@ -691,14 +754,21 @@ Check dashboard for detailed analysis.
                 open_positions = self.paper_trading.get_open_positions()
                 perf = self.paper_trading.get_portfolio_performance()
 
-                # Calculate live portfolio value: cash + open position market values
+                # Fetch live prices and compute unrealized P&L for each open position
+                open_positions = self._enrich_positions_with_live_prices(open_positions)
+
+                # Calculate live portfolio value: cash + current market value of open positions
                 total_capital = self.paper_trading.total_capital
-                deployed = sum(p.get('position_size_dollars', 0) for p in open_positions)
-                realized_pnl = perf.get('total_profit_loss_dollars', 0)
-                # Account value = starting capital + realized P&L + still-deployed capital
-                # (open positions are tracked at cost basis; unrealized P&L not yet computed here)
-                account_value = total_capital + realized_pnl
-                cash_available = account_value - deployed
+                realized_pnl  = perf.get('total_profit_loss_dollars', 0)
+                unrealized_pnl = sum(p.get('unrealized_pnl_dollars') or 0 for p in open_positions)
+                deployed = sum(
+                    (p.get('current_price') or p.get('entry_price', 0)) * p.get('shares', 0)
+                    for p in open_positions
+                )
+                account_value  = total_capital + realized_pnl + unrealized_pnl
+                cash_available = total_capital + realized_pnl - sum(
+                    p.get('entry_price', 0) * p.get('shares', 0) for p in open_positions
+                )
 
                 self.alerts.send_silent_log('monitoring_cycle', {
                     'cycle': self.monitoring_cycles,
@@ -712,6 +782,7 @@ Check dashboard for detailed analysis.
                     'cash_available': cash_available,
                     'deployed': deployed,
                     'realized_pnl': realized_pnl,
+                    'unrealized_pnl': unrealized_pnl,
                     'total_pnl_pct': perf.get('total_profit_loss_percent', 0),
                     'win_rate': perf.get('win_rate', 0),
                     'open_trades': perf.get('open_trades', 0),
@@ -725,6 +796,42 @@ Check dashboard for detailed analysis.
             logger.error(f"Error in monitoring cycle: {e}", exc_info=True)
         finally:
             self.monitor.disconnect()
+
+        # ── Daily Briefing (fires once per day at/after 4:30 PM) ──────────
+        self._check_daily_briefing()
+
+    def _check_daily_briefing(self, force: bool = False):
+        """Fire daily briefing once per day after market close (4:30 PM ET)."""
+        try:
+            now = datetime.now()
+            today = now.strftime('%Y-%m-%d')
+            market_close_hour = 16  # 4 PM — briefing triggers at 4:30
+            market_close_minute = 30
+
+            # Only fire after 4:30 PM and only once per date
+            after_close = (now.hour > market_close_hour or
+                           (now.hour == market_close_hour and now.minute >= market_close_minute))
+
+            if not force and (not after_close or self._daily_briefing_date == today):
+                return
+
+            logger.info("📋 Triggering daily market briefing (Gemini 3 Pro, deep reasoning)...")
+            self._daily_briefing_date = today
+
+            from daily_briefing import run_daily_briefing
+            results = run_daily_briefing(compare_models=False)  # production: reasoning tier only
+
+            # Log model summary
+            for model_key, r in results.items():
+                if 'error' not in r:
+                    logger.info(
+                        f"  📋 {model_key}: {r.get('market_regime','?')} | "
+                        f"confidence={r.get('model_confidence',0):.2f} | "
+                        f"{r.get('_input_tokens',0)}→{r.get('_output_tokens',0)} tokens"
+                    )
+
+        except Exception as e:
+            logger.warning(f"Daily briefing failed: {e}")
 
     def update_dashboard(self):
         """Generate updated dashboard"""

@@ -111,6 +111,11 @@ COMMANDS = {
         'aliases': ['/exit', '/close'],
         'category': 'decisions',
     },
+    '/briefing': {
+        'description': 'Run daily market briefing now (Gemini 3 Pro, deep reasoning)',
+        'aliases': ['/daily', '/report'],
+        'category': 'info',
+    },
     '/help': {
         'description': 'Show all available commands',
         'aliases': ['/h', '/?'],
@@ -329,6 +334,7 @@ class CommandProcessor:
             '/interval':  self._handle_interval,
             '/buy':       self._handle_buy,
             '/sell':      self._handle_sell,
+            '/briefing':  self._handle_briefing,
         }
 
         handler = handlers.get(cmd)
@@ -682,6 +688,18 @@ class CommandProcessor:
             logger.info(f"💰 /sell — {result['message']}")
 
         return {'ok': result['ok'], 'message': result['message']}
+
+    def _handle_briefing(self, args: str) -> dict:
+        """Force-run the daily market briefing immediately."""
+        logger.info("📋 /briefing — forcing daily briefing run now...")
+        try:
+            self.orchestrator._check_daily_briefing(force=True)
+            return {
+                'ok': True,
+                'message': 'Daily briefing complete — results posted to #logs-silent and saved to DB.'
+            }
+        except Exception as e:
+            return {'ok': False, 'message': f'Briefing failed: {e}'}
 
     # ── Response Writer ───────────────────────────────────────
 
