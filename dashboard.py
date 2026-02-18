@@ -1,848 +1,1114 @@
 #!/usr/bin/env python3
 """
-HighTrade Dashboard - Real-Time System Monitor
-Interactive HTML dashboard showing DEFCON status, signals, and monitoring history
+HighTrade Dashboard Generator
+Queries SQLite and produces a rich, self-contained HTML dashboard.
+Run:  python dashboard.py [--open]
 """
 
 import sqlite3
 import json
+import sys
+import os
+import webbrowser
+from datetime import datetime
 from pathlib import Path
-from datetime import datetime, timedelta
-import base64
 
-# Use SCRIPT_DIR to ensure we're in the correct project directory
-SCRIPT_DIR = Path(__file__).parent.resolve()
-DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
+SCRIPT_DIR = Path(__file__).parent
+DB_PATH    = SCRIPT_DIR / "trading_data" / "trading_history.db"
+OUT_PATH   = SCRIPT_DIR / "trading_data" / "dashboard.html"
 
-class Dashboard:
-    """Generate interactive HTML dashboard from database"""
 
-    def __init__(self, db_path=DB_PATH):
-        self.db_path = db_path
+# ─── Data Layer ──────────────────────────────────────────────────────────────
 
-    def connect(self):
-        self.conn = sqlite3.connect(str(self.db_path))
-        self.cursor = self.conn.cursor()
-        self.cursor.row_factory = sqlite3.Row
+def _conn():
+    db = sqlite3.connect(str(DB_PATH))
+    db.row_factory = sqlite3.Row
+    return db
 
-    def disconnect(self):
-        self.conn.close()
+def fetch_system_status():
+    with _conn() as db:
+        row = db.execute("""
+            SELECT defcon_level, signal_score, vix_close, bond_10yr_yield, news_score, created_at
+            FROM signal_monitoring ORDER BY created_at DESC LIMIT 1
+        """).fetchone()
+        return dict(row) if row else {}
 
-    def get_current_status(self):
-        """Get current DEFCON and signal status"""
-        self.connect()
-        try:
-            self.cursor.execute('''
-            SELECT monitoring_date, monitoring_time, bond_10yr_yield, vix_close,
-                   defcon_level, signal_score
-            FROM signal_monitoring
-            ORDER BY monitoring_date DESC, monitoring_time DESC
-            LIMIT 1
-            ''')
-            row = self.cursor.fetchone()
-            if row:
-                return {
-                    'date': row['monitoring_date'],
-                    'time': row['monitoring_time'],
-                    'bond_yield': row['bond_10yr_yield'],
-                    'vix': row['vix_close'],
-                    'defcon': row['defcon_level'],
-                    'score': row['signal_score']
-                }
-            return None
-        finally:
-            self.disconnect()
+def fetch_open_positions():
+    with _conn() as db:
+        rows = db.execute("""
+            SELECT asset_symbol, shares, entry_price, current_price,
+                   position_size_dollars, unrealized_pnl_dollars,
+                   unrealized_pnl_percent, entry_date, defcon_at_entry
+            FROM trade_records WHERE status='open'
+            ORDER BY entry_date
+        """).fetchall()
+        return [dict(r) for r in rows]
 
-    def get_monitoring_history(self, days=7):
-        """Get monitoring history for chart"""
-        self.connect()
-        try:
-            self.cursor.execute('''
-            SELECT monitoring_date, monitoring_time, defcon_level, signal_score,
-                   bond_10yr_yield, vix_close
-            FROM signal_monitoring
-            WHERE monitoring_date >= date('now', ?)
-            ORDER BY monitoring_date ASC, monitoring_time ASC
-            LIMIT 100
-            ''', (f'-{days} days',))
-            return [dict(row) for row in self.cursor.fetchall()]
-        finally:
-            self.disconnect()
+def fetch_closed_trades():
+    with _conn() as db:
+        rows = db.execute("""
+            SELECT asset_symbol, shares, entry_price, exit_price,
+                   profit_loss_dollars, profit_loss_percent,
+                   exit_reason, entry_date, exit_date, holding_hours
+            FROM trade_records WHERE status='closed'
+            ORDER BY exit_date DESC LIMIT 20
+        """).fetchall()
+        return [dict(r) for r in rows]
 
-    def get_crisis_stats(self):
-        """Get statistics on historical crises"""
-        self.connect()
-        try:
-            self.cursor.execute('''
+def fetch_portfolio_stats():
+    with _conn() as db:
+        row = db.execute("""
             SELECT
-                COUNT(*) as total,
-                AVG(market_drop_percent) as avg_drop,
-                AVG(recovery_percent) as avg_recovery,
-                AVG(recovery_days) as avg_days
-            FROM crisis_events
-            ''')
-            row = self.cursor.fetchone()
-            return {
-                'total': row['total'],
-                'avg_drop': round(row['avg_drop'], 1) if row['avg_drop'] else 0,
-                'avg_recovery': round(row['avg_recovery'], 1) if row['avg_recovery'] else 0,
-                'avg_days': round(row['avg_days'], 1) if row['avg_days'] else 0
-            }
-        finally:
-            self.disconnect()
-
-    def get_recent_alerts(self, limit=5):
-        """Get recent DEFCON escalations"""
-        self.connect()
-        try:
-            self.cursor.execute('''
-            SELECT event_date, event_time, defcon_level, reason
-            FROM defcon_history
-            ORDER BY event_date DESC, event_time DESC
-            LIMIT ?
-            ''', (limit,))
-            return [dict(row) for row in self.cursor.fetchall()]
-        finally:
-            self.disconnect()
-
-    def get_recent_logs(self, limit=20):
-        """Get recent log entries from hightrade log file"""
-        try:
-            from pathlib import Path
-            logs_dir = SCRIPT_DIR / 'trading_data' / 'logs'
-
-            # Find the latest log file
-            if logs_dir.exists():
-                log_files = sorted(logs_dir.glob('hightrade_*.log'), reverse=True)
-                if log_files:
-                    log_file = log_files[0]
-                    with open(log_file, 'r') as f:
-                        lines = f.readlines()
-
-                    # Get the last N lines, filter out warnings
-                    recent_logs = []
-                    for line in reversed(lines):
-                        if recent_logs and len(recent_logs) >= limit:
-                            break
-                        # Extract timestamp and message
-                        if ' - INFO - ' in line or ' - WARNING - ' in line:
-                            try:
-                                parts = line.split(' - ', 3)
-                                if len(parts) >= 4:
-                                    timestamp = parts[0]
-                                    level = parts[2]
-                                    message = parts[3].strip()
-                                    recent_logs.append({
-                                        'timestamp': timestamp,
-                                        'level': level,
-                                        'message': message
-                                    })
-                            except:
-                                pass
-
-                    return list(reversed(recent_logs))
-        except Exception as e:
-            pass
-
-        return []
-
-    def generate_html(self):
-        """Generate complete interactive dashboard HTML"""
-        status = self.get_current_status()
-        history = self.get_monitoring_history(days=7)
-        stats = self.get_crisis_stats()
-        alerts = self.get_recent_alerts()
-        logs = self.get_recent_logs(limit=15)
-
-        # Import portfolio dashboard for trading metrics
-        try:
-            from portfolio_dashboard import PortfolioDashboard
-            portfolio_db = PortfolioDashboard()
-            portfolio_summary = portfolio_db.get_portfolio_summary()
-            portfolio_by_asset = portfolio_db.get_performance_by_asset()
-            portfolio_allocation = portfolio_db.get_asset_allocation()
-            portfolio_open_pos = portfolio_db.get_open_positions_summary()
-        except:
-            portfolio_summary = None
-            portfolio_by_asset = None
-            portfolio_allocation = None
-            portfolio_open_pos = None
-
-        defcon_colors = {
-            5: '#28a745',  # Green
-            4: '#ffc107',  # Yellow
-            3: '#fd7e14',  # Orange
-            2: '#dc3545',  # Red
-            1: '#8b0000'   # Dark red
-        }
-
-        defcon_names = {
-            5: 'PEACETIME',
-            4: 'ELEVATED',
-            3: 'CRISIS',
-            2: 'PRE-BOTTOM',
-            1: 'EXECUTE'
-        }
-
-        # Prepare chart data
-        chart_dates = [h['monitoring_date'] + ' ' + h['monitoring_time'] for h in history]
-        chart_defcon = [h['defcon_level'] for h in history]
-        chart_score = [h['signal_score'] for h in history]
-
-        html = f'''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HighTrade Dashboard</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
-    <style>
-        * {{
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }}
-
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-            color: #333;
-            padding: 20px;
-            min-height: 100vh;
-        }}
-
-        .container {{
-            max-width: 1400px;
-            margin: 0 auto;
-        }}
-
-        header {{
-            color: white;
-            margin-bottom: 30px;
-            text-align: center;
-        }}
-
-        header h1 {{
-            font-size: 2.5em;
-            margin-bottom: 10px;
-        }}
-
-        .status-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-        }}
-
-        .card {{
-            background: white;
-            border-radius: 12px;
-            padding: 25px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-        }}
-
-        .defcon-card {{
-            background: linear-gradient(135deg, {defcon_colors.get(status['defcon'] if status else 5, '#28a745')} 0%, {defcon_colors.get(status['defcon'] if status else 5, '#28a745')}dd 100%);
-            color: white;
-            text-align: center;
-        }}
-
-        .defcon-level {{
-            font-size: 3em;
-            font-weight: bold;
-            margin: 10px 0;
-        }}
-
-        .defcon-name {{
-            font-size: 1.5em;
-            opacity: 0.95;
-        }}
-
-        .defcon-status {{
-            font-size: 0.9em;
-            margin-top: 10px;
-            opacity: 0.85;
-        }}
-
-        .metric {{
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin: 15px 0;
-            padding: 10px 0;
-            border-bottom: 1px solid #eee;
-        }}
-
-        .metric:last-child {{
-            border-bottom: none;
-        }}
-
-        .metric-label {{
-            font-weight: 600;
-            color: #666;
-        }}
-
-        .metric-value {{
-            font-size: 1.3em;
-            color: #2a5298;
-            font-weight: bold;
-        }}
-
-        .chart-container {{
-            position: relative;
-            height: 400px;
-            margin-bottom: 30px;
-        }}
-
-        .section-title {{
-            font-size: 1.5em;
-            font-weight: bold;
-            color: white;
-            margin: 30px 0 20px 0;
-            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
-        }}
-
-        .alerts-list {{
-            background: white;
-            border-radius: 12px;
-            padding: 20px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-        }}
-
-        .alert-item {{
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 15px;
-            border-left: 4px solid #2a5298;
-            margin-bottom: 10px;
-            background: #f8f9fa;
-            border-radius: 4px;
-        }}
-
-        .alert-item:last-child {{
-            margin-bottom: 0;
-        }}
-
-        .alert-defcon {{
-            font-weight: bold;
-            font-size: 1.1em;
-        }}
-
-        .alert-time {{
-            color: #666;
-            font-size: 0.9em;
-        }}
-
-        .logs-container {{
-            background: white;
-            border-radius: 12px;
-            padding: 20px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-            margin-bottom: 30px;
-            max-height: 400px;
-            overflow-y: auto;
-            font-family: 'Monaco', 'Courier New', monospace;
-            font-size: 0.85em;
-        }}
-
-        .log-entry {{
-            padding: 10px;
-            margin-bottom: 8px;
-            border-left: 3px solid #2a5298;
-            background: #f8f9fa;
-            border-radius: 3px;
-            display: flex;
-            flex-direction: column;
-        }}
-
-        .log-timestamp {{
-            color: #666;
-            font-weight: 600;
-            margin-bottom: 3px;
-            font-family: 'Monaco', 'Courier New', monospace;
-        }}
-
-        .log-message {{
-            color: #333;
-            word-break: break-word;
-            line-height: 1.4;
-        }}
-
-        .log-level-info {{
-            border-left-color: #28a745;
-        }}
-
-        .log-level-warning {{
-            border-left-color: #ffc107;
-            background: #fffbea;
-        }}
-
-        .stats-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-            margin-bottom: 30px;
-        }}
-
-        .stat-box {{
-            background: white;
-            border-radius: 8px;
-            padding: 20px;
-            text-align: center;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-        }}
-
-        .stat-value {{
-            font-size: 2em;
-            font-weight: bold;
-            color: #2a5298;
-        }}
-
-        .stat-label {{
-            color: #666;
-            margin-top: 8px;
-            font-size: 0.9em;
-        }}
-
-        .last-update {{
-            text-align: center;
-            color: white;
-            margin-top: 20px;
-            font-size: 0.9em;
-            opacity: 0.8;
-        }}
-
-        .alert-badge {{
-            display: inline-block;
-            padding: 4px 12px;
-            border-radius: 20px;
-            font-size: 0.85em;
-            font-weight: 600;
-        }}
-
-        .badge-defcon5 {{ background: #28a745; color: white; }}
-        .badge-defcon4 {{ background: #ffc107; color: black; }}
-        .badge-defcon3 {{ background: #fd7e14; color: white; }}
-        .badge-defcon2 {{ background: #dc3545; color: white; }}
-        .badge-defcon1 {{ background: #8b0000; color: white; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <header>
-            <h1>🚀 HighTrade Dashboard</h1>
-            <p>Real-Time Crisis Trading Bot Monitor</p>
-        </header>
-
-        <!-- Current Status -->
-        <div class="status-grid">
-            <div class="card defcon-card">
-                <div class="defcon-name">{defcon_names.get(status['defcon'], 'UNKNOWN') if status else 'UNKNOWN'}</div>
-                <div class="defcon-level">{status['defcon']}/5</div>
-                <div class="defcon-status">
-                    Signal Score: {status['score']:.1f}/100<br>
-                    {('🟢 Monitoring Passive' if status['defcon'] == 5 else
-                      '🟡 Monitoring Active' if status['defcon'] == 4 else
-                      '🟠 Crisis Mode' if status['defcon'] == 3 else
-                      '🔴 Pre-Bottom' if status['defcon'] == 2 else
-                      '🚨 EXECUTE SIGNAL') if status else 'No Data'}
-                </div>
-            </div>
-
-            <div class="card">
-                <div class="metric">
-                    <span class="metric-label">10Y Bond Yield</span>
-                    <span class="metric-value">{f"{status['bond_yield']:.2f}%" if status and status['bond_yield'] else 'N/A'}</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">VIX</span>
-                    <span class="metric-value">{f"{status['vix']:.1f}" if status and status['vix'] else 'N/A'}</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Last Update</span>
-                    <span class="metric-value" style="font-size: 0.85em;">{f"{status['date']} {status['time']}" if status else 'Never'}</span>
-                </div>
-            </div>
-
-            <div class="card">
-                <h3 style="margin-bottom: 15px; color: #2a5298;">Historical Crisis Stats</h3>
-                <div class="metric">
-                    <span class="metric-label">Total Crises Tracked</span>
-                    <span class="metric-value">{stats['total']}</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Avg Drop</span>
-                    <span class="metric-value">{stats['avg_drop']:.1f}%</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Avg Recovery</span>
-                    <span class="metric-value">+{stats['avg_recovery']:.1f}%</span>
-                </div>
-            </div>
-        </div>
-
-        <!-- Charts -->
-        <div class="section-title">📊 Monitoring History (7 Days)</div>
-
-        <div class="chart-container">
-            <canvas id="defconChart"></canvas>
-        </div>
-
-        <div class="chart-container">
-            <canvas id="scoreChart"></canvas>
-        </div>
-
-        <!-- Recent Alerts -->
-        <div class="section-title">⚠️ Recent DEFCON Changes</div>
-
-        <div class="alerts-list">
-            {self._render_alerts(alerts, defcon_names)}
-        </div>
-
-        <!-- Portfolio Trading Section -->
-        {self._render_portfolio_section(portfolio_summary, portfolio_by_asset, portfolio_allocation, portfolio_open_pos)}
-
-        <!-- System Logs -->
-        <div class="section-title">📋 Recent System Activity</div>
-
-        <div class="logs-container">
-            {self._render_logs(logs)}
-        </div>
-
-        <div class="last-update">
-            Dashboard updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC
-        </div>
-    </div>
-
-    <script>
-        // DEFCON Level Chart
-        const defconCtx = document.getElementById('defconChart').getContext('2d');
-        new Chart(defconCtx, {{
-            type: 'line',
-            data: {{
-                labels: {json.dumps(chart_dates[-20:])},
-                datasets: [{{
-                    label: 'DEFCON Level',
-                    data: {json.dumps(chart_defcon[-20:])},
-                    borderColor: '#2a5298',
-                    backgroundColor: 'rgba(42, 82, 152, 0.1)',
-                    borderWidth: 2,
-                    tension: 0.4,
-                    fill: true,
-                    pointRadius: 4,
-                    pointHoverRadius: 6
-                }}]
-            }},
-            options: {{
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {{
-                    legend: {{
-                        display: true,
-                        labels: {{ font: {{ size: 12 }} }}
-                    }},
-                    title: {{
-                        display: true,
-                        text: 'DEFCON Level Over Time (5 = Safe, 1 = Execute)',
-                        font: {{ size: 14 }}
-                    }}
-                }},
-                scales: {{
-                    y: {{
-                        min: 0,
-                        max: 5,
-                        ticks: {{ stepSize: 1 }}
-                    }}
-                }}
-            }}
-        }});
-
-        // Signal Score Chart
-        const scoreCtx = document.getElementById('scoreChart').getContext('2d');
-        new Chart(scoreCtx, {{
-            type: 'line',
-            data: {{
-                labels: {json.dumps(chart_dates[-20:])},
-                datasets: [{{
-                    label: 'Signal Score',
-                    data: {json.dumps(chart_score[-20:])},
-                    borderColor: '#dc3545',
-                    backgroundColor: 'rgba(220, 53, 69, 0.1)',
-                    borderWidth: 2,
-                    tension: 0.4,
-                    fill: true,
-                    pointRadius: 4,
-                    pointHoverRadius: 6
-                }}]
-            }},
-            options: {{
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {{
-                    legend: {{
-                        display: true,
-                        labels: {{ font: {{ size: 12 }} }}
-                    }},
-                    title: {{
-                        display: true,
-                        text: 'Signal Confidence Score (80+ = Buy Signal)',
-                        font: {{ size: 14 }}
-                    }}
-                }},
-                scales: {{
-                    y: {{
-                        min: 0,
-                        max: 100
-                    }}
-                }}
-            }}
-        }});
-    </script>
-</body>
-</html>
-'''
-        return html
-
-    def _render_portfolio_section(self, portfolio_summary, portfolio_by_asset, portfolio_allocation, portfolio_open_pos):
-        """Render portfolio trading section HTML"""
-        if not portfolio_summary or portfolio_summary.get('total_trades', 0) == 0:
-            return '''
-        <div class="section-title">📊 Portfolio Trading (No trades yet)</div>
-        <div class="card" style="text-align: center; padding: 30px; color: #666;">
-            <p>Start the monitoring system to begin generating paper trades:</p>
-            <p><code>python3 hightrade_orchestrator.py continuous</code></p>
-        </div>
-        '''
-
-        html = '''
-        <div class="section-title">📊 Paper Trading Portfolio</div>
-
-        <div class="status-grid">
-            <div class="card">
-                <h3 style="margin-bottom: 15px; color: #2a5298;">Portfolio Summary</h3>
-                <div class="metric">
-                    <span class="metric-label">Total Trades</span>
-                    <span class="metric-value">{}</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Open Trades</span>
-                    <span class="metric-value">{}</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Closed Trades</span>
-                    <span class="metric-value">{}</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Total P&L</span>
-                    <span class="metric-value" style="color: {};">${}</span>
-                </div>
-            </div>
-
-            <div class="card">
-                <h3 style="margin-bottom: 15px; color: #2a5298;">Performance Metrics</h3>
-                <div class="metric">
-                    <span class="metric-label">Win Rate</span>
-                    <span class="metric-value">{}%</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Winning Trades</span>
-                    <span class="metric-value">{}</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Losing Trades</span>
-                    <span class="metric-value">{}</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Avg Return</span>
-                    <span class="metric-value">{}%</span>
-                </div>
-            </div>
-
-            <div class="card">
-                <h3 style="margin-bottom: 15px; color: #2a5298;">Asset Allocation</h3>
-        '''.format(
-            portfolio_summary.get('total_trades', 0),
-            portfolio_summary.get('open_trades', 0),
-            portfolio_summary.get('closed_trades', 0),
-            '#28a745' if portfolio_summary.get('total_profit_loss_dollars', 0) >= 0 else '#dc3545',
-            f"{portfolio_summary.get('total_profit_loss_dollars', 0):+,.0f}",
-            portfolio_summary.get('win_rate', 0),
-            portfolio_summary.get('winning_trades', 0),
-            portfolio_summary.get('losing_trades', 0),
-            portfolio_summary.get('avg_return', 0),
+                COUNT(*) as total_trades,
+                SUM(CASE WHEN status='closed' THEN 1 ELSE 0 END) as closed,
+                SUM(CASE WHEN status='open'   THEN 1 ELSE 0 END) as open_count,
+                SUM(CASE WHEN exit_reason='profit_target' THEN 1 ELSE 0 END) as wins,
+                SUM(CASE WHEN exit_reason='stop_loss'     THEN 1 ELSE 0 END) as losses,
+                ROUND(SUM(CASE WHEN status='closed' THEN profit_loss_dollars ELSE 0 END),2) as realized_pnl,
+                ROUND(SUM(CASE WHEN status='open'   THEN unrealized_pnl_dollars ELSE 0 END),2) as unrealized_pnl,
+                ROUND(SUM(CASE WHEN status='open'   THEN position_size_dollars ELSE 0 END),2) as deployed
+            FROM trade_records
+        """).fetchone()
+        return dict(row) if row else {}
+
+def fetch_daily_briefings():
+    with _conn() as db:
+        rows = db.execute("""
+            SELECT date, model_key, market_regime, regime_confidence,
+                   headline_summary, key_themes_json, biggest_risk,
+                   biggest_opportunity, signal_quality, macro_alignment,
+                   portfolio_assessment, watchlist_json, defcon_forecast,
+                   model_confidence, created_at
+            FROM daily_briefings
+            ORDER BY created_at DESC LIMIT 6
+        """).fetchall()
+        return [dict(r) for r in rows]
+
+def fetch_macro():
+    with _conn() as db:
+        row = db.execute("""
+            SELECT yield_curve_spread, fed_funds_rate, unemployment_rate,
+                   m2_yoy_change, hy_oas_bps, consumer_sentiment,
+                   rate_10y, rate_2y, macro_score, defcon_modifier,
+                   bearish_signals, bullish_signals, signals_json, created_at
+            FROM macro_indicators ORDER BY created_at DESC LIMIT 1
+        """).fetchone()
+        return dict(row) if row else {}
+
+def fetch_acquisition_watchlist():
+    with _conn() as db:
+        rows = db.execute("""
+            SELECT ticker, source, market_regime, model_confidence,
+                   entry_conditions, status, date_added, created_at
+            FROM acquisition_watchlist
+            ORDER BY created_at DESC LIMIT 20
+        """).fetchall()
+        return [dict(r) for r in rows]
+
+def fetch_signal_history():
+    """Last 48 monitoring cycles for sparkline charts"""
+    with _conn() as db:
+        rows = db.execute("""
+            SELECT defcon_level, signal_score, vix_close, news_score, created_at
+            FROM signal_monitoring ORDER BY created_at DESC LIMIT 48
+        """).fetchall()
+        return list(reversed([dict(r) for r in rows]))
+
+def fetch_recent_news():
+    with _conn() as db:
+        rows = db.execute("""
+            SELECT news_signal_id, news_score, dominant_crisis_type as crisis_type,
+                   article_count, breaking_count, sentiment_summary as sentiment,
+                   gemini_flash_json, created_at
+            FROM news_signals ORDER BY created_at DESC LIMIT 6
+        """).fetchall()
+        results = []
+        for r in rows:
+            d = dict(r)
+            # Parse gemini_flash_json for action/confidence/reasoning
+            try:
+                gf = json.loads(d.get('gemini_flash_json') or '{}')
+                d['gemini_pro_action']     = gf.get('recommended_action', gf.get('action', ''))
+                d['gemini_pro_confidence'] = gf.get('confidence_in_signal', gf.get('confidence', 0))
+                d['gemini_pro_reasoning']  = gf.get('reasoning', '')
+            except Exception:
+                d['gemini_pro_action']     = ''
+                d['gemini_pro_confidence'] = 0
+                d['gemini_pro_reasoning']  = ''
+            results.append(d)
+        return results
+
+def fetch_congressional():
+    with _conn() as db:
+        clusters = db.execute("""
+            SELECT ticker, signal_strength, buy_count as politician_count,
+                   total_amount as total_dollar_amount,
+                   bipartisan as is_bipartisan, committee_relevance, created_at
+            FROM congressional_cluster_signals
+            ORDER BY created_at DESC LIMIT 10
+        """).fetchall()
+        trades = db.execute("""
+            SELECT politician as politician_name, ticker, direction as transaction_type,
+                   amount as amount_range, transaction_date, party,
+                   source as chamber
+            FROM congressional_trades
+            ORDER BY transaction_date DESC LIMIT 15
+        """).fetchall()
+        return [dict(r) for r in clusters], [dict(r) for r in trades]
+
+
+# ─── Utility Helpers ─────────────────────────────────────────────────────────
+
+def defcon_color(level):
+    colors = {1: '#00ff88', 2: '#7fff00', 3: '#ffd700', 4: '#ff8c00', 5: '#ff3333'}
+    return colors.get(int(level), '#aaa')
+
+def defcon_label(level):
+    labels = {1: 'BULLISH', 2: 'ELEVATED', 3: 'CAUTIOUS', 4: 'DEFENSIVE', 5: 'BEARISH'}
+    return labels.get(int(level), 'UNKNOWN')
+
+def pnl_color(val):
+    try:
+        v = float(val or 0)
+        return '#00ff88' if v >= 0 else '#ff4444'
+    except Exception:
+        return '#aaa'
+
+def fmt_dollar(val):
+    try:
+        v = float(val or 0)
+        sign = '+' if v >= 0 else ''
+        return f"{sign}${v:,.2f}"
+    except Exception:
+        return '$0.00'
+
+def fmt_pct(val):
+    try:
+        v = float(val or 0)
+        sign = '+' if v >= 0 else ''
+        return f"{sign}{v:.2f}%"
+    except Exception:
+        return '0.00%'
+
+def macro_score_ring(score):
+    """SVG ring for macro score"""
+    try:
+        s = float(score)
+    except Exception:
+        s = 50
+    r = 38
+    circ = 2 * 3.14159 * r
+    dash = (s / 100) * circ
+    color = '#00ff88' if s >= 60 else '#ffd700' if s >= 40 else '#ff4444'
+    return (
+        '<svg width="100" height="100" viewBox="0 0 100 100">'
+        f'<circle cx="50" cy="50" r="{r}" fill="none" stroke="#1a1a2e" stroke-width="10"/>'
+        f'<circle cx="50" cy="50" r="{r}" fill="none" stroke="{color}" stroke-width="10"'
+        f' stroke-dasharray="{dash:.1f} {circ:.1f}"'
+        f' stroke-dashoffset="{circ/4:.1f}" stroke-linecap="round"/>'
+        f'<text x="50" y="45" text-anchor="middle" fill="{color}" font-size="18" font-weight="bold" font-family="monospace">{s:.0f}</text>'
+        f'<text x="50" y="62" text-anchor="middle" fill="#888" font-size="9" font-family="monospace">MACRO</text>'
+        '</svg>'
+    )
+
+def sparkline(values, color='#00d4ff', height=40, width=180):
+    if not values:
+        return f'<svg width="{width}" height="{height}"></svg>'
+    mn, mx = min(values), max(values)
+    rng = mx - mn or 1
+    pts = []
+    for i, v in enumerate(values):
+        x = int(i / max(len(values) - 1, 1) * width)
+        y = int((1 - (v - mn) / rng) * (height - 4) + 2)
+        pts.append(f"{x},{y}")
+    path = ' '.join(pts)
+    fill_pts = f"0,{height} " + path + f" {width},{height}"
+    grad_id = f"sg{abs(hash(color)) % 100000}"
+    return (
+        f'<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}">'
+        f'<defs><linearGradient id="{grad_id}" x1="0" y1="0" x2="0" y2="1">'
+        f'<stop offset="0%" stop-color="{color}" stop-opacity="0.4"/>'
+        f'<stop offset="100%" stop-color="{color}" stop-opacity="0"/>'
+        f'</linearGradient></defs>'
+        f'<polygon points="{fill_pts}" fill="url(#{grad_id})"/>'
+        f'<polyline points="{path}" fill="none" stroke="{color}" stroke-width="1.5" stroke-linejoin="round"/>'
+        f'</svg>'
+    )
+
+def regime_badge(regime):
+    colors = {
+        'bullish': '#00ff88', 'risk-on': '#00ff88',
+        'transitioning': '#ffd700',
+        'bearish': '#ff4444', 'risk-off': '#ff4444',
+        'neutral': '#888'
+    }
+    r = (regime or 'unknown').lower()
+    color = next((v for k, v in colors.items() if k in r), '#888')
+    return (
+        f'<span style="background:{color}22;color:{color};border:1px solid {color};'
+        f'border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;'
+        f'letter-spacing:1px;text-transform:uppercase;">{regime or "—"}</span>'
+    )
+
+def exit_badge(reason):
+    if reason == 'profit_target':
+        return '<span style="color:#00ff88;font-size:11px;">&#10003; PROFIT TARGET</span>'
+    elif reason == 'stop_loss':
+        return '<span style="color:#ff4444;font-size:11px;">&#10007; STOP LOSS</span>'
+    elif reason == 'manual':
+        return '<span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span>'
+    return f'<span style="color:#888;font-size:11px;">{reason or "—"}</span>'
+
+def action_badge(action):
+    c = {'BUY': '#00ff88', 'SELL': '#ff4444', 'WAIT': '#ffd700', 'HOLD': '#888'}.get(action, '#888')
+    return f'<span style="color:{c};font-weight:700;font-size:12px;">{action or "—"}</span>'
+
+def sig_pill(sig):
+    sev = sig.get('severity', 'neutral')
+    c = {'bullish': '#00ff88', 'bearish': '#ff4444', 'neutral': '#888'}.get(sev, '#888')
+    arrow = '&#9650;' if sev == 'bullish' else '&#9660;' if sev == 'bearish' else '&#9670;'
+    return (
+        f'<div style="color:{c};font-size:12px;margin:3px 0;">'
+        f'{arrow} {sig.get("description", "")}</div>'
+    )
+
+
+# ─── Section Builders ─────────────────────────────────────────────────────────
+
+def build_open_rows(positions):
+    if not positions:
+        return '<tr><td colspan="8" style="color:#555;text-align:center;padding:20px;">No open positions</td></tr>'
+    rows = []
+    for p in positions:
+        ep    = float(p.get('entry_price') or 0)
+        cp    = float(p.get('current_price') or ep)
+        sh    = int(p.get('shares') or 0)
+        pnl_d = float(p.get('unrealized_pnl_dollars') or 0)
+        pnl_p = float(p.get('unrealized_pnl_percent') or 0)
+        mv    = cp * sh
+        dc    = p.get('defcon_at_entry', '?')
+        color = pnl_color(pnl_d)
+        bar_w = min(int(abs(pnl_p) * 3), 100)
+        bar_c = '#00ff88' if pnl_d >= 0 else '#ff4444'
+        rows.append(
+            '<tr class="trow">'
+            f'<td class="sym">{p.get("asset_symbol", "?")}</td>'
+            f'<td>{sh:,}</td>'
+            f'<td>${ep:,.2f}</td>'
+            f'<td>${cp:,.2f}</td>'
+            f'<td>${mv:,.2f}</td>'
+            f'<td style="color:{color};">{fmt_dollar(pnl_d)}</td>'
+            f'<td><div style="display:flex;align-items:center;gap:6px;">'
+            f'<div style="width:60px;background:#111;border-radius:3px;height:4px;">'
+            f'<div style="width:{bar_w}%;background:{bar_c};height:4px;border-radius:3px;"></div></div>'
+            f'<span style="color:{color};">{fmt_pct(pnl_p)}</span></div></td>'
+            f'<td><span style="font-size:11px;color:#888">D{dc}</span></td>'
+            '</tr>'
+        )
+    return ''.join(rows)
+
+def build_closed_rows(closed):
+    if not closed:
+        return '<tr><td colspan="8" style="color:#555;text-align:center;padding:20px;">No closed trades</td></tr>'
+    rows = []
+    for t in closed:
+        pnl_d = float(t.get('profit_loss_dollars') or 0)
+        pnl_p = float(t.get('profit_loss_percent') or 0)
+        color = pnl_color(pnl_d)
+        rows.append(
+            '<tr class="trow">'
+            f'<td class="sym">{t.get("asset_symbol", "?")}</td>'
+            f'<td>{int(t.get("shares") or 0):,}</td>'
+            f'<td>${float(t.get("entry_price") or 0):,.2f}</td>'
+            f'<td>${float(t.get("exit_price") or 0):,.2f}</td>'
+            f'<td style="color:{color};">{fmt_dollar(pnl_d)}</td>'
+            f'<td style="color:{color};">{fmt_pct(pnl_p)}</td>'
+            f'<td>{exit_badge(t.get("exit_reason"))}</td>'
+            f'<td style="color:#666;font-size:11px;">{t.get("exit_date", "—")}</td>'
+            '</tr>'
+        )
+    return ''.join(rows)
+
+def build_wl_rows(watchlist):
+    if not watchlist:
+        return '<tr><td colspan="6" style="color:#555;text-align:center;padding:20px;">Watchlist empty — waiting for next daily briefing</td></tr>'
+    rows = []
+    for w in watchlist:
+        conf = float(w.get('model_confidence') or 0)
+        conf_c = '#00ff88' if conf >= 0.7 else '#ffd700' if conf >= 0.5 else '#888'
+        stat = w.get('status', 'pending')
+        stat_c = {'pending': '#ffd700', 'active': '#00ff88', 'invalidated': '#ff4444'}.get(stat, '#888')
+        cond = (w.get('entry_conditions') or '—')[:90]
+        rows.append(
+            '<tr class="trow">'
+            f'<td class="sym">{w.get("ticker", "?")}</td>'
+            f'<td><span style="color:{conf_c};font-weight:700;">{conf:.0%}</span></td>'
+            f'<td>{regime_badge(w.get("market_regime"))}</td>'
+            f'<td style="color:#aaa;font-size:11px;">{cond}{"…" if len(w.get("entry_conditions",""))>90 else ""}</td>'
+            f'<td><span style="color:{stat_c};font-size:11px;text-transform:uppercase;">{stat}</span></td>'
+            f'<td style="color:#666;font-size:11px;">{w.get("date_added", "—")}</td>'
+            '</tr>'
+        )
+    return ''.join(rows)
+
+def build_news_items(news):
+    if not news:
+        return '<div style="color:#555;text-align:center;padding:20px;">No news signals</div>'
+    items = []
+    for n in news:
+        score = float(n.get('news_score') or 0)
+        sc = '#ff4444' if score >= 70 else '#ffd700' if score >= 45 else '#888'
+        ts = (n.get('created_at') or '—')[11:16]
+        reasoning = (n.get('gemini_pro_reasoning') or '')[:130]
+        items.append(
+            '<div class="news-item">'
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">'
+            f'<span style="color:#888;font-size:10px;">{ts}</span>'
+            f'<span style="color:{sc};font-size:13px;font-weight:700;">{score:.1f}</span>'
+            f'<span style="color:#aaa;font-size:11px;">{(n.get("crisis_type","")).replace("_"," ").upper()}</span>'
+            f'{action_badge(n.get("gemini_pro_action"))}'
+            '</div>'
+            f'<div style="font-size:11px;color:#666;">{n.get("article_count",0)} articles &middot; {n.get("breaking_count",0)} breaking &middot; {(n.get("sentiment") or "")[:40]}</div>'
+            f'<div style="font-size:11px;color:#888;margin-top:4px;font-style:italic;">{reasoning}{"…" if len(reasoning)>=130 else ""}</div>'
+            '</div>'
+        )
+    return ''.join(items)
+
+def build_cong_cluster_rows(clusters):
+    if not clusters:
+        return '<tr><td colspan="6" style="color:#555;text-align:center;padding:16px;">No cluster signals (S3 data intermittent)</td></tr>'
+    rows = []
+    for c in clusters:
+        strength = float(c.get('signal_strength') or 0)
+        sc = '#00ff88' if strength >= 70 else '#ffd700' if strength >= 40 else '#888'
+        bi = '&#9889; BIPARTISAN' if c.get('is_bipartisan') else ''
+        rows.append(
+            '<tr class="trow">'
+            f'<td class="sym">{c.get("ticker","?")}</td>'
+            f'<td style="color:{sc};font-weight:700;">{strength:.0f}</td>'
+            f'<td>{c.get("politician_count",0)}</td>'
+            f'<td>${float(c.get("total_dollar_amount") or 0):,.0f}</td>'
+            f'<td><span style="color:#7eb8f7;font-size:10px;">{bi}</span></td>'
+            f'<td style="color:#666;font-size:11px;">{(c.get("created_at") or "—")[:10]}</td>'
+            '</tr>'
+        )
+    return ''.join(rows)
+
+def build_cong_trade_rows(trades):
+    if not trades:
+        return '<tr><td colspan="5" style="color:#555;text-align:center;padding:16px;">No congressional trades recorded</td></tr>'
+    rows = []
+    for t in trades:
+        is_buy = 'Purchase' in (t.get('transaction_type') or '')
+        color = '#00ff88' if is_buy else '#ff4444'
+        arrow = '&#9650;' if is_buy else '&#9660;'
+        rows.append(
+            '<tr class="trow">'
+            f'<td style="color:{color};">{arrow} {t.get("ticker","?")}</td>'
+            f'<td style="color:#aaa;font-size:11px;">{t.get("politician_name","?")}</td>'
+            f'<td style="color:#888;font-size:10px;">{t.get("party","?")} &middot; {t.get("chamber","?")}</td>'
+            f'<td style="color:#888;font-size:11px;">{t.get("amount_range","?")}</td>'
+            f'<td style="color:#666;font-size:11px;">{t.get("transaction_date","—")}</td>'
+            '</tr>'
+        )
+    return ''.join(rows)
+
+def build_model_card(b, title, icon):
+    if not b:
+        return f'<div class="model-card"><div class="card-label">{icon} {title}</div><p style="color:#555;margin-top:8px;">No data yet</p></div>'
+    conf = float(b.get('model_confidence') or 0)
+    conf_c = '#00ff88' if conf >= 0.7 else '#ffd700' if conf >= 0.5 else '#ff4444'
+    try:
+        themes = json.loads(b.get('key_themes_json') or '[]')
+    except Exception:
+        themes = []
+    theme_pills = ''.join(f'<div class="theme-pill">{t}</div>' for t in themes)
+    try:
+        wl = json.loads(b.get('watchlist_json') or '[]')
+    except Exception:
+        wl = []
+    ticker_tags = ''.join(f'<span class="ticker-tag">{t}</span>' for t in wl)
+    return (
+        '<div class="model-card">'
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">'
+        f'<div class="card-label">{icon} {title}</div>'
+        '<div style="display:flex;gap:8px;align-items:center;">'
+        f'{regime_badge(b.get("market_regime"))}'
+        f'<span style="color:{conf_c};font-weight:700;font-size:13px;">{conf:.0%}</span>'
+        '</div></div>'
+        f'<div style="color:#ddd;font-size:12px;line-height:1.6;margin-bottom:10px;">{b.get("headline_summary","—")}</div>'
+        f'<div class="themes-row">{theme_pills}</div>'
+        '<div class="two-col" style="margin-top:10px;">'
+        '<div><div class="micro-label">BIGGEST RISK</div>'
+        f'<div style="color:#ff8888;font-size:11px;line-height:1.5;word-wrap:break-word;overflow-wrap:break-word;">{(b.get("biggest_risk") or "—")[:180]}</div></div>'
+        '<div><div class="micro-label">OPPORTUNITY</div>'
+        f'<div style="color:#88ff88;font-size:11px;line-height:1.5;word-wrap:break-word;overflow-wrap:break-word;">{(b.get("biggest_opportunity") or "—")[:180]}</div></div>'
+        '</div>'
+        '<div style="margin-top:10px;"><div class="micro-label">WATCHLIST</div>'
+        f'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">{ticker_tags}</div></div>'
+        '<div style="margin-top:8px;"><div class="micro-label">DEFCON FORECAST</div>'
+        f'<div style="color:#aaa;font-size:11px;line-height:1.5;word-wrap:break-word;overflow-wrap:break-word;">{(b.get("defcon_forecast") or "—")[:180]}</div></div>'
+        '</div>'
+    )
+
+
+# ─── Main HTML Assembly ───────────────────────────────────────────────────────
+
+def build_html(status, positions, closed, stats, briefings, macro, watchlist,
+               sig_history, news, cong_clusters, cong_trades):
+
+    now_str    = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    last_cycle = status.get('created_at', '—')
+
+    total_capital = 100_000.0
+    realized      = float(stats.get('realized_pnl') or 0)
+    unrealized    = float(stats.get('unrealized_pnl') or 0)
+    deployed      = float(stats.get('deployed') or 0)
+    account_value = total_capital + realized + unrealized
+    cash          = total_capital + realized - deployed
+    total_pnl     = realized + unrealized
+    wins          = int(stats.get('wins') or 0)
+    losses        = int(stats.get('losses') or 0)
+    win_rate      = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
+
+    vix_vals  = [r['vix_close']    for r in sig_history if r.get('vix_close')]
+    news_vals = [r['news_score']   for r in sig_history if r.get('news_score') is not None]
+    sig_vals  = [r['signal_score'] for r in sig_history if r.get('signal_score') is not None]
+
+    latest_b = next((b for b in briefings if b.get('model_key') == 'reasoning'), briefings[0] if briefings else {})
+    fast_b   = next((b for b in briefings if b.get('model_key') == 'fast'), {})
+    bal_b    = next((b for b in briefings if b.get('model_key') == 'balanced'), {})
+
+    macro_sigs = []
+    try:
+        macro_sigs = json.loads(macro.get('signals_json') or '[]')
+    except Exception:
+        pass
+
+    defcon          = int(status.get('defcon_level') or 5)
+    dc_color        = defcon_color(defcon)
+    dc_label        = defcon_label(defcon)
+    signal_score    = float(status.get('signal_score') or 0)
+    vix             = float(status.get('vix_close') or 0)
+    bond            = float(status.get('bond_10yr_yield') or 0)
+    macro_score_val = float(macro.get('macro_score') or 50)
+    rate_2y         = float(macro.get('rate_2y') or 0)
+
+    # DEFCON block row
+    defcon_blocks = ''
+    for i in range(1, 6):
+        active = (i == defcon)
+        bg = defcon_color(i) if active else '#1a1a2e'
+        fc = '#000' if active else defcon_color(i)
+        fw = '900' if active else '400'
+        defcon_blocks += (
+            f'<div style="background:{bg};color:{fc};font-weight:{fw};'
+            f'width:34px;height:34px;display:flex;align-items:center;'
+            f'justify-content:center;border-radius:4px;font-size:14px;'
+            f'border:1px solid {defcon_color(i)}33;">{i}</div>'
         )
 
-        # Asset allocation
-        if portfolio_allocation and portfolio_allocation.get('allocations'):
-            for asset, data in sorted(portfolio_allocation['allocations'].items(), key=lambda x: x[1]['total_value'], reverse=True):
-                html += f'''
-                <div class="metric">
-                    <span class="metric-label">{asset}</span>
-                    <span class="metric-value">{data['allocation_pct']:.1f}%</span>
-                </div>
-                '''
-        else:
-            html += '''
-                <div class="metric" style="color: #999;">
-                    <span class="metric-label">No open positions</span>
-                </div>
-            '''
+    vix_spark  = sparkline(vix_vals,  '#ff8c00')
+    news_spark = sparkline(news_vals, '#c084fc')
+    sig_spark  = sparkline(sig_vals,  '#00d4ff')
 
-        html += '''
-            </div>
+    vix_last  = f"{vix_vals[-1]:.2f}"  if vix_vals  else '—'
+    news_last = f"{news_vals[-1]:.1f}" if news_vals else '—'
+    sig_last  = f"{sig_vals[-1]:.1f}"  if sig_vals  else '—'
+
+    briefing_date = latest_b.get('date', '—')
+
+    try:
+        latest_b_themes = json.loads(latest_b.get('key_themes_json') or '[]')
+    except Exception:
+        latest_b_themes = []
+    latest_theme_pills = ''.join(f'<div class="theme-pill">{t}</div>' for t in latest_b_themes)
+    latest_conf = float(latest_b.get('model_confidence') or 0)
+    latest_conf_c = '#00ff88' if latest_conf >= 0.7 else '#ffd700' if latest_conf >= 0.5 else '#ff4444'
+
+    macro_ring = macro_score_ring(macro_score_val)
+    macro_supportive = 'SUPPORTIVE' if macro_score_val >= 60 else 'NEUTRAL' if macro_score_val >= 40 else 'HEADWIND'
+    yc_spread = float(macro.get('yield_curve_spread') or 0)
+    yc_color = '#00ff88' if yc_spread > 0 else '#ff4444'
+    hy_bps = float(macro.get('hy_oas_bps') or 0)
+    hy_color = '#ff4444' if hy_bps > 400 else '#00ff88'
+    cs_val = float(macro.get('consumer_sentiment') or 0)
+    cs_color = '#ff4444' if cs_val < 60 else '#00ff88'
+
+    open_rows      = build_open_rows(positions)
+    closed_rows    = build_closed_rows(closed)
+    wl_rows        = build_wl_rows(watchlist)
+    news_items     = build_news_items(news)
+    cong_cl_rows   = build_cong_cluster_rows(cong_clusters)
+    cong_tr_rows   = build_cong_trade_rows(cong_trades)
+    reasoning_card = build_model_card(latest_b, 'REASONING (Pro 3)', '&#129504;')
+    fast_card      = build_model_card(fast_b,   'FAST (Flash)',       '&#9889;')
+    balanced_card  = build_model_card(bal_b,    'BALANCED (Flash 8k)','&#9878;&#65039;')
+
+    macro_sig_pills = ''.join(sig_pill(s) for s in macro_sigs)
+
+    total_pnl_pct = total_pnl / total_capital * 100
+    defcon_mod_val = float(macro.get('defcon_modifier') or 0)
+
+    html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>HighTrade Dashboard</title>
+<style>
+:root {
+  --bg:#08090f; --panel:#0d0e1a; --border:#1e2040;
+  --text:#e2e8f0; --dim:#64748b; --accent:#00d4ff;
+  --green:#00ff88; --red:#ff4444; --gold:#ffd700;
+}
+* { box-sizing:border-box; margin:0; padding:0; }
+body { background:var(--bg); color:var(--text); font-family:'SF Mono','Fira Code','Cascadia Code',monospace; font-size:13px; }
+.page { max-width:1600px; margin:0 auto; padding:20px; }
+
+/* Header */
+.header { display:flex; justify-content:space-between; align-items:center;
+  padding:16px 24px; border-bottom:1px solid var(--border); margin-bottom:20px;
+  background:linear-gradient(90deg,#0d0e1a,#08090f); border-radius:10px; }
+.header-title { font-size:22px; font-weight:900; letter-spacing:4px; color:var(--accent); }
+.header-meta { color:var(--dim); font-size:11px; text-align:right; line-height:1.8; }
+
+/* Grid layouts */
+.grid-top    { display:grid; grid-template-columns:260px 1fr 260px; gap:16px; margin-bottom:16px; }
+.grid-mid    { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }
+.grid-three  { display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px; margin-bottom:16px; }
+.grid-full   { margin-bottom:16px; }
+
+/* Panels */
+.panel { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:16px; }
+.panel-title { font-size:10px; font-weight:700; letter-spacing:2px; color:var(--dim);
+  text-transform:uppercase; margin-bottom:14px; display:flex; align-items:center; gap:6px; }
+.panel-title::before { content:''; display:inline-block; width:3px; height:12px;
+  background:var(--accent); border-radius:2px; }
+
+/* Stat cards */
+.stat-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:10px; }
+.stat { background:#0a0b14; border:1px solid var(--border); border-radius:8px; padding:12px; }
+.stat-label { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:uppercase; margin-bottom:4px; }
+.stat-value { font-size:20px; font-weight:700; }
+.stat-sub   { font-size:10px; color:var(--dim); margin-top:2px; }
+
+/* DEFCON */
+.defcon-num   { font-size:72px; font-weight:900; line-height:1; }
+.defcon-label { font-size:11px; letter-spacing:3px; margin-top:4px; }
+.defcon-row   { display:flex; gap:6px; margin-top:14px; }
+
+/* Tables */
+table { width:100%; border-collapse:collapse; }
+th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:uppercase;
+     padding:6px 8px; border-bottom:1px solid var(--border); text-align:left; font-weight:400; }
+.trow td { padding:8px 8px; border-bottom:1px solid #111; font-size:12px; }
+.trow:hover { background:#ffffff05; }
+.sym { font-weight:700; color:var(--accent); font-size:14px; }
+
+/* Model cards */
+.model-card { background:#0a0b14; border:1px solid var(--border); border-radius:8px; padding:14px; }
+.card-label { font-size:10px; font-weight:700; letter-spacing:2px; color:var(--dim); text-transform:uppercase; }
+.themes-row { display:flex; flex-wrap:wrap; gap:6px; }
+.theme-pill { background:#1a1a2e; border:1px solid #2a2a50; border-radius:20px;
+              padding:3px 10px; font-size:10px; color:#aaa; }
+.micro-label { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:uppercase; margin-bottom:3px; }
+.two-col { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.ticker-tag { background:#00d4ff15; color:var(--accent); border:1px solid #00d4ff33;
+              border-radius:4px; padding:2px 8px; font-size:11px; font-weight:700; }
+
+/* News */
+.news-item { border-bottom:1px solid #111; padding:10px 0; }
+.news-item:last-child { border-bottom:none; }
+.news-scroll { max-height:360px; overflow-y:auto; }
+
+/* Macro */
+.macro-grid { display:grid; grid-template-columns:100px 1fr; gap:16px; align-items:start; }
+.macro-row { display:flex; justify-content:space-between; padding:5px 0; border-bottom:1px solid #111; font-size:12px; }
+.macro-row:last-child { border:none; }
+
+/* Scrollable tables */
+.scroll-wrap { max-height:300px; overflow-y:auto; }
+.scroll-wrap::-webkit-scrollbar { width:4px; }
+.scroll-wrap::-webkit-scrollbar-thumb { background:var(--border); border-radius:4px; }
+.news-scroll::-webkit-scrollbar { width:4px; }
+.news-scroll::-webkit-scrollbar-thumb { background:var(--border); border-radius:4px; }
+
+/* Sparkline row */
+.spark-row { display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid #111; }
+.spark-row:last-child { border-bottom:none; }
+.spark-label { width:80px; font-size:10px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; flex-shrink:0; }
+.spark-val { font-size:13px; font-weight:700; width:55px; text-align:right; flex-shrink:0; }
+
+/* Section separator */
+.section-head { font-size:10px; letter-spacing:3px; color:var(--dim); text-transform:uppercase;
+  margin:24px 0 12px; padding-bottom:6px; border-bottom:1px solid var(--border); }
+
+/* Live indicator */
+.live-dot { display:inline-block; width:7px; height:7px; background:var(--green);
+  border-radius:50%; margin-right:4px; animation:pulse 2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+/* Win rate bar */
+.wr-bar  { background:#111; border-radius:4px; height:6px; overflow:hidden; margin-top:4px; }
+.wr-fill { height:100%; border-radius:4px; background:linear-gradient(90deg,var(--green),#00d4ff); }
+
+/* Footer */
+.footer { text-align:center; color:#2a2a40; font-size:10px; letter-spacing:2px; padding:24px 0; margin-top:10px; }
+</style>
+</head>
+<body>
+<div class="page">
+""" + f"""
+<!-- ═══ HEADER ═══ -->
+<div class="header">
+  <div>
+    <div class="header-title">&#9889; HIGHTRADE</div>
+    <div style="font-size:10px;color:#2a3a4a;letter-spacing:3px;margin-top:3px;">AUTONOMOUS TRADING INTELLIGENCE SYSTEM</div>
+  </div>
+  <div class="header-meta">
+    <span class="live-dot"></span>LIVE<br/>
+    Generated: {now_str}<br/>
+    Last cycle: {last_cycle}
+  </div>
+</div>
+
+<!-- ═══ ROW 1: DEFCON · PORTFOLIO · MACRO ═══ -->
+<div class="grid-top">
+
+  <!-- DEFCON PANEL -->
+  <div class="panel" style="display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;border-color:{dc_color}44;">
+    <div class="panel-title" style="justify-content:center;">System Status</div>
+    <div class="defcon-num" style="color:{dc_color};">D{defcon}</div>
+    <div class="defcon-label" style="color:{dc_color};">{dc_label}</div>
+    <div class="defcon-row">{defcon_blocks}</div>
+    <div style="margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%;">
+      <div class="stat">
+        <div class="stat-label">Signal Score</div>
+        <div class="stat-value" style="font-size:18px;color:#00d4ff;">{signal_score:.1f}</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">VIX</div>
+        <div class="stat-value" style="font-size:18px;color:{'#ff8c00' if vix > 20 else '#00ff88'};">{vix:.2f}</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">10Y Yield</div>
+        <div class="stat-value" style="font-size:16px;color:#aaa;">{bond:.2f}%</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">2Y Yield</div>
+        <div class="stat-value" style="font-size:16px;color:#aaa;">{rate_2y:.2f}%</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PORTFOLIO PANEL -->
+  <div class="panel">
+    <div class="panel-title">Portfolio</div>
+    <div class="stat-grid">
+      <div class="stat">
+        <div class="stat-label">Account Value</div>
+        <div class="stat-value" style="font-size:22px;color:{'#00ff88' if account_value >= total_capital else '#ff4444'};">${account_value:,.0f}</div>
+        <div class="stat-sub">Base Capital: $100,000</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Total P&amp;L</div>
+        <div class="stat-value" style="font-size:22px;color:{pnl_color(total_pnl)};">{fmt_dollar(total_pnl)}</div>
+        <div class="stat-sub">{fmt_pct(total_pnl_pct)} on capital</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Realized P&amp;L</div>
+        <div class="stat-value" style="font-size:18px;color:{pnl_color(realized)};">{fmt_dollar(realized)}</div>
+        <div class="stat-sub">{wins}W / {losses}L closed</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Unrealized P&amp;L</div>
+        <div class="stat-value" style="font-size:18px;color:{pnl_color(unrealized)};">{fmt_dollar(unrealized)}</div>
+        <div class="stat-sub">{len(positions)} open position{'s' if len(positions) != 1 else ''}</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Cash Available</div>
+        <div class="stat-value" style="font-size:18px;">${cash:,.0f}</div>
+        <div class="stat-sub">Deployed: ${deployed:,.0f}</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Win Rate</div>
+        <div class="stat-value" style="font-size:18px;color:{'#00ff88' if win_rate >= 50 else '#ff8c00'};">{win_rate:.0f}%</div>
+        <div class="wr-bar"><div class="wr-fill" style="width:{win_rate}%;"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MACRO PANEL -->
+  <div class="panel">
+    <div class="panel-title">Macro Environment</div>
+    <div class="macro-grid">
+      <div style="display:flex;flex-direction:column;align-items:center;">
+        {macro_ring}
+        <div style="font-size:9px;color:#555;margin-top:4px;text-align:center;">{macro_supportive}</div>
+      </div>
+      <div>
+        <div class="macro-row"><span style="color:#888;">Fed Funds</span><span>{float(macro.get('fed_funds_rate') or 0):.2f}%</span></div>
+        <div class="macro-row"><span style="color:#888;">Yield Curve</span><span style="color:{yc_color};">{yc_spread:+.2f}%</span></div>
+        <div class="macro-row"><span style="color:#888;">Unemployment</span><span>{float(macro.get('unemployment_rate') or 0):.1f}%</span></div>
+        <div class="macro-row"><span style="color:#888;">HY Spreads</span><span style="color:{hy_color};">{hy_bps:.0f} bps</span></div>
+        <div class="macro-row"><span style="color:#888;">Cons. Sentiment</span><span style="color:{cs_color};">{cs_val:.1f}</span></div>
+        <div class="macro-row"><span style="color:#888;">M2 YoY</span><span>{float(macro.get('m2_yoy_change') or 0):+.2f}%</span></div>
+      </div>
+    </div>
+    <div style="margin-top:10px;border-top:1px solid #111;padding-top:8px;">
+      {macro_sig_pills}
+    </div>
+  </div>
+
+</div>
+
+<!-- ═══ SIGNAL SPARKLINES ═══ -->
+<div class="grid-full">
+  <div class="panel">
+    <div class="panel-title">Signal History &mdash; Last {len(sig_history)} Monitoring Cycles</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;">
+      <div class="spark-row">
+        <div class="spark-label">VIX</div>
+        {vix_spark}
+        <div class="spark-val" style="color:#ff8c00;">{vix_last}</div>
+      </div>
+      <div class="spark-row">
+        <div class="spark-label">News Score</div>
+        {news_spark}
+        <div class="spark-val" style="color:#c084fc;">{news_last}</div>
+      </div>
+      <div class="spark-row">
+        <div class="spark-label">Signal</div>
+        {sig_spark}
+        <div class="spark-val" style="color:#00d4ff;">{sig_last}</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ DAILY INTELLIGENCE BRIEFING ═══ -->
+<div class="section-head">&#129504; Daily Intelligence Briefing &mdash; {briefing_date}</div>
+
+<div class="grid-full">
+  <div class="panel" style="border-color:#7eb8f733;">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:20px;">
+      <div style="flex:1;">
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;">
+          {regime_badge(latest_b.get('market_regime'))}
+          <span style="color:#888;font-size:11px;">Confidence: <span style="color:{latest_conf_c};font-weight:700;">{latest_conf:.0%}</span></span>
+          <span style="color:#888;font-size:11px;">&bull; Gemini Pro 3 Reasoning</span>
         </div>
-
-        <div class="section-title">📈 Performance by Asset</div>
-        <div class="card">
-            <table style="width: 100%; border-collapse: collapse; font-size: 0.9em;">
-                <thead>
-                    <tr style="background-color: #f5f5f5; border-bottom: 2px solid #ddd;">
-                        <th style="padding: 12px; text-align: left;">Asset</th>
-                        <th style="padding: 12px; text-align: center;">Trades</th>
-                        <th style="padding: 12px; text-align: right;">P&L</th>
-                        <th style="padding: 12px; text-align: center;">Win %</th>
-                        <th style="padding: 12px; text-align: right;">Avg Return</th>
-                    </tr>
-                </thead>
-                <tbody>
-        '''
-
-        if portfolio_by_asset:
-            for asset in sorted(portfolio_by_asset.keys()):
-                metrics = portfolio_by_asset[asset]
-                pnl_color = '#28a745' if metrics['total_pnl'] >= 0 else '#dc3545'
-                html += f'''
-                    <tr style="border-bottom: 1px solid #eee;">
-                        <td style="padding: 12px;"><strong>{asset}</strong></td>
-                        <td style="padding: 12px; text-align: center;">{metrics['total_trades']}</td>
-                        <td style="padding: 12px; text-align: right; color: {pnl_color};">${metrics['total_pnl']:+,.0f}</td>
-                        <td style="padding: 12px; text-align: center;">{metrics['win_rate']:.0f}%</td>
-                        <td style="padding: 12px; text-align: right;">{metrics['avg_return']:+.2f}%</td>
-                    </tr>
-                '''
-        else:
-            html += '''
-                    <tr>
-                        <td colspan="5" style="padding: 12px; text-align: center; color: #999;">No trades yet</td>
-                    </tr>
-            '''
-
-        html += '''
-                </tbody>
-            </table>
+        <div style="color:#ddd;font-size:13px;line-height:1.75;">{latest_b.get('headline_summary','No briefing available. Run /briefing to generate one.')}</div>
+        <div class="themes-row" style="margin-top:10px;">{latest_theme_pills}</div>
+      </div>
+      <div style="min-width:240px;max-width:340px;flex-shrink:0;">
+        <div style="margin-bottom:12px;">
+          <div class="micro-label" style="margin-bottom:4px;">Signal Quality Assessment</div>
+          <div style="color:#aaa;font-size:11px;line-height:1.6;word-wrap:break-word;overflow-wrap:break-word;white-space:normal;">{(latest_b.get('signal_quality') or '—')[:280]}</div>
         </div>
+        <div>
+          <div class="micro-label" style="margin-bottom:4px;">Portfolio Assessment</div>
+          <div style="color:#aaa;font-size:11px;line-height:1.6;word-wrap:break-word;overflow-wrap:break-word;white-space:normal;">{(latest_b.get('portfolio_assessment') or '—')[:280]}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
-        <div class="section-title">📍 Open Positions</div>
-        <div class="card">
-        '''
+<div class="grid-three">
+  {reasoning_card}
+  {fast_card}
+  {balanced_card}
+</div>
 
-        if portfolio_open_pos:
-            html += f'''
-            <table style="width: 100%; border-collapse: collapse; font-size: 0.85em;">
-                <thead>
-                    <tr style="background-color: #f5f5f5; border-bottom: 2px solid #ddd;">
-                        <th style="padding: 10px; text-align: left;">Asset</th>
-                        <th style="padding: 10px; text-align: center;">Shares</th>
-                        <th style="padding: 10px; text-align: right;">Entry Price</th>
-                        <th style="padding: 10px; text-align: right;">Value</th>
-                        <th style="padding: 10px; text-align: left;">Entry Date</th>
-                    </tr>
-                </thead>
-                <tbody>
-            '''
-            for pos in portfolio_open_pos:
-                html += f'''
-                    <tr style="border-bottom: 1px solid #eee;">
-                        <td style="padding: 10px;"><strong>{pos['asset_symbol']}</strong></td>
-                        <td style="padding: 10px; text-align: center;">{pos['shares']}</td>
-                        <td style="padding: 10px; text-align: right;">${pos['entry_price']:.2f}</td>
-                        <td style="padding: 10px; text-align: right;">${pos['position_size_dollars']:,.0f}</td>
-                        <td style="padding: 10px;">{pos['entry_date']}</td>
-                    </tr>
-                '''
-            html += '''
-                </tbody>
-            </table>
-            '''
-        else:
-            html += '<p style="text-align: center; color: #999;">No open positions</p>'
+<!-- ═══ PORTFOLIO POSITIONS ═══ -->
+<div class="section-head">&#128202; Portfolio Positions</div>
 
-        html += '</div>'
-        return html
+<div class="grid-full">
+  <div class="panel">
+    <div class="panel-title">Open Positions</div>
+    <div class="scroll-wrap">
+      <table>
+        <thead><tr>
+          <th>Symbol</th><th>Shares</th><th>Entry</th><th>Current</th>
+          <th>Mkt Value</th><th>Unrlzd P&amp;L</th><th>Return</th><th>DEFCON@Entry</th>
+        </tr></thead>
+        <tbody>{open_rows}</tbody>
+      </table>
+    </div>
+  </div>
+</div>
 
-    def _render_alerts(self, alerts, defcon_names):
-        """Render recent alerts HTML"""
-        if not alerts:
-            return '<p style="color: #666; text-align: center;">No DEFCON changes recorded yet</p>'
+<div class="grid-full">
+  <div class="panel">
+    <div class="panel-title">Closed Trades</div>
+    <div class="scroll-wrap">
+      <table>
+        <thead><tr>
+          <th>Symbol</th><th>Shares</th><th>Entry</th><th>Exit</th>
+          <th>P&amp;L</th><th>Return</th><th>Exit Reason</th><th>Close Date</th>
+        </tr></thead>
+        <tbody>{closed_rows}</tbody>
+      </table>
+    </div>
+  </div>
+</div>
 
-        html = ''
-        badge_classes = {
-            5: 'badge-defcon5',
-            4: 'badge-defcon4',
-            3: 'badge-defcon3',
-            2: 'badge-defcon2',
-            1: 'badge-defcon1'
+<!-- ═══ ACQUISITION PIPELINE ═══ -->
+<div class="section-head">&#127919; Acquisition Pipeline</div>
+
+<div class="grid-full">
+  <div class="panel">
+    <div class="panel-title">Watchlist &mdash; Research Queue</div>
+    <div class="scroll-wrap">
+      <table>
+        <thead><tr>
+          <th>Ticker</th><th>Confidence</th><th>Regime</th><th>Entry Conditions</th><th>Status</th><th>Added</th>
+        </tr></thead>
+        <tbody>{wl_rows}</tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ NEWS · CONGRESSIONAL ═══ -->
+<div class="grid-mid">
+
+  <div class="panel">
+    <div class="panel-title">News Intelligence &mdash; Recent Signals</div>
+    <div class="news-scroll">{news_items}</div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">Congressional Intelligence</div>
+    <div style="margin-bottom:14px;">
+      <div class="micro-label" style="margin-bottom:6px;">Cluster Buy Signals</div>
+      <table>
+        <thead><tr><th>Ticker</th><th>Strength</th><th>Count</th><th>$ Volume</th><th>Flag</th><th>Date</th></tr></thead>
+        <tbody>{cong_cl_rows}</tbody>
+      </table>
+    </div>
+    <div>
+      <div class="micro-label" style="margin-bottom:6px;">Recent Disclosures</div>
+      <div class="scroll-wrap" style="max-height:180px;">
+        <table>
+          <thead><tr><th>Trade</th><th>Politician</th><th>Party &bull; Chamber</th><th>Amount</th><th>Date</th></tr></thead>
+          <tbody>{cong_tr_rows}</tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ═══ SYSTEM ARCHITECTURE ═══ -->
+<div class="section-head">&#127959;&#65039; System Architecture</div>
+
+<div class="grid-three">
+
+  <div class="panel">
+    <div class="panel-title">Research Team</div>
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <div class="stat">
+        <div class="stat-label">News Engine</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; ACTIVE &mdash; 15-min cycles</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">5-component scoring: sentiment &middot; concentration &middot; urgency &middot; confidence &middot; specificity</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Congressional Tracker</div>
+        <div style="color:{'#ffd700' if not cong_clusters else '#00ff88'};font-size:11px;">{'&#9888;&#65039; S3 intermittent &mdash; Capitol Trades fallback' if not cong_clusters else '&#9679; ACTIVE'}</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">House + Senate disclosures &middot; cluster detection (3+ politicians in 30 days)</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">FRED Macro</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; ACTIVE &mdash; Score {macro_score_val:.0f}/100</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">9 indicators: yield curve &middot; fed funds &middot; unemployment &middot; M2 &middot; HY spreads &middot; sentiment</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Acquisition Researcher</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; ACTIVE</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">yfinance &middot; SEC EDGAR &middot; analyst targets &middot; news + congressional integration</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">Intelligence Team</div>
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <div class="stat">
+        <div class="stat-label">Gemini Fast (Flash)</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; thinkingBudget=0 &mdash; news triage</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Real-time article analysis, action classification every cycle</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Gemini Balanced (Flash 8k)</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; thinkingBudget=8000 &mdash; daily fast tier</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Daily briefing balanced depth, broader reasoning</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Gemini Reasoning (Pro 3)</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; thinkingBudget=-1 &mdash; deep analysis</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Primary daily briefing &middot; acquisition analyst &middot; 16k+ output tokens</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Acquisition Verifier</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; Flash daily reverification</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Confirms / flags / invalidates conditional tracking entries</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">Broker / Execution</div>
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <div class="stat">
+        <div class="stat-label">DEFCON System</div>
+        <div style="color:{dc_color};font-size:11px;">&#9679; D{defcon} &mdash; {dc_label}</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Signal-driven 1&ndash;5 scale &middot; Macro modifier: {defcon_mod_val:+.1f}</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Broker Agent</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; AUTONOMOUS mode</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Buys on DEFCON 1&ndash;2 &middot; profit target + stop loss exits &middot; acq. conditionals</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Position Sizing</div>
+        <div style="color:#aaa;font-size:11px;">Base $10K &middot; Min $3K &middot; Max $20K</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">{len(positions)} open &middot; ${deployed:,.0f} deployed &middot; ${cash:,.0f} available</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Manual Commands</div>
+        <div style="color:#7eb8f7;font-size:11px;">Slack: /buy &middot; /sell &middot; /hold &middot; /briefing</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">IPC file bridge &middot; full override capability</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="footer">HIGHTRADE &middot; PAPER TRADING &middot; NOT FINANCIAL ADVICE &middot; {now_str}</div>
+</div>
+</body>
+</html>"""
+
+    return html
+
+
+# ─── HTML generation helper (used by both CLI and Flask) ─────────────────────
+
+def generate_dashboard_html():
+    """Fetch all data and build HTML. Called on every request in server mode."""
+    status    = fetch_system_status()
+    positions = fetch_open_positions()
+    closed    = fetch_closed_trades()
+    stats     = fetch_portfolio_stats()
+    briefings = fetch_daily_briefings()
+    macro     = fetch_macro()
+    watchlist = fetch_acquisition_watchlist()
+    sig_hist  = fetch_signal_history()
+    news      = fetch_recent_news()
+    cong_cl, cong_tr = fetch_congressional()
+    return build_html(status, positions, closed, stats, briefings, macro,
+                      watchlist, sig_hist, news, cong_cl, cong_tr)
+
+
+# ─── Flask server ─────────────────────────────────────────────────────────────
+
+def run_server(host='0.0.0.0', port=5055):
+    try:
+        from flask import Flask, Response, request as flask_request
+    except ImportError:
+        print("Flask not installed. Run:  pip install flask")
+        sys.exit(1)
+
+    import socket
+    app = Flask(__name__)
+
+    # Detect local IP for share link
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        local_ip = 'localhost'
+
+    @app.route('/')
+    def dashboard():
+        html = generate_dashboard_html()
+        # Inject auto-refresh meta tag into <head> (every 60s by default)
+        refresh = flask_request.args.get('refresh', '60')
+        try:
+            int(refresh)
+        except ValueError:
+            refresh = '60'
+        if refresh != '0':
+            html = html.replace(
+                '<meta name="viewport"',
+                f'<meta http-equiv="refresh" content="{refresh}"/>\n<meta name="viewport"',
+                1
+            )
+        return Response(html, mimetype='text/html')
+
+    @app.route('/health')
+    def health():
+        status = fetch_system_status()
+        return {
+            'status': 'ok',
+            'defcon': status.get('defcon_level'),
+            'signal_score': status.get('signal_score'),
+            'last_cycle': status.get('created_at'),
         }
 
-        for alert in alerts:
-            defcon = alert['defcon_level']
-            html += f'''
-            <div class="alert-item">
-                <div>
-                    <span class="alert-badge {badge_classes.get(defcon, 'badge-defcon5')}">
-                        DEFCON {defcon}: {defcon_names.get(defcon, 'UNKNOWN')}
-                    </span>
-                    <div class="alert-time">{alert['event_date']} {alert['event_time']}</div>
-                </div>
-            </div>
-            '''
+    print()
+    print("  ⚡ HighTrade Dashboard Server")
+    print(f"   Local:   http://localhost:{port}")
+    print(f"   Network: http://{local_ip}:{port}  ← share this with your team")
+    print(f"   Health:  http://{local_ip}:{port}/health")
+    print(f"   Auto-refresh: every 60s  (append ?refresh=30 to change, ?refresh=0 to disable)")
+    print()
+    print("   Press Ctrl+C to stop")
+    print()
+    app.run(host=host, port=port, debug=False, threaded=True)
 
-        return html
 
-    def _render_logs(self, logs):
-        """Render recent system logs HTML"""
-        if not logs:
-            return '<p style="color: #666; text-align: center;">No log entries available yet</p>'
+# ─── CLI entry point ──────────────────────────────────────────────────────────
 
-        html = ''
-        for log in logs:
-            level = log.get('level', 'INFO').strip()
-            level_class = f'log-level-{level.lower()}'
-            timestamp = log.get('timestamp', '')
-            message = log.get('message', '').replace('<', '&lt;').replace('>', '&gt;')
+def main():
+    if not DB_PATH.exists():
+        print("ERROR: Database not found. Is hightrade_orchestrator.py running?")
+        sys.exit(1)
 
-            html += f'''
-            <div class="log-entry {level_class}">
-                <div class="log-timestamp">{timestamp}</div>
-                <div class="log-message">{message}</div>
-            </div>
-            '''
+    # Server mode
+    if '--serve' in sys.argv or '-s' in sys.argv:
+        port = 5055
+        for arg in sys.argv:
+            if arg.startswith('--port='):
+                try:
+                    port = int(arg.split('=')[1])
+                except ValueError:
+                    pass
+        run_server(port=port)
+        return
 
-        return html
+    # Static file generation mode
+    print("  HighTrade Dashboard Generator")
+    print(f"   DB:  {DB_PATH}")
+    print(f"   Out: {OUT_PATH}")
+    print("   Fetching data...", end='', flush=True)
 
-    def save_dashboard(self, output_path=None):
-        """Generate and save dashboard HTML"""
-        if output_path is None:
-            output_path = SCRIPT_DIR / 'trading_data' / 'dashboard.html'
+    html = generate_dashboard_html()
+    print(" done")
 
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+    OUT_PATH.parent.mkdir(exist_ok=True)
+    OUT_PATH.write_text(html, encoding='utf-8')
+    print(f"   Dashboard written -> {OUT_PATH}")
 
-        html_content = self.generate_html()
+    if '--open' in sys.argv or '-o' in sys.argv:
+        webbrowser.open(f'file://{OUT_PATH.resolve()}')
+        print("   Opened in browser")
 
-        with open(output_path, 'w') as f:
-            f.write(html_content)
-
-        return output_path
 
 if __name__ == '__main__':
-    dashboard = Dashboard()
-
-    # Generate and save dashboard
-    output_file = dashboard.save_dashboard()
-    print(f"✅ Dashboard generated: {output_file}")
-    print(f"\n📊 Open in browser:")
-    print(f"   open {output_file}")
-    print(f"\n🔄 Auto-refresh every 15 minutes with:")
-    print(f"   python3 dashboard.py")
+    main()
