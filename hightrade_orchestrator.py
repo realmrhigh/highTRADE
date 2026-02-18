@@ -332,6 +332,8 @@ class HighTradeOrchestrator:
                     p['current_price'] = round(current_price, 2)
                     p['unrealized_pnl_dollars'] = round(upnl_dollars, 2)
                     p['unrealized_pnl_percent'] = round(upnl_pct, 2)
+                    # Also fix position_size_dollars to true cost basis (entry * shares)
+                    p['position_size_dollars'] = round(cost_basis, 2)
 
                     # Persist to DB
                     try:
@@ -339,7 +341,8 @@ class HighTradeOrchestrator:
                         conn.execute("""
                             UPDATE trade_records
                             SET current_price = ?, unrealized_pnl_dollars = ?,
-                                unrealized_pnl_percent = ?, last_price_updated = ?
+                                unrealized_pnl_percent = ?, last_price_updated = ?,
+                                position_size_dollars = entry_price * shares
                             WHERE trade_id = ? AND status = 'open'
                         """, (current_price, upnl_dollars, upnl_pct,
                               _dt.now().isoformat(), p.get('trade_id')))
@@ -349,7 +352,7 @@ class HighTradeOrchestrator:
                         pass
 
             except Exception as e:
-                logger.debug(f"Price fetch failed for {sym}: {e}")
+                logger.warning(f"Price fetch failed for {sym}: {e}")
 
             enriched.append(p)
         return enriched
