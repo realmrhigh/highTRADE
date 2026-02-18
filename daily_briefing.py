@@ -22,13 +22,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import gemini_client
+
 logger = logging.getLogger(__name__)
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
 DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
-
-GEMINI_API_KEY = "AIzaSyCoMHEwOaAOtCRYQYSZUF2X0jpkdWNRuOY"
-GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 # ── Model tiers ────────────────────────────────────────────────────────────────
 # Each tier uses thinkingConfig.thinkingBudget to control depth of reasoning.
@@ -72,57 +71,23 @@ MODELS = {k: v['model_id'] for k, v in MODEL_CONFIG.items()}
 
 def _call_gemini(model_key: str, prompt: str) -> Tuple[Optional[str], int, int]:
     """
-    Make API call to Gemini using the tier config in MODEL_CONFIG.
-    Returns (text, input_tokens, output_tokens).
-
-    Thinking models return parts with thought=True (internal reasoning) and
-    thought=False (actual output). We filter to output-only parts.
-    When thinking_budget == 0 the thinkingConfig block is omitted entirely.
+    Call Gemini via gemini_client (OAuth CLI → REST API fallback).
+    Logs which auth path was used so we can track subscription usage.
     """
+    cli_ok, _ = gemini_client._get_cli_status()
+    auth_path = "OAuth/CLI" if cli_ok else "REST/API-key"
     cfg = MODEL_CONFIG[model_key]
-    model_id = cfg['model_id']
-    url = f"{GEMINI_API_BASE}/{model_id}:generateContent?key={GEMINI_API_KEY}"
 
-    gen_config = {
-        "temperature": cfg['temperature'],
-        "maxOutputTokens": cfg['max_output_tokens'],
-    }
-    # Only add thinkingConfig when thinking is enabled
-    if cfg['thinking_budget'] != 0:
-        gen_config["thinkingConfig"] = {"thinkingBudget": cfg['thinking_budget']}
+    logger.info(f"  📡 {model_key} via {auth_path} ({cfg['model_id']}, thinking={cfg['thinking_budget']})")
 
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": gen_config,
-    }
-    try:
-        resp = requests.post(url, json=payload, timeout=180)
-        resp.raise_for_status()
-        data = resp.json()
+    text, in_tok, out_tok = gemini_client.call(
+        prompt=prompt,
+        model_key=model_key,
+    )
 
-        cand = data.get('candidates', [{}])[0]
-        finish = cand.get('finishReason', 'UNKNOWN')
-        parts = cand.get('content', {}).get('parts', [])
-
-        # Filter out thought parts — only keep the actual model output
-        output_parts = [p for p in parts if 'text' in p and not p.get('thought', False)]
-        text = ''.join(p['text'] for p in output_parts).strip()
-
-        usage = data.get('usageMetadata', {})
-        in_tok  = usage.get('promptTokenCount', 0)
-        out_tok = usage.get('candidatesTokenCount', 0)
-        tht_tok = usage.get('thoughtsTokenCount', 0)
-
-        if not text:
-            logger.warning(f"  ⚠️  {model_key} ({model_id}): empty output | finish={finish} | thought={tht_tok}tok")
-            return None, in_tok, out_tok
-
-        logger.info(f"  📊 {model_key} tokens: prompt={in_tok} | thought={tht_tok} | output={out_tok} | finish={finish}")
-        return text, in_tok, out_tok
-
-    except Exception as e:
-        logger.error(f"Gemini {model_key} ({model_id}) call failed: {e}")
-        return None, 0, 0
+    if text:
+        logger.info(f"  📊 {model_key} tokens: in={in_tok} out={out_tok} | auth={auth_path}")
+    return text, in_tok, out_tok
 
 
 def _gather_daily_context(db_path: str, date_str: str = None) -> Dict:

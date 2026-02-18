@@ -13,13 +13,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import gemini_client
+
 logger = logging.getLogger(__name__)
 
-GEMINI_API_KEY = "AIzaSyCoMHEwOaAOtCRYQYSZUF2X0jpkdWNRuOY"
-GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
-
 FLASH_MODEL = "gemini-2.5-flash"
-PRO_MODEL = "gemini-3-pro-preview"
+PRO_MODEL   = "gemini-3-pro-preview"
 
 # Trigger Pro analysis when score exceeds this
 PRO_TRIGGER_SCORE = 40.0
@@ -28,8 +27,8 @@ PRO_TRIGGER_SCORE = 40.0
 class GeminiAnalyzer:
     """Two-tier Gemini analysis for news signals"""
 
-    def __init__(self, api_key: str = GEMINI_API_KEY):
-        self.api_key = api_key
+    def __init__(self, api_key: str = None):
+        # api_key kept for signature compatibility but ignored — gemini_client handles auth
         self.flash_model = FLASH_MODEL
         self.pro_model = PRO_MODEL
         self.pro_trigger_score = PRO_TRIGGER_SCORE
@@ -67,37 +66,19 @@ class GeminiAnalyzer:
 
     def _call_gemini(self, model: str, prompt: str, temperature: float = 0.3) -> Tuple[Optional[str], int, int]:
         """
-        Make API call to Gemini.
-        Returns: (response_text, input_tokens, output_tokens)
+        Call Gemini via gemini_client (OAuth CLI → REST API fallback).
+        model is a model_id string; we map it to the appropriate tier key.
         """
-        url = f"{GEMINI_API_BASE}/{model}:generateContent?key={self.api_key}"
-        
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": temperature,
-                "maxOutputTokens": 2048
-            }
-        }
-        
-        try:
-            response = requests.post(url, json=payload, timeout=30)
-            response.raise_for_status()
-            data = response.json()
-            
-            text = data['candidates'][0]['content']['parts'][0]['text']
-            usage = data.get('usageMetadata', {})
-            input_tokens = usage.get('promptTokenCount', 0)
-            output_tokens = usage.get('candidatesTokenCount', 0)
-            
-            return text, input_tokens, output_tokens
-            
-        except requests.exceptions.Timeout:
-            logger.error(f"Gemini {model} call timed out")
-            return None, 0, 0
-        except Exception as e:
-            logger.error(f"Gemini {model} call failed: {e}")
-            return None, 0, 0
+        if model == self.flash_model:
+            model_key = 'flash'
+        else:
+            model_key = 'pro'
+
+        return gemini_client.call(
+            prompt=prompt,
+            model_key=model_key,
+            temperature=temperature,
+        )
 
     def _build_flash_prompt(self, articles: List[Dict], score_components: Dict, 
                              sentiment_summary: str, crisis_type: str) -> str:
@@ -257,27 +238,17 @@ Provide a comprehensive trading risk analysis. Respond with ONLY valid JSON:
             news_score, flash_analysis, current_defcon, positions
         )
         
-        # Pro gets higher token limit for detailed response
-        url = f"{GEMINI_API_BASE}/{self.pro_model}:generateContent?key={self.api_key}"
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": 0.1,  # Low temp for analytical consistency
-                "maxOutputTokens": 2048,
-                "responseMimeType": "application/json"
-            }
-        }
-        
+        # Pro gets full reasoning budget via gemini_client
+        text, input_tokens, output_tokens = gemini_client.call(
+            prompt=prompt,
+            model_key='pro',
+        )
+
+        if not text:
+            logger.error("  ❌ Gemini Pro returned no response")
+            return None
+
         try:
-            response = requests.post(url, json=payload, timeout=60)
-            response.raise_for_status()
-            data = response.json()
-            
-            text = data['candidates'][0]['content']['parts'][0]['text']
-            usage = data.get('usageMetadata', {})
-            input_tokens = usage.get('promptTokenCount', 0)
-            output_tokens = usage.get('candidatesTokenCount', 0)
-            
             result = self._parse_json_response(text)
             result['model'] = self.pro_model
             result['input_tokens'] = input_tokens
