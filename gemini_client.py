@@ -26,10 +26,16 @@ import requests
 from pathlib import Path
 from typing import Optional, Tuple
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent / ".env")
+except ImportError:
+    pass  # python-dotenv not installed; rely on shell environment
+
 logger = logging.getLogger(__name__)
 
-# ── API key (fallback only) ────────────────────────────────────────────────────
-GEMINI_API_KEY  = "REDACTED_ROTATE_THIS_KEY"
+# ── API key (fallback only — loaded from .env, never hardcoded) ───────────────
+GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 # ── Model tiers ────────────────────────────────────────────────────────────────
