@@ -597,6 +597,9 @@ def _save_to_db(date_str: str, ctx: Dict, results: Dict):
     # Push watchlist tickers to acquisition queue (reasoning tier is authoritative)
     _queue_acquisition_watchlist(date_str, results)
 
+    # Reverify all active acquisition conditionals with Flash
+    _run_acquisition_verification()
+
 
 def _queue_acquisition_watchlist(date_str: str, results: Dict):
     """
@@ -656,6 +659,23 @@ def _queue_acquisition_watchlist(date_str: str, results: Dict):
 
     except Exception as e:
         logger.warning(f"Acquisition watchlist queue failed: {e}")
+
+
+def _run_acquisition_verification():
+    """
+    Run Flash reverification of all active acquisition conditionals.
+    Called automatically at the end of every daily briefing.
+    """
+    try:
+        import acquisition_verifier
+        summary = acquisition_verifier.run_verification_cycle()
+        logger.info(
+            f"  🔍 Verifier: confirmed={summary.get('confirmed',0)}, "
+            f"flagged={summary.get('flagged',0)}, "
+            f"invalidated={summary.get('invalidated',0)}"
+        )
+    except Exception as e:
+        logger.warning(f"Acquisition verification failed: {e}")
 
 
 def _send_slack_summary(date_str: str, ctx: Dict, results: Dict):

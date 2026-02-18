@@ -5,6 +5,7 @@ Analyzes market conditions, makes trade decisions, and executes on your behalf
 """
 
 import sqlite3
+import json
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -323,6 +324,133 @@ class BrokerDecisionEngine:
         else:
             logger.info(f"⏭️  DECISION SKIPPED: {decision.get('decision_type')}")
 
+    # ── Acquisition conditional checking ──────────────────────────────────────
+
+    def check_acquisition_conditionals(self) -> List[Dict]:
+        """
+        Check all 'active' conditionals in conditional_tracking.
+
+        For each conditional:
+          1. Fetch current live price via yfinance
+          2. If price <= entry_price_target → trigger the entry
+          3. If time_horizon_days exceeded → expire the conditional
+          4. Returns list of triggered trade decisions (caller executes them)
+        """
+        import sqlite3
+        import yfinance as yf
+        from pathlib import Path
+
+        db_path = Path(__file__).parent / 'trading_data' / 'trading_history.db'
+        triggered = []
+
+        try:
+            conn = sqlite3.connect(str(db_path))
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("""
+                SELECT id, ticker, date_created, entry_price_target,
+                       stop_loss, take_profit_1, take_profit_2,
+                       position_size_pct, time_horizon_days,
+                       thesis_summary, research_confidence,
+                       entry_conditions_json
+                FROM conditional_tracking
+                WHERE status = 'active'
+                ORDER BY research_confidence DESC
+            """)
+            actives = [dict(r) for r in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"conditional_tracking query failed: {e}")
+            return []
+
+        now = datetime.now()
+
+        for cond in actives:
+            ticker      = cond['ticker']
+            cond_id     = cond['id']
+            entry_target = cond.get('entry_price_target')
+            horizon_days = cond.get('time_horizon_days') or 30
+
+            # Check expiry
+            try:
+                date_created = datetime.strptime(cond['date_created'], '%Y-%m-%d')
+                if (now - date_created).days > horizon_days:
+                    conn.execute(
+                        "UPDATE conditional_tracking SET status='expired', updated_at=? WHERE id=?",
+                        (now.isoformat(), cond_id)
+                    )
+                    conn.commit()
+                    logger.info(f"  ⏰ {ticker} conditional expired (>{horizon_days}d)")
+                    continue
+            except Exception:
+                pass
+
+            # Get current price
+            try:
+                stock = yf.Ticker(ticker)
+                hist = stock.history(period='1d')
+                current_price = float(hist['Close'].iloc[-1]) if len(hist) > 0 else None
+            except Exception as e:
+                logger.warning(f"  ⚠️  Price fetch failed for {ticker}: {e}")
+                continue
+
+            if not current_price or not entry_target:
+                continue
+
+            logger.debug(f"  📊 {ticker}: current=${current_price:.2f}, target=${entry_target:.2f}")
+
+            # Trigger check: price has reached or dropped to entry target
+            if current_price <= entry_target:
+                # Calculate position size
+                available_cash = self.paper_trading.total_capital - self._calculate_current_exposure()
+                raw_pct        = float(cond.get('position_size_pct') or 0.05)
+                confidence     = float(cond.get('research_confidence') or 0.5)
+                # Formulaic sizing: cash * confidence * analyst_size_pct, capped at 20%
+                MAX_PCT = 0.20
+                effective_pct  = min(raw_pct * confidence, MAX_PCT)
+                position_dollars = available_cash * effective_pct
+
+                if position_dollars < 100:
+                    logger.warning(f"  ⚠️  {ticker} position too small (${position_dollars:.0f}) — skipping")
+                    continue
+
+                # Exposure guard
+                if self._calculate_current_exposure() + position_dollars > self.paper_trading.total_capital * 0.60:
+                    logger.warning(f"  ⚠️  {ticker} would breach 60% exposure cap — skipping")
+                    continue
+
+                decision = {
+                    'timestamp':      now.isoformat(),
+                    'decision_type':  'ACQUISITION_CONDITIONAL',
+                    'source':         'conditional_tracking',
+                    'conditional_id': cond_id,
+                    'ticker':         ticker,
+                    'current_price':  current_price,
+                    'entry_target':   entry_target,
+                    'stop_loss':      cond.get('stop_loss'),
+                    'take_profit_1':  cond.get('take_profit_1'),
+                    'take_profit_2':  cond.get('take_profit_2'),
+                    'position_size':  position_dollars,
+                    'position_size_pct': effective_pct,
+                    'confidence':     confidence,
+                    'thesis':         cond.get('thesis_summary', ''),
+                    'entry_conditions': json.loads(cond.get('entry_conditions_json') or '[]'),
+                }
+                triggered.append(decision)
+                logger.info(
+                    f"  🎯 {ticker} TRIGGERED: current=${current_price:.2f} <= "
+                    f"target=${entry_target:.2f} | size=${position_dollars:,.0f} "
+                    f"({effective_pct*100:.0f}% of cash)"
+                )
+
+                # Mark as triggered in DB
+                conn.execute(
+                    "UPDATE conditional_tracking SET status='triggered', updated_at=? WHERE id=?",
+                    (now.isoformat(), cond_id)
+                )
+                conn.commit()
+
+        conn.close()
+        return triggered
+
 
 class BrokerNotificationEngine:
     """Handles notifications and tips for the user"""
@@ -543,6 +671,117 @@ class AutonomousBroker:
                     self.decision_engine.record_decision(exit, executed=True, result="SOLD")
 
         return exits_executed
+
+    def process_acquisition_conditionals(self) -> int:
+        """
+        Check all active acquisition conditionals and execute entries that have
+        been triggered (current price <= entry_price_target).
+
+        Position sizing formula:
+            position_dollars = available_cash * min(analyst_size_pct * confidence, 0.20)
+
+        Returns number of conditional entries executed.
+        """
+        logger.info("🎯 Broker: checking acquisition conditionals...")
+        triggered = self.decision_engine.check_acquisition_conditionals()
+
+        if not triggered:
+            logger.info("  📭 No conditionals triggered this cycle")
+            return 0
+
+        executed_count = 0
+        for decision in triggered:
+            ticker        = decision['ticker']
+            position_size = decision['position_size']
+            entry_price   = decision['current_price']
+
+            if not self.auto_execute:
+                logger.info(f"  ℹ️  CONDITIONAL READY (auto_execute off): {ticker} @ ${entry_price:.2f} — ${position_size:,.0f}")
+                self.decision_engine.record_decision(decision, executed=False, result="PENDING_AUTO")
+                continue
+
+            logger.info(f"  🤖 Executing acquisition entry: {ticker} @ ${entry_price:.2f} — ${position_size:,.0f}")
+
+            # Build a trade package compatible with PaperTradingEngine.execute_trade_package
+            trade_alert = {
+                'defcon_level':    3,  # Acquisition entries are pre-researched, lower urgency
+                'signal_score':    decision['confidence'] * 100,
+                'crisis_type':     'acquisition_conditional',
+                'crisis_description': decision.get('thesis', f'Acquisition conditional for {ticker}'),
+                'assets': {
+                    'primary_asset':          ticker,
+                    'secondary_asset':        None,
+                    'tertiary_asset':         None,
+                    'primary_allocation_pct': 1.0,
+                    'secondary_allocation_pct': 0.0,
+                    'tertiary_allocation_pct': 0.0,
+                    'primary_size':           position_size,
+                    'secondary_size':         0,
+                    'tertiary_size':          0,
+                },
+                'total_position_size': position_size,
+                'vix':             20.0,  # Conservative default — actual VIX not critical here
+                'rationale':       decision.get('thesis', ''),
+                'confidence_score': int(decision['confidence'] * 100),
+                'risk_reward_analysis': (
+                    f"Entry: ${entry_price:.2f} | "
+                    f"Stop: ${decision.get('stop_loss', 0):.2f} | "
+                    f"TP1: ${decision.get('take_profit_1', 0):.2f}"
+                ),
+                'time_window_minutes': 30,
+            }
+
+            try:
+                trade_ids = self.decision_engine.paper_trading.execute_trade_package(
+                    trade_alert, user_approval=True
+                )
+                if trade_ids:
+                    executed_count += 1
+                    self.decision_engine.record_decision(decision, executed=True, result="ACQUISITION_ENTERED")
+                    # Notify via Slack
+                    self._notify_acquisition_entry(decision)
+                    logger.info(f"  ✅ {ticker} acquisition entry executed (trade_ids={trade_ids})")
+                else:
+                    logger.warning(f"  ⚠️  {ticker} entry returned no trade IDs")
+            except Exception as e:
+                logger.error(f"  ❌ {ticker} acquisition entry failed: {e}")
+
+        return executed_count
+
+    def _notify_acquisition_entry(self, decision: Dict):
+        """Send Slack notification for an acquisition conditional entry."""
+        try:
+            ticker     = decision['ticker']
+            price      = decision['current_price']
+            size       = decision['position_size']
+            confidence = decision['confidence']
+            stop       = decision.get('stop_loss', 0)
+            tp1        = decision.get('take_profit_1', 0)
+            tp2        = decision.get('take_profit_2', 0)
+            thesis     = decision.get('thesis', '')
+            conditions = decision.get('entry_conditions', [])
+            cond_text  = '\n'.join(f"  • {c}" for c in conditions[:3]) if conditions else '  • N/A'
+
+            message = (
+                f"🎯 *ACQUISITION ENTRY EXECUTED*\n"
+                f"{'─'*40}\n"
+                f"Ticker: *{ticker}* @ ${price:.2f}\n"
+                f"Position: ${size:,.0f} ({decision.get('position_size_pct',0)*100:.0f}% of cash)\n"
+                f"Confidence: {confidence:.2f}\n\n"
+                f"📐 Levels:\n"
+                f"  Stop loss: ${stop:.2f}\n"
+                f"  Take profit 1: ${tp1:.2f}\n"
+                f"  Take profit 2: ${tp2:.2f}\n\n"
+                f"📋 Entry conditions met:\n{cond_text}\n\n"
+                f"💡 Thesis: {thesis}"
+            )
+            self.notification_engine.alerts.send_defcon_alert(
+                defcon_level=3,
+                signal_score=confidence * 100,
+                details=message
+            )
+        except Exception as e:
+            logger.warning(f"Acquisition notification failed: {e}")
 
     def _send_market_tips(self, defcon_level: int, signal_score: float, decision: Dict):
         """Send helpful trading tips based on market conditions"""

@@ -135,6 +135,7 @@ class HighTradeOrchestrator:
         self.pending_trade_exits = []
         self._new_interval = None  # Set by /interval command
         self._daily_briefing_date = None  # Track last briefing date
+        self._acquisition_pipeline_date = None  # Track last research+analyst run
 
         # Slash command processor
         self.cmd_processor = CommandProcessor(self)
@@ -748,6 +749,15 @@ Check dashboard for detailed analysis.
                         if exits > 0:
                             logger.info(f"✅ BROKER: {exits} position(s) exited autonomously")
 
+            # ── Acquisition conditionals (every cycle, any broker mode except disabled) ──
+            if self.broker_mode != 'disabled':
+                try:
+                    acq_entries = self.broker.process_acquisition_conditionals()
+                    if acq_entries > 0:
+                        logger.info(f"🎯 BROKER: {acq_entries} acquisition conditional(s) entered")
+                except Exception as acq_err:
+                    logger.warning(f"Acquisition conditional check failed: {acq_err}")
+
             # Send silent log to #logs-silent channel
             try:
                 status = self.monitor.get_status() or {}
@@ -830,8 +840,63 @@ Check dashboard for detailed analysis.
                         f"{r.get('_input_tokens',0)}→{r.get('_output_tokens',0)} tokens"
                     )
 
+            # Trigger acquisition pipeline after briefing (researcher then analyst)
+            # The briefing has already queued new tickers into acquisition_watchlist.
+            # Run these with a 60-second delay to not overlap Gemini calls.
+            self._run_acquisition_pipeline(today)
+
         except Exception as e:
             logger.warning(f"Daily briefing failed: {e}")
+
+    def _run_acquisition_pipeline(self, date_str: str):
+        """
+        Run the acquisition research → analyst pipeline once per day.
+
+        Called automatically after the daily briefing fires.
+        Researcher collects yfinance + SEC + internal data on pending tickers,
+        then Analyst runs Gemini 3 Pro to set conditionals above confidence threshold.
+        The Flash verifier already ran as part of daily_briefing._save_to_db.
+        """
+        if self._acquisition_pipeline_date == date_str:
+            return  # Already ran today
+
+        logger.info("🔬 Starting acquisition pipeline: researcher → analyst...")
+        self._acquisition_pipeline_date = date_str
+
+        import time as _time
+
+        # Step 1: Researcher — gather all data
+        try:
+            from acquisition_researcher import run_research_cycle
+            researched = run_research_cycle()
+            logger.info(f"  📚 Researcher: {len(researched)} tickers ready → {researched}")
+        except Exception as e:
+            logger.error(f"  ❌ Acquisition researcher failed: {e}")
+            return
+
+        if not researched:
+            logger.info("  📭 No tickers to analyze")
+            return
+
+        # Brief pause so we don't slam Gemini back-to-back with Pro calls
+        _time.sleep(10)
+
+        # Step 2: Analyst — set conditionals via Gemini 3 Pro
+        try:
+            from acquisition_analyst import run_analyst_cycle
+            results = run_analyst_cycle()
+            promoted = [
+                r.get('_ticker') for r in results
+                if r.get('should_enter') and r.get('research_confidence', 0) >= 0.7
+            ]
+            logger.info(
+                f"  🧠 Analyst: {len(results)} analyzed, "
+                f"{len(promoted)} promoted to broker → {promoted}"
+            )
+        except Exception as e:
+            logger.error(f"  ❌ Acquisition analyst failed: {e}")
+
+        logger.info("✅ Acquisition pipeline complete")
 
     def update_dashboard(self):
         """Generate updated dashboard"""
