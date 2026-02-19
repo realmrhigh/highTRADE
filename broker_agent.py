@@ -470,6 +470,7 @@ class BrokerDecisionEngine:
 
         db_path = Path(__file__).parent / 'trading_data' / 'trading_history.db'
         triggered = []
+        triggered_tickers = set()  # Prevent duplicate triggers for same ticker
 
         try:
             conn = sqlite3.connect(str(db_path))
@@ -526,7 +527,7 @@ class BrokerDecisionEngine:
             logger.debug(f"  📊 {ticker}: current=${current_price:.2f}, target=${entry_target:.2f}")
 
             # Trigger check: price has reached or dropped to entry target
-            if current_price <= entry_target:
+            if current_price <= entry_target and ticker not in triggered_tickers:
                 # Calculate position size using actual available cash (accounts for realized P&L)
                 available_cash = self._calculate_available_cash()
                 raw_pct        = float(cond.get('position_size_pct') or 0.05)
@@ -563,6 +564,7 @@ class BrokerDecisionEngine:
                     'entry_conditions': json.loads(cond.get('entry_conditions_json') or '[]'),
                 }
                 triggered.append(decision)
+                triggered_tickers.add(ticker)  # Only one conditional per ticker per cycle
                 logger.info(
                     f"  🎯 {ticker} TRIGGERED: current=${current_price:.2f} <= "
                     f"target=${entry_target:.2f} | size=${position_dollars:,.0f} "
@@ -683,10 +685,12 @@ Questions? Check the documentation:
 class AutonomousBroker:
     """Main autonomous broker that makes and executes trades"""
 
-    def __init__(self, auto_execute: bool = True, max_daily_trades: int = 5):
+    def __init__(self, auto_execute: bool = True, max_daily_trades: int = 5,
+                 broker_mode: str = 'full_auto'):
         self.decision_engine = BrokerDecisionEngine()
         self.notification_engine = BrokerNotificationEngine()
         self.auto_execute = auto_execute
+        self.broker_mode = broker_mode
         self.max_daily_trades = max_daily_trades
         self.trades_executed_today = 0
         self.last_reset = datetime.now().date()
@@ -813,10 +817,12 @@ class AutonomousBroker:
         Check all active acquisition conditionals and execute entries that have
         been triggered (current price <= entry_price_target).
 
-        Position sizing formula:
-            position_dollars = available_cash * min(analyst_size_pct * confidence, 0.20)
+        Semi-auto mode: notifies via Slack, does NOT execute (user must /buy).
+        Full-auto mode: executes and notifies.
 
-        Returns number of conditional entries executed.
+        Guards against duplicate positions in the same ticker.
+
+        Returns number of conditional entries executed (or notified in semi_auto).
         """
         logger.info("🎯 Broker: checking acquisition conditionals...")
         triggered = self.decision_engine.check_acquisition_conditionals()
@@ -825,17 +831,48 @@ class AutonomousBroker:
             logger.info("  📭 No conditionals triggered this cycle")
             return 0
 
+        # Get currently open tickers to prevent duplicates
+        open_positions = self.decision_engine.paper_trading.get_open_positions()
+        open_tickers = {p.get('asset_symbol') or p.get('ticker', '') for p in open_positions}
+
         executed_count = 0
         for decision in triggered:
             ticker        = decision['ticker']
             position_size = decision['position_size']
             entry_price   = decision['current_price']
 
+            # GUARD: Skip if we already have an open position in this ticker
+            if ticker in open_tickers:
+                logger.warning(f"  🚫 {ticker} SKIPPED — already have open position (preventing duplicate)")
+                # Revert status back to active so it doesn't get lost
+                import sqlite3
+                try:
+                    db_path = Path(__file__).parent / 'trading_data' / 'trading_history.db'
+                    conn = sqlite3.connect(str(db_path))
+                    conn.execute(
+                        "UPDATE conditional_tracking SET status='active', updated_at=? WHERE id=?",
+                        (datetime.now().isoformat(), decision['conditional_id'])
+                    )
+                    conn.commit()
+                    conn.close()
+                except Exception:
+                    pass
+                continue
+
             if not self.auto_execute:
                 logger.info(f"  ℹ️  CONDITIONAL READY (auto_execute off): {ticker} @ ${entry_price:.2f} — ${position_size:,.0f}")
                 self.decision_engine.record_decision(decision, executed=False, result="PENDING_AUTO")
                 continue
 
+            # SEMI_AUTO: Notify via Slack but do NOT execute — user must /buy
+            if self.broker_mode == 'semi_auto':
+                logger.info(f"  📢 CONDITIONAL TRIGGERED (semi_auto): {ticker} @ ${entry_price:.2f} — ${position_size:,.0f} — awaiting /buy")
+                self._notify_acquisition_triggered(decision, executed=False)
+                self.decision_engine.record_decision(decision, executed=False, result="PENDING_APPROVAL")
+                executed_count += 1  # Count as "processed" for logging
+                continue
+
+            # FULL_AUTO: Execute immediately
             logger.info(f"  🤖 Executing acquisition entry: {ticker} @ ${entry_price:.2f} — ${position_size:,.0f}")
 
             # Build a trade package compatible with PaperTradingEngine.execute_trade_package
@@ -873,9 +910,9 @@ class AutonomousBroker:
                 )
                 if trade_ids:
                     executed_count += 1
+                    open_tickers.add(ticker)  # Track so next conditional for same ticker is blocked
                     self.decision_engine.record_decision(decision, executed=True, result="ACQUISITION_ENTERED")
-                    # Notify via Slack
-                    self._notify_acquisition_entry(decision)
+                    self._notify_acquisition_triggered(decision, executed=True)
                     logger.info(f"  ✅ {ticker} acquisition entry executed (trade_ids={trade_ids})")
                 else:
                     logger.warning(f"  ⚠️  {ticker} entry returned no trade IDs")
@@ -884,8 +921,12 @@ class AutonomousBroker:
 
         return executed_count
 
-    def _notify_acquisition_entry(self, decision: Dict):
-        """Send Slack notification for an acquisition conditional entry."""
+    def _notify_acquisition_triggered(self, decision: Dict, executed: bool = True):
+        """Send Slack notification for an acquisition conditional (triggered or executed).
+
+        Uses send_slack (→ #hightrade) directly instead of send_defcon_alert,
+        which is gated on DEFCON thresholds and silently drops acquisition alerts.
+        """
         try:
             ticker     = decision['ticker']
             price      = decision['current_price']
@@ -898,8 +939,13 @@ class AutonomousBroker:
             conditions = decision.get('entry_conditions', [])
             cond_text  = '\n'.join(f"  • {c}" for c in conditions[:3]) if conditions else '  • N/A'
 
+            if executed:
+                header = "🎯 *ACQUISITION ENTRY EXECUTED*"
+            else:
+                header = "📢 *ACQUISITION CONDITIONAL TRIGGERED* — awaiting `/buy`"
+
             message = (
-                f"🎯 *ACQUISITION ENTRY EXECUTED*\n"
+                f"{header}\n"
                 f"{'─'*40}\n"
                 f"Ticker: *{ticker}* @ ${price:.2f}\n"
                 f"Position: ${size:,.0f} ({decision.get('position_size_pct',0)*100:.0f}% of cash)\n"
@@ -911,11 +957,8 @@ class AutonomousBroker:
                 f"📋 Entry conditions met:\n{cond_text}\n\n"
                 f"💡 Thesis: {thesis}"
             )
-            self.notification_engine.alerts.send_defcon_alert(
-                defcon_level=3,
-                signal_score=confidence * 100,
-                details=message
-            )
+            # Send directly to #hightrade — bypasses DEFCON threshold gating
+            self.notification_engine.alerts.send_slack(message, defcon_level=3)
         except Exception as e:
             logger.warning(f"Acquisition notification failed: {e}")
 
@@ -952,6 +995,7 @@ class AutonomousBroker:
         """Get current broker status"""
         return {
             'auto_execute': self.auto_execute,
+            'broker_mode': self.broker_mode,
             'trades_today': self.trades_executed_today,
             'daily_limit': self.max_daily_trades,
             'can_trade': self.trades_executed_today < self.max_daily_trades,

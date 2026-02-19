@@ -71,8 +71,11 @@ class HighTradeOrchestrator:
         self.paper_trading = PaperTradingEngine(DB_PATH, total_capital=100000)
 
         # Initialize broker agent
+        # semi_auto: executes signal-driven trades but requires Slack approval for acquisitions
+        # full_auto: executes everything autonomously
         auto_execute = broker_mode in ['semi_auto', 'full_auto']
-        self.broker = AutonomousBroker(auto_execute=auto_execute, max_daily_trades=5)
+        self.broker = AutonomousBroker(auto_execute=auto_execute, max_daily_trades=5,
+                                       broker_mode=broker_mode)
         self.broker_mode = broker_mode
 
         # NEW: Initialize news digger components
