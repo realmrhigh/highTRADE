@@ -102,7 +102,8 @@ class NewsSignalGenerator:
             'sentiment_net_score': score_components.get('sentiment_net', 50.0),
             'signal_concentration': score_components.get('signal_concentration', 0.0),
             'crisis_distribution': batch_result.get('crisis_distribution', {}),
-            'keyword_hits': keyword_hits
+            'keyword_hits': keyword_hits,
+            '_batch_results': batch_result['results']  # Cache for reuse — avoids redundant analyze_batch calls
         }
 
     def _calculate_news_score(self, articles: List, batch_result: Dict):

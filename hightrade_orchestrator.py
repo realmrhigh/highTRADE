@@ -430,11 +430,19 @@ class HighTradeOrchestrator:
                             logger.warning(f"  🚨 BREAKING NEWS DETECTED: {fresh_news_signal['crisis_description']}")
                             news_signal = fresh_news_signal
 
-                        # --- GEMINI LAYER 1: Flash analysis every cycle ---
+                        # Detect new articles BEFORE Gemini — skip LLM when 0 new articles
+                        new_count, latest_articles = self._detect_new_news(fresh_news_signal)
+
+                        # --- GEMINI LAYER 1: Flash analysis (skip if no new articles) ---
                         gemini_flash_result = None
                         gemini_pro_result = None
-                        if self.gemini_enabled:
-                            # Build article dicts for Gemini (include description)
+                        defcon_changed = (self.previous_defcon != self.monitor.defcon_level)
+                        has_breaking = fresh_news_signal['breaking_news_override']
+                        should_run_gemini = new_count > 0 or has_breaking or defcon_changed
+
+                        if self.gemini_enabled and should_run_gemini:
+                            # Reuse cached batch results from generate_news_signal (avoids redundant analyze_batch)
+                            cached_results = fresh_news_signal.get('_batch_results', [])
                             articles_for_gemini = [
                                 {
                                     'title': a.title,
@@ -446,11 +454,8 @@ class HighTradeOrchestrator:
                                     'confidence': getattr(r, 'confidence', 0),
                                     'matched_keywords': getattr(r, 'matched_keywords', [])
                                 }
-                                for a, r in zip(
-                                    articles,
-                                    self.news_sentiment.analyze_batch(articles).get('results', [])
-                                )
-                            ] if articles else []
+                                for a, r in zip(articles, cached_results)
+                            ] if articles and cached_results else []
 
                             gemini_flash_result = self.gemini.run_flash_analysis(
                                 articles_for_gemini,
@@ -460,7 +465,6 @@ class HighTradeOrchestrator:
                             )
 
                             # --- GEMINI LAYER 2: Pro deep analysis on elevated signals ---
-                            defcon_changed = (self.previous_defcon != self.monitor.defcon_level)
                             if self.gemini.should_run_pro(score, fresh_news_signal['breaking_count'], defcon_changed):
                                 logger.info(f"  🧠 Elevated signal ({score:.1f}) — triggering Pro analysis...")
                                 open_positions = self.paper_trading.get_open_positions()
@@ -474,6 +478,8 @@ class HighTradeOrchestrator:
                                     current_defcon=self.previous_defcon,
                                     positions=open_positions
                                 )
+                        elif self.gemini_enabled:
+                            logger.info(f"  ⏭️  Skipping Gemini — 0 new articles (reusing previous analysis)")
 
                         # Store full signal with Gemini Flash embedded
                         signal_id = self._record_news_signal(
@@ -488,9 +494,6 @@ class HighTradeOrchestrator:
                                 str(DB_PATH), signal_id, gemini_pro_result,
                                 trigger_type='elevated' if score >= 40 else 'breaking'
                             )
-
-                        # Detect new articles for Slack notification
-                        new_count, latest_articles = self._detect_new_news(fresh_news_signal)
 
                         if fresh_news_signal['article_count'] > 0:
                             # Extract dominant sentiment label
