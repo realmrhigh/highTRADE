@@ -673,12 +673,28 @@ class PaperTradingEngine:
 
     def _get_current_price(self, asset_symbol: str) -> Optional[float]:
         """
-        Get current price for an asset using Alpha Vantage API
-        Falls back to simulated prices if API fails
+        Get current price for an asset.
+        Tries yfinance first (most reliable), then Alpha Vantage as fallback.
+        Returns None if both fail — callers already handle None gracefully.
+        Never returns simulated/random prices to avoid phantom P&L.
         """
+        # Primary: yfinance (free, no key, reliable)
+        try:
+            import yfinance as yf
+            ticker = yf.Ticker(asset_symbol)
+            hist = ticker.history(period='1d')
+            if not hist.empty:
+                price = float(hist['Close'].iloc[-1])
+                if price > 0:
+                    logger.debug(f"Fetched yfinance price for {asset_symbol}: ${price:.2f}")
+                    return price
+        except Exception as e:
+            logger.debug(f"yfinance price fetch failed for {asset_symbol}: {e}")
+
+        # Fallback: Alpha Vantage
         try:
             import requests
-            api_key = "98ac4e761ff2e37793f310bcfb4f54c9"  # Alpha Vantage API key
+            api_key = "98ac4e761ff2e37793f310bcfb4f54c9"
             url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={asset_symbol}&apikey={api_key}"
 
             response = requests.get(url, timeout=5)
@@ -687,30 +703,14 @@ class PaperTradingEngine:
                 if 'Global Quote' in data and '05. price' in data['Global Quote']:
                     price = float(data['Global Quote']['05. price'])
                     if price > 0:
-                        logger.debug(f"Fetched real-time price for {asset_symbol}: ${price:.2f}")
+                        logger.debug(f"Fetched Alpha Vantage price for {asset_symbol}: ${price:.2f}")
                         return price
 
         except Exception as e:
-            logger.debug(f"Failed to fetch real-time price for {asset_symbol}: {e}")
+            logger.debug(f"Alpha Vantage price fetch failed for {asset_symbol}: {e}")
 
-        # Fallback to simulated prices with slight random variation to show movement
-        import random
-        base_prices = {
-            'QQQ': 410.0,
-            'NVDA': 920.0,
-            'MSFT': 385.0,
-            'GOOGL': 155.0,
-            'VTI': 240.0,
-            'IVV': 485.0
-        }
-
-        base_price = base_prices.get(asset_symbol, 100.0)
-        # Add +/- 2% random variation to simulate price movement
-        variation = random.uniform(-0.02, 0.02)
-        simulated_price = base_price * (1 + variation)
-
-        logger.debug(f"Using simulated price for {asset_symbol}: ${simulated_price:.2f}")
-        return simulated_price
+        logger.warning(f"All price sources failed for {asset_symbol} — returning None (no simulated fallback)")
+        return None
 
     def manual_buy(self, ticker: str, shares: int,
                    price_override: float = None, notes: str = '') -> dict:

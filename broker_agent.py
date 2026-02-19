@@ -150,8 +150,11 @@ class BrokerDecisionEngine:
         position_size = self.paper_trading.calculate_position_size_vix_adjusted(vix)
 
         # Decision 4: Risk check - don't over-expose
+        # Use available cash to account for realized P&L
         current_exposure = self._calculate_current_exposure()
-        if current_exposure + position_size > self.paper_trading.total_capital * 0.60:
+        available_cash = self._calculate_available_cash()
+        effective_capital = current_exposure + available_cash  # true account value minus unrealized
+        if current_exposure + position_size > effective_capital * 0.60:
             logger.warning(f"⚠️  Portfolio exposure limit reached ({current_exposure + position_size:.0f})")
             return None
 
@@ -336,10 +339,12 @@ class BrokerDecisionEngine:
         Returns trade decision or None
         """
         # Check if we have capital for quick flip
-        position_size = self.paper_trading.total_capital * 0.10  # 10% for quick flips
-        
+        available_cash = self._calculate_available_cash()
+        effective_capital = self._calculate_current_exposure() + available_cash
+        position_size = effective_capital * 0.10  # 10% for quick flips
+
         current_exposure = self._calculate_current_exposure()
-        if current_exposure + position_size > self.paper_trading.total_capital * 0.70:
+        if current_exposure + position_size > effective_capital * 0.70:
             logger.warning(f"⚠️  Exposure limit - skipping quick flip {opportunity['symbol']}")
             return None
         
@@ -392,18 +397,46 @@ class BrokerDecisionEngine:
         return False
 
     def _calculate_current_exposure(self) -> float:
-        """Calculate total current portfolio exposure"""
-        self.paper_trading.connect()
+        """Calculate total current portfolio exposure (cost basis of open positions)"""
+        conn = sqlite3.connect(str(DB_PATH))
         try:
-            self.paper_trading.cursor.execute('''
-            SELECT SUM(position_size_dollars) as total
+            cursor = conn.cursor()
+            cursor.execute('''
+            SELECT COALESCE(SUM(position_size_dollars), 0) as total
             FROM trade_records
             WHERE status = 'open'
             ''')
-            result = self.paper_trading.cursor.fetchone()
+            result = cursor.fetchone()
             return result[0] if result[0] else 0
         finally:
-            self.paper_trading.disconnect()
+            conn.close()
+
+    def _calculate_available_cash(self) -> float:
+        """Calculate actual available cash: total_capital + realized_pnl - open_exposure.
+        Accounts for realized P&L from closed trades so we don't over-size positions."""
+        conn = sqlite3.connect(str(DB_PATH))
+        try:
+            cursor = conn.cursor()
+            # Realized P&L from closed trades
+            cursor.execute('''
+            SELECT COALESCE(SUM(profit_loss_dollars), 0)
+            FROM trade_records
+            WHERE status = 'closed'
+            ''')
+            realized_pnl = cursor.fetchone()[0]
+
+            # Current open exposure (cost basis)
+            cursor.execute('''
+            SELECT COALESCE(SUM(position_size_dollars), 0)
+            FROM trade_records
+            WHERE status = 'open'
+            ''')
+            open_exposure = cursor.fetchone()[0]
+
+            available = self.paper_trading.total_capital + realized_pnl - open_exposure
+            return max(0, available)
+        finally:
+            conn.close()
 
     def record_decision(self, decision: Dict, executed: bool = False, result: Optional[str] = None):
         """Record a trading decision in history"""
@@ -494,8 +527,8 @@ class BrokerDecisionEngine:
 
             # Trigger check: price has reached or dropped to entry target
             if current_price <= entry_target:
-                # Calculate position size
-                available_cash = self.paper_trading.total_capital - self._calculate_current_exposure()
+                # Calculate position size using actual available cash (accounts for realized P&L)
+                available_cash = self._calculate_available_cash()
                 raw_pct        = float(cond.get('position_size_pct') or 0.05)
                 confidence     = float(cond.get('research_confidence') or 0.5)
                 # Formulaic sizing: cash * confidence * analyst_size_pct, capped at 20%
@@ -745,11 +778,15 @@ class AutonomousBroker:
                 logger.info(f"🤖 BROKER: Executing autonomous sell ({exit['asset_symbol']})...")
 
                 # Map decision type to valid exit_reason
+                # Valid reasons: profit_target, stop_loss, manual, invalidation
                 _reason_map = {
                     'SELL_PROFIT_TARGET': 'profit_target',
                     'SELL_STOP_LOSS': 'stop_loss',
                     'SELL_EARLY_PROFIT': 'profit_target',
                     'SELL_MANUAL': 'manual',
+                    'SELL_TRAILING_STOP': 'stop_loss',
+                    'SELL_TIME_LIMIT': 'manual',
+                    'SELL_DEFCON_REVERT': 'manual',
                 }
                 exit_reason = _reason_map.get(exit['decision_type'], 'manual')
 

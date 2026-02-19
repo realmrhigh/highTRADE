@@ -14,8 +14,9 @@ import sqlite3
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path.home() / 'trading_data' / 'trading_history.db'
-CACHE_PATH = Path.home() / 'trading_data' / 'quick_money_cache.json'
+SCRIPT_DIR = Path(__file__).parent.resolve()
+DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
+CACHE_PATH = SCRIPT_DIR / 'trading_data' / 'quick_money_cache.json'
 
 
 class QuickMoneyResearch:

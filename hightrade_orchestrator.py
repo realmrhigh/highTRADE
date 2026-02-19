@@ -13,7 +13,7 @@ from datetime import datetime
 import time
 from monitoring import SignalMonitor
 from alerts import AlertSystem
-from dashboard import Dashboard
+from dashboard import generate_dashboard_html
 from crisis_db_utils import CrisisDatabase
 from paper_trading import PaperTradingEngine
 from broker_agent import AutonomousBroker
@@ -644,8 +644,14 @@ class HighTradeOrchestrator:
             logger.info(f"✅ Signal Score: {signal_score:.1f}/100")
 
             # Send alerts if DEFCON changed or escalated
-            if current_defcon < self.previous_defcon:
-                logger.warning(f"🚨 DEFCON ESCALATION: {self.previous_defcon} → {current_defcon}")
+            if current_defcon != self.previous_defcon:
+                old_defcon = self.previous_defcon
+                self.previous_defcon = current_defcon  # Always update — fixes de-escalation blindness
+
+                if current_defcon < old_defcon:
+                    logger.warning(f"🚨 DEFCON ESCALATION: {old_defcon} → {current_defcon}")
+                else:
+                    logger.info(f"🟢 DEFCON DE-ESCALATION: {old_defcon} → {current_defcon}")
 
                 bond_yield = yield_data['yield'] if yield_data else None
                 vix = vix_data['vix'] if vix_data else None
@@ -654,7 +660,7 @@ class HighTradeOrchestrator:
                 alert_message = f"""
 Market Conditions Alert
 
-Previous DEFCON: {self.previous_defcon}
+Previous DEFCON: {old_defcon}
 Current DEFCON: {current_defcon}
 Signal Score: {signal_score:.1f}/100
 
@@ -674,12 +680,10 @@ Check dashboard for detailed analysis.
 
                 # Also log to silent channel
                 self.alerts.send_silent_log('defcon_change', {
-                    'old_defcon': self.previous_defcon,
+                    'old_defcon': old_defcon,
                     'new_defcon': current_defcon,
                     'signal_score': signal_score
                 })
-
-                self.previous_defcon = current_defcon
 
                 # NEW: Broker agent decides on trades (DEFCON 1-2 only)
                 if self.cmd_processor.should_skip_trades:
@@ -905,9 +909,7 @@ Check dashboard for detailed analysis.
         """Generate updated dashboard"""
         try:
             logger.info("Updating dashboard...")
-            dashboard = Dashboard()
-            dashboard.generate_html()
-            dashboard.save_dashboard()
+            generate_dashboard_html()
             logger.info("✅ Dashboard updated")
         except Exception as e:
             logger.warning(f"Dashboard update failed: {e}")
@@ -1293,9 +1295,21 @@ Check dashboard for detailed analysis.
                 should_exit = response == 'y'
 
             if should_exit:
+                # Normalize exit reasons to valid set: profit_target, stop_loss, manual, invalidation
+                _exit_reason_map = {
+                    'profit_target': 'profit_target',
+                    'stop_loss': 'stop_loss',
+                    'trailing_stop': 'stop_loss',
+                    'time_limit': 'manual',
+                    'time_and_loss': 'manual',
+                    'defcon_revert': 'manual',
+                    'manual': 'manual',
+                    'invalidation': 'invalidation',
+                }
+                normalized_reason = _exit_reason_map.get(exit_rec['reason'], 'manual')
                 success = self.paper_trading.exit_position(
                     exit_rec['trade_id'],
-                    exit_rec['reason'],
+                    normalized_reason,
                     exit_rec['exit_price']
                 )
                 if success:

@@ -107,10 +107,8 @@ class ExitStrategyManager:
 
     def check_stop_loss(self, entry_price: float, current_price: float,
                        min_hold_met: bool) -> Optional[float]:
-        """Check if stop loss is hit"""
-        if not min_hold_met:
-            return None
-
+        """Check if stop loss is hit — ALWAYS fires regardless of min_hold_hours.
+        Stop-loss is a safety mechanism that must never be gated by hold time."""
         loss_pct = (current_price - entry_price) / entry_price
         if loss_pct <= self.stop_loss:
             return loss_pct
