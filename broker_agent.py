@@ -454,23 +454,121 @@ class BrokerDecisionEngine:
 
     # ── Acquisition conditional checking ──────────────────────────────────────
 
-    def check_acquisition_conditionals(self) -> List[Dict]:
+    def _run_pre_purchase_gate(self, cond: dict, current_price: float,
+                               live_state: dict) -> dict:
+        """
+        Run a Gemini 3 Pro check immediately before triggering an acquisition.
+        Returns {"approve": bool, "reason": str, "veto_reason": str, "conditions_met": list}.
+        On any error, defaults to APPROVE (fail-open) so a Gemini outage doesn't block all trading.
+        """
+        import gemini_client
+
+        ticker    = cond.get('ticker', '?')
+        tag       = cond.get('watch_tag') or 'untagged'
+        thesis    = cond.get('thesis_summary', 'No thesis on file.')
+        entry_tgt = cond.get('entry_price_target', '?')
+        stop      = cond.get('stop_loss', '?')
+        tp1       = cond.get('take_profit_1', '?')
+
+        try:
+            entry_conds = json.loads(cond.get('entry_conditions_json') or '[]')
+        except Exception:
+            entry_conds = []
+        try:
+            inval_conds = json.loads(cond.get('invalidation_conditions_json') or '[]')
+        except Exception:
+            inval_conds = []
+
+        entry_conds_text = '\n'.join(f"  - {c}" for c in entry_conds) or '  - (none specified)'
+        inval_conds_text = '\n'.join(f"  - {c}" for c in inval_conds) or '  - (none specified)'
+
+        vix        = live_state.get('vix', 'N/A')
+        defcon     = live_state.get('defcon', 'N/A')
+        news_score = live_state.get('news_score', 'N/A')
+        macro_score = live_state.get('macro_score', 'N/A')
+
+        prompt = (
+            f"You are a pre-purchase risk gate for an automated paper trading system.\n"
+            f"A conditional entry just triggered for {ticker} (watch_tag: {tag}).\n\n"
+            f"ORIGINAL THESIS:\n{thesis}\n\n"
+            f"TRADE LEVELS:\n"
+            f"  Entry target: ${entry_tgt} | Current price: ${current_price:.2f}\n"
+            f"  Stop loss: ${stop} | Take profit 1: ${tp1}\n\n"
+            f"ANALYST'S ENTRY CONDITIONS (must ALL be true to enter):\n"
+            f"{entry_conds_text}\n\n"
+            f"INVALIDATION CONDITIONS (if any triggered, do NOT enter):\n"
+            f"{inval_conds_text}\n\n"
+            f"CURRENT LIVE STATE (captured at trigger time):\n"
+            f"  VIX: {vix}\n"
+            f"  DEFCON: {defcon}/5\n"
+            f"  News score: {news_score}/100\n"
+            f"  Macro composite score: {macro_score}/100\n\n"
+            f"YOUR JOB:\n"
+            f"1. Check each entry condition against the live state. Are they met?\n"
+            f"2. Check each invalidation condition. Has any been triggered?\n"
+            f"3. Given the watch_tag '{tag}', does this entry make sense right now?\n"
+            f"4. Approve or veto this purchase.\n\n"
+            f"Respond ONLY in this exact JSON (no other text):\n"
+            f'{{\n'
+            f'  "approve": true,\n'
+            f'  "conditions_met": ["condition 1: PASS/FAIL — reason", "condition 2: PASS/FAIL — reason"],\n'
+            f'  "reason": "brief reason for approval (empty if vetoing)",\n'
+            f'  "veto_reason": "detailed reason for veto (empty if approving)"\n'
+            f'}}'
+        )
+
+        try:
+            text, in_tok, out_tok = gemini_client.call(prompt=prompt, model_key='reasoning')
+            logger.info(f"  🔍 Pre-purchase gate [{ticker}]: {in_tok}→{out_tok} tok")
+
+            # Parse JSON
+            if "```json" in text:
+                text = text.split("```json")[1].split("```")[0].strip()
+            elif "```" in text:
+                text = text.split("```")[1].split("```")[0].strip()
+            if "<think>" in text:
+                parts = text.split("</think>")
+                if len(parts) > 1:
+                    text = parts[-1].strip()
+
+            result = json.loads(text.strip())
+            return result
+
+        except json.JSONDecodeError as e:
+            logger.warning(f"  ⚠️  Gate JSON parse failed for {ticker}: {e} — defaulting to APPROVE")
+            return {"approve": True, "reason": "gate parse error — fail-open", "veto_reason": "", "conditions_met": []}
+        except Exception as e:
+            logger.warning(f"  ⚠️  Pre-purchase gate failed for {ticker}: {e} — defaulting to APPROVE")
+            return {"approve": True, "reason": "gate error — fail-open", "veto_reason": "", "conditions_met": []}
+
+    def check_acquisition_conditionals(self, live_state: dict = None) -> List[Dict]:
         """
         Check all 'active' conditionals in conditional_tracking.
 
         For each conditional:
           1. Fetch current live price via yfinance
-          2. If price <= entry_price_target → trigger the entry
-          3. If time_horizon_days exceeded → expire the conditional
-          4. Returns list of triggered trade decisions (caller executes them)
+          2. If price <= entry_price_target → run pre-purchase Pro gate
+          3. If gate approves → mark triggered, add to results
+          4. If gate vetoes → leave as active (retry next cycle)
+          5. If time_horizon_days exceeded → expire the conditional
+
+        live_state: optional dict with {defcon, news_score, macro_score} from orchestrator.
         """
         import sqlite3
         import yfinance as yf
         from pathlib import Path
 
+        live_state = live_state or {}
         db_path = Path(__file__).parent / 'trading_data' / 'trading_history.db'
         triggered = []
         triggered_tickers = set()  # Prevent duplicate triggers for same ticker
+
+        # Fetch live VIX once for all conditionals this cycle
+        try:
+            vix_hist = yf.Ticker('^VIX').history(period='1d')
+            live_state.setdefault('vix', float(vix_hist['Close'].iloc[-1]) if len(vix_hist) > 0 else 'N/A')
+        except Exception:
+            live_state.setdefault('vix', 'N/A')
 
         try:
             conn = sqlite3.connect(str(db_path))
@@ -480,7 +578,8 @@ class BrokerDecisionEngine:
                        stop_loss, take_profit_1, take_profit_2,
                        position_size_pct, time_horizon_days,
                        thesis_summary, research_confidence,
-                       entry_conditions_json
+                       entry_conditions_json, invalidation_conditions_json,
+                       watch_tag, watch_tag_rationale
                 FROM conditional_tracking
                 WHERE status = 'active'
                 ORDER BY research_confidence DESC
@@ -546,12 +645,31 @@ class BrokerDecisionEngine:
                     logger.warning(f"  ⚠️  {ticker} would breach 60% exposure cap — skipping")
                     continue
 
+                # ── PRE-PURCHASE GATE: Gemini 3 Pro live conditions check ──────
+                watch_tag = cond.get('watch_tag') or 'untagged'
+                logger.info(
+                    f"  🎯 {ticker} [{watch_tag}] price triggered: "
+                    f"${current_price:.2f} <= ${entry_target:.2f} — running Pro gate..."
+                )
+                gate = self._run_pre_purchase_gate(cond, current_price, live_state)
+
+                if not gate.get('approve', True):
+                    veto = gate.get('veto_reason', 'unspecified')
+                    logger.warning(f"  🚫 {ticker} VETOED by pre-purchase gate: {veto}")
+                    # Leave as active — will retry next cycle when conditions change
+                    continue
+
+                logger.info(
+                    f"  ✅ {ticker} gate APPROVED: {gate.get('reason', 'conditions met')}"
+                )
+
                 decision = {
                     'timestamp':      now.isoformat(),
                     'decision_type':  'ACQUISITION_CONDITIONAL',
                     'source':         'conditional_tracking',
                     'conditional_id': cond_id,
                     'ticker':         ticker,
+                    'watch_tag':      watch_tag,
                     'current_price':  current_price,
                     'entry_target':   entry_target,
                     'stop_loss':      cond.get('stop_loss'),
@@ -562,14 +680,10 @@ class BrokerDecisionEngine:
                     'confidence':     confidence,
                     'thesis':         cond.get('thesis_summary', ''),
                     'entry_conditions': json.loads(cond.get('entry_conditions_json') or '[]'),
+                    'gate_conditions_met': gate.get('conditions_met', []),
                 }
                 triggered.append(decision)
                 triggered_tickers.add(ticker)  # Only one conditional per ticker per cycle
-                logger.info(
-                    f"  🎯 {ticker} TRIGGERED: current=${current_price:.2f} <= "
-                    f"target=${entry_target:.2f} | size=${position_dollars:,.0f} "
-                    f"({effective_pct*100:.0f}% of cash)"
-                )
 
                 # Mark as triggered in DB
                 conn.execute(
@@ -812,7 +926,7 @@ class AutonomousBroker:
 
         return exits_executed
 
-    def process_acquisition_conditionals(self) -> int:
+    def process_acquisition_conditionals(self, live_state: dict = None) -> int:
         """
         Check all active acquisition conditionals and execute entries that have
         been triggered (current price <= entry_price_target).
@@ -821,11 +935,13 @@ class AutonomousBroker:
         Full-auto mode: executes and notifies.
 
         Guards against duplicate positions in the same ticker.
+        Runs Gemini 3 Pro pre-purchase gate on every trigger before executing.
 
+        live_state: optional dict with {defcon, news_score, macro_score} from orchestrator.
         Returns number of conditional entries executed (or notified in semi_auto).
         """
         logger.info("🎯 Broker: checking acquisition conditionals...")
-        triggered = self.decision_engine.check_acquisition_conditionals()
+        triggered = self.decision_engine.check_acquisition_conditionals(live_state=live_state or {})
 
         if not triggered:
             logger.info("  📭 No conditionals triggered this cycle")
@@ -939,10 +1055,13 @@ class AutonomousBroker:
             conditions = decision.get('entry_conditions', [])
             cond_text  = '\n'.join(f"  • {c}" for c in conditions[:3]) if conditions else '  • N/A'
 
+            watch_tag  = decision.get('watch_tag', '')
+            tag_label  = f" `[{watch_tag}]`" if watch_tag else ""
+
             if executed:
-                header = "🎯 *ACQUISITION ENTRY EXECUTED*"
+                header = f"🎯 *ACQUISITION ENTRY EXECUTED*{tag_label}"
             else:
-                header = "📢 *ACQUISITION CONDITIONAL TRIGGERED* — awaiting `/buy`"
+                header = f"📢 *ACQUISITION CONDITIONAL TRIGGERED*{tag_label} — awaiting `/buy`"
 
             message = (
                 f"{header}\n"

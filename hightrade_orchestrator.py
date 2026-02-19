@@ -765,7 +765,12 @@ Check dashboard for detailed analysis.
             # ── Acquisition conditionals (every cycle, any broker mode except disabled) ──
             if self.broker_mode != 'disabled':
                 try:
-                    acq_entries = self.broker.process_acquisition_conditionals()
+                    live_state = {
+                        'defcon': current_defcon,
+                        'news_score': locals().get('score') or 0,
+                        'macro_score': self._get_latest_macro_score(),
+                    }
+                    acq_entries = self.broker.process_acquisition_conditionals(live_state=live_state)
                     if acq_entries > 0:
                         logger.info(f"🎯 BROKER: {acq_entries} acquisition conditional(s) entered")
                 except Exception as acq_err:
@@ -1019,6 +1024,22 @@ Check dashboard for detailed analysis.
         self.run_monitoring_cycle()
         self.update_dashboard()
         self.print_status_summary()
+
+    def _get_latest_macro_score(self) -> float:
+        """Return the most recent macro_score from DB (used for pre-purchase gate live_state)."""
+        try:
+            import sqlite3
+            conn = sqlite3.connect(str(DB_PATH))
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT macro_score FROM macro_indicators
+                ORDER BY timestamp DESC LIMIT 1
+            """)
+            row = cursor.fetchone()
+            conn.close()
+            return float(row[0]) if row else 50.0
+        except Exception:
+            return 50.0  # neutral fallback — don't block gate on DB error
 
     def _check_breaking_news_in_db(self):
         """Check database for recent breaking news signals (within last 4 hours)"""

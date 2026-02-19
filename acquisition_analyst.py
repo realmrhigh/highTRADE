@@ -39,6 +39,8 @@ MAX_POSITION_PCT    = 0.20    # hard cap: max 20% of capital in any single trade
 _ANALYST_JSON_TEMPLATE = """{
   "should_enter": true,
   "research_confidence": 0.0,
+  "watch_tag": "breakout",
+  "watch_tag_rationale": "why this specific tag fits this setup",
   "entry_price_target": 0.0,
   "entry_price_rationale": "why this specific price",
   "stop_loss": 0.0,
@@ -63,6 +65,39 @@ _ANALYST_JSON_TEMPLATE = """{
   "macro_alignment": "how macro environment supports or contradicts this trade",
   "reasoning_chain": "step-by-step walk through of how you arrived at these levels"
 }"""
+
+# Watch tag definitions injected into every analyst prompt
+_WATCH_TAG_DEFINITIONS = """
+══════════════════════════════════════════════════════
+WATCH TAGS — assign exactly ONE to this trade
+══════════════════════════════════════════════════════
+Choose the tag that best describes the SETUP TYPE. It shapes your entry, sizing, and conditions.
+
+  breakout       — Price testing or clearing a key resistance level (52w high, prior pivot).
+                   Entry: above resistance. Stop: tight below breakout. Conditions: volume + momentum confirmation.
+
+  mean-reversion — Overextended pullback to known support; expecting bounce back to mean.
+                   Entry: at support. Stop: wider (below support). Conditions: oversold signal, no trend breakdown.
+
+  momentum       — Strong established trend; adding on a healthy pullback.
+                   Entry: near moving average or recent base. Stop: momentum-based. Conditions: trend intact.
+
+  defensive-hedge — Risk-off asset (TLT, GLD, utilities) held during macro uncertainty.
+                   Entry: any weakness. Stop: wide. Size: small (portfolio insurance, not profit center).
+                   Conditions: macro score, VIX environment.
+
+  macro-hedge    — Inverse or volatility instrument (SQQQ, VIX products, short ETFs).
+                   Entry: strict — only when VIX > threshold AND DEFCON elevated.
+                   Stop: tight. Size: smaller. Conditions: must include specific VIX/DEFCON gate.
+
+  earnings-play  — Setup driven by an upcoming earnings catalyst.
+                   Entry: before event date. Stop: wider. Conditions: earnings date, consensus vs expected.
+                   Time horizon: short (exit after announcement).
+
+  rebound        — Post-stop-loss recovery attempt on a previously held ticker.
+                   Entry: on bottoming signal. Stop: tight. Size: reduced (half of normal).
+                   Conditions: must see exhaustion of selling before re-entry.
+"""
 
 
 def _build_analyst_prompt(ticker: str, research: Dict) -> str:
@@ -195,17 +230,20 @@ def _build_analyst_prompt(ticker: str, research: Dict) -> str:
         f"INTERNAL INTELLIGENCE SIGNALS\n"
         f"══════════════════════════════════════════════════════\n"
         f"{signals_block}\n"
+        f"{_WATCH_TAG_DEFINITIONS}\n"
         f"══════════════════════════════════════════════════════\n"
         f"YOUR TASK\n"
         f"══════════════════════════════════════════════════════\n"
         f"Analyze ALL of the above. Decide:\n"
-        f"  1. Should we set a conditional entry order? (true/false)\n"
-        f"  2. At what exact price should we enter?\n"
-        f"  3. Where is the stop loss? (must be a specific price, not a percentage)\n"
-        f"  4. Where are the take-profit targets? (TP1 for partial exit, TP2 for full)\n"
-        f"  5. What % of available cash should this position be? (0.0–{MAX_POSITION_PCT:.2f})\n"
-        f"  6. What specific conditions must be TRUE at the time of entry?\n"
-        f"  7. What would invalidate this thesis entirely?\n\n"
+        f"  1. Which watch_tag fits this setup? (see definitions above)\n"
+        f"  2. Should we set a conditional entry order? (true/false)\n"
+        f"  3. At what exact price should we enter? (informed by your watch_tag)\n"
+        f"  4. Where is the stop loss? (must be a specific price, not a percentage)\n"
+        f"  5. Where are the take-profit targets? (TP1 for partial exit, TP2 for full)\n"
+        f"  6. What % of available cash? (0.0–{MAX_POSITION_PCT:.2f}, sized per your watch_tag guidance)\n"
+        f"  7. What specific, VERIFIABLE conditions must be TRUE at the time of entry?\n"
+        f"     (Include numeric thresholds wherever possible: VIX < X, macro_score > Y, etc.)\n"
+        f"  8. What would invalidate this thesis entirely?\n\n"
         f"Set research_confidence as a float 0.0–1.0 based on how convinced you are.\n"
         f"Only set should_enter=true if research_confidence >= {CONFIDENCE_THRESHOLD:.1f}.\n\n"
         f"Respond in this EXACT JSON format (no other text):\n"
@@ -264,6 +302,14 @@ def _ensure_conditional_table(conn: sqlite3.Connection):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cond_status ON conditional_tracking(status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cond_date   ON conditional_tracking(date_created)")
     conn.commit()
+
+    # Migrate: add watch_tag columns if they don't exist yet (SQLite has no IF NOT EXISTS for columns)
+    for col, coltype in [('watch_tag', 'TEXT'), ('watch_tag_rationale', 'TEXT')]:
+        try:
+            conn.execute(f"ALTER TABLE conditional_tracking ADD COLUMN {col} {coltype}")
+            conn.commit()
+        except Exception:
+            pass  # Column already exists
 
 
 def _parse_analyst_response(text: str) -> Dict:
@@ -359,8 +405,9 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection) -> Opt
                     thesis_summary, key_risks_json,
                     macro_alignment, reasoning_chain,
                     research_confidence,
+                    watch_tag, watch_tag_rationale,
                     status, last_verified
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'active',?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'active',?)
             """, (
                 ticker, date_str,
                 result.get('entry_price_target'),
@@ -380,11 +427,14 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection) -> Opt
                 result.get('macro_alignment'),
                 result.get('reasoning_chain'),
                 confidence,
+                result.get('watch_tag', 'mean-reversion'),  # default if Gemini omits
+                result.get('watch_tag_rationale', ''),
                 date_str,
             ))
             conn.commit()
             logger.info(
-                f"  ✅ {ticker} CONDITIONAL SET: entry=${result.get('entry_price_target')}, "
+                f"  ✅ {ticker} CONDITIONAL SET [{result.get('watch_tag','?')}]: "
+                f"entry=${result.get('entry_price_target')}, "
                 f"stop=${result.get('stop_loss')}, "
                 f"TP1=${result.get('take_profit_1')}, "
                 f"size={result.get('position_size_pct',0)*100:.0f}% of cash"
