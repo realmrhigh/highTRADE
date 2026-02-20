@@ -393,6 +393,14 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection) -> Opt
     # ── Write to conditional_tracking if above threshold ─────────────────
     if should_enter and confidence >= CONFIDENCE_THRESHOLD:
         try:
+            # Expire any prior active conditionals for this ticker before inserting new one
+            conn.execute("""
+                UPDATE conditional_tracking
+                SET status = 'invalidated',
+                    verification_notes = 'Superseded by fresh analyst run on ' || date('now'),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE ticker = ? AND status = 'active'
+            """, (ticker,))
             conn.execute("""
                 INSERT OR REPLACE INTO conditional_tracking (
                     ticker, date_created,
