@@ -141,7 +141,7 @@ class HighTradeOrchestrator:
         self._acquisition_pipeline_date = None  # Track last research+analyst run
         self._morning_flash_date = None   # Track morning Flash briefing (9:30 AM)
         self._midday_flash_date  = None   # Track midday Flash briefing (12:00 PM)
-        self._health_check_date  = None   # Track bi-weekly health check (Thursdays)
+        self._health_check_date  = None   # Track twice-weekly health check (Mon + Thu)
 
         # Slash command processor
         self.cmd_processor = CommandProcessor(self)
@@ -839,26 +839,28 @@ Check dashboard for detailed analysis.
 
     def _check_health_agent(self):
         """
-        Bi-weekly system health check — fires on Thursdays, at most once per 13 days.
+        Twice-weekly system health check — fires on Mondays and Thursdays,
+        throttled to at most once per 3 days by health_agent's internal state.
         Checks APIs, monitoring recency, recurring data gaps, and new Gemini models.
         Results sent to #all-hightrade via send_notify().
         """
         now = datetime.now()
-        # Only run on Thursdays (weekday 3)
-        if now.weekday() != 3:
+        # Only run on Monday (0) or Thursday (3)
+        if now.weekday() not in (0, 3):
             return
         today = now.strftime('%Y-%m-%d')
         if self._health_check_date == today:
             return  # already ran today
         self._health_check_date = today
 
-        logger.info("🏥 Thursday health check — running bi-weekly system audit...")
+        day_name = 'Monday' if now.weekday() == 0 else 'Thursday'
+        logger.info(f"🏥 {day_name} health check — running twice-weekly system audit...")
         try:
             from health_agent import run_and_notify
             result = run_and_notify(self.alerts, force=False)
             if result:
                 logger.info(f"  ✅ Health check complete: {result.get('summary', '')}")
-            # 'skipped' means not yet 13 days since last run — silently move on
+            # 'skipped' means <3 days since last run — silently move on
         except Exception as e:
             logger.warning(f"  ⚠️  Health agent failed: {e}")
 

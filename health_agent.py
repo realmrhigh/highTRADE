@@ -306,7 +306,7 @@ def run_health_check(force: bool = False) -> Dict:
     """
     Main entry point. Runs all four health checks and returns a result dict.
 
-    Bi-weekly throttle: skips unless ≥13 days since last run, or force=True.
+    Twice-weekly throttle: skips unless ≥3 days since last run, or force=True.
 
     Result dict keys:
       status          : 'ok' | 'warning' | 'critical'
@@ -329,8 +329,8 @@ def run_health_check(force: bool = False) -> Dict:
         try:
             last_dt = datetime.strptime(last_run, '%Y-%m-%d')
             days_since = (datetime.now() - last_dt).days
-            if days_since < 13:
-                logger.info(f"  ⏭️  Health check skipped — last ran {days_since}d ago (next in {13-days_since}d)")
+            if days_since < 3:
+                logger.info(f"  ⏭️  Health check skipped — last ran {days_since}d ago (next in {3-days_since}d)")
                 return {'status': 'skipped', 'summary': f'Last ran {days_since}d ago', 'run_date': today}
         except ValueError:
             pass
@@ -492,11 +492,26 @@ if __name__ == '__main__':
     import sys
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-    force = '--force' in sys.argv
-    result = run_health_check(force=force)
+    force    = '--force' in sys.argv
+    no_slack = '--no-slack' in sys.argv
 
-    if result.get('status') == 'skipped':
-        print(f"\n⏭️  {result['summary']}")
+    # Use run_and_notify so Slack fires automatically (same path as orchestrator)
+    # Pass a live AlertSystem unless --no-slack is set
+    if no_slack:
+        result = run_health_check(force=force)
+        if result.get('status') != 'skipped':
+            _write_to_db(result)
+    else:
+        from alerts import AlertSystem
+        result = run_and_notify(AlertSystem(), force=force)
+        if result is None:
+            # run_and_notify returns None on 'skipped'
+            state = _load_state()
+            print(f"\n⏭️  Skipped — last ran {state.get('last_run_date', 'unknown')}")
+            sys.exit(0)
+
+    if not result or result.get('status') == 'skipped':
+        print(f"\n⏭️  {result.get('summary', 'skipped')}")
         sys.exit(0)
 
     print(f"\n{'='*60}")
@@ -520,3 +535,5 @@ if __name__ == '__main__':
     print(f"\nAll gaps seen (last {GAP_WINDOW_DAYS}d):")
     for g, c in sorted(result.get('gap_counts', {}).items(), key=lambda x: -x[1]):
         print(f"  {c:>2}× {g}")
+    if not no_slack:
+        print(f"\n📤 Report posted to #all-hightrade")
