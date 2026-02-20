@@ -503,6 +503,93 @@ class AlertSystem:
             # Silent failure for logging - don't disrupt main flow
             return False
 
+    def send_notify(self, event_type: str, data: dict) -> bool:
+        """Send a notification to #all-hightrade (primary webhook — triggers push notifications).
+
+        Used for Flash briefings, daily briefings, health reports, and any
+        status update the team should be notified about. Formats the same
+        event_type payloads as send_silent_log but routes to the main channel.
+        """
+        slack_config = self.config.get('channels', {}).get('slack', {})
+        if not slack_config.get('enabled', False):
+            return False
+
+        webhook_url = slack_config.get('webhook_url')
+        if not webhook_url or 'PLACEHOLDER' in webhook_url:
+            return False
+
+        try:
+            # Reuse the same rich formatting from send_silent_log
+            # by temporarily routing through it and catching the text output.
+            # Instead, we duplicate the format logic here for independence.
+
+            if event_type == 'flash_briefing':
+                emoji      = data.get('emoji', '📊')
+                label      = data.get('label', '').capitalize()
+                summary    = data.get('summary', '')
+                defcon     = data.get('defcon', '?')
+                macro      = data.get('macro_score', 0)
+                in_tok     = data.get('in_tokens', 0)
+                out_tok    = data.get('out_tokens', 0)
+                gaps       = data.get('gaps', [])
+                gaps_line  = f"\n_🔍 Gaps: {', '.join(gaps)}_" if gaps else ""
+                text = (
+                    f"{emoji} *{label} Flash Briefing* — DEFCON {defcon}/5 | Macro {macro:.0f}/100\n"
+                    f"{summary}{gaps_line}\n"
+                    f"_({in_tok}→{out_tok} tokens)_"
+                )
+
+            elif event_type == 'daily_briefing':
+                model_key  = data.get('model_key', 'reasoning')
+                regime     = data.get('market_regime', 'Unknown')
+                headline   = data.get('headline', '')
+                biggest_risk = data.get('biggest_risk', '')
+                best_opp   = data.get('best_opportunity', '')
+                defcon_fc  = data.get('defcon_forecast', '')
+                gaps       = data.get('data_gaps', [])
+                in_tok     = data.get('in_tokens', 0)
+                out_tok    = data.get('out_tokens', 0)
+                gaps_line  = f"\n_🔍 Gaps: {', '.join(gaps)}_" if gaps else ""
+                text = (
+                    f"📋 *Daily Briefing* — {regime}\n"
+                    f"{headline}\n"
+                    f"⚠️ Risk: {biggest_risk}\n"
+                    f"💡 Opportunity: {best_opp}\n"
+                    f"🔭 DEFCON Outlook: {defcon_fc}"
+                    f"{gaps_line}\n"
+                    f"_({in_tok}→{out_tok} tokens)_"
+                )
+
+            elif event_type == 'health_report':
+                status     = data.get('status', 'unknown')   # ok | warning | critical
+                summary    = data.get('summary', '')
+                new_models = data.get('new_models', [])
+                recurring_gaps = data.get('recurring_gaps', [])
+                apis_down  = data.get('apis_down', [])
+                emoji = {'ok': '✅', 'warning': '⚠️', 'critical': '🚨'}.get(status, '📊')
+                sections = [f"{emoji} *Bi-Weekly Health Report* — {status.upper()}", summary]
+                if apis_down:
+                    sections.append(f"🔴 APIs Down: {', '.join(apis_down)}")
+                if new_models:
+                    sections.append(f"🆕 Model Updates Available: {', '.join(new_models)}")
+                if recurring_gaps:
+                    sections.append(f"🔁 Recurring Data Gaps (needs code): {', '.join(recurring_gaps)}")
+                text = '\n'.join(sections)
+
+            else:
+                text = f"📢 *{event_type}*: {json.dumps(data, indent=2)}"
+
+            payload = {
+                'text': text,
+                'username': 'HighTrade',
+                'icon_emoji': ':chart_with_upwards_trend:'
+            }
+            response = requests.post(webhook_url, json=payload, timeout=5)
+            return response.status_code == 200
+
+        except Exception:
+            return False
+
     def send_defcon_alert(self, defcon_level: int, signal_score: float, details: str = ""):
         """Send comprehensive alert for DEFCON escalation"""
         if not self.should_alert_for_defcon(defcon_level):

@@ -141,6 +141,7 @@ class HighTradeOrchestrator:
         self._acquisition_pipeline_date = None  # Track last research+analyst run
         self._morning_flash_date = None   # Track morning Flash briefing (9:30 AM)
         self._midday_flash_date  = None   # Track midday Flash briefing (12:00 PM)
+        self._health_check_date  = None   # Track bi-weekly health check (Thursdays)
 
         # Slash command processor
         self.cmd_processor = CommandProcessor(self)
@@ -833,6 +834,34 @@ Check dashboard for detailed analysis.
         # ── Daily Briefing (fires once per day at/after 4:30 PM) ──────────
         self._check_daily_briefing()
 
+        # ── Bi-weekly Health Check (Thursdays only, once per week pair) ───
+        self._check_health_agent()
+
+    def _check_health_agent(self):
+        """
+        Bi-weekly system health check — fires on Thursdays, at most once per 13 days.
+        Checks APIs, monitoring recency, recurring data gaps, and new Gemini models.
+        Results sent to #all-hightrade via send_notify().
+        """
+        now = datetime.now()
+        # Only run on Thursdays (weekday 3)
+        if now.weekday() != 3:
+            return
+        today = now.strftime('%Y-%m-%d')
+        if self._health_check_date == today:
+            return  # already ran today
+        self._health_check_date = today
+
+        logger.info("🏥 Thursday health check — running bi-weekly system audit...")
+        try:
+            from health_agent import run_and_notify
+            result = run_and_notify(self.alerts, force=False)
+            if result:
+                logger.info(f"  ✅ Health check complete: {result.get('summary', '')}")
+            # 'skipped' means not yet 13 days since last run — silently move on
+        except Exception as e:
+            logger.warning(f"  ⚠️  Health agent failed: {e}")
+
     def _check_flash_briefings(self):
         """
         Fire lightweight Gemini Flash briefings at two intraday checkpoints:
@@ -1084,8 +1113,8 @@ DATA GAPS: On a final line starting with "GAPS:" list any specific data that was
         except Exception as db_err:
             logger.warning(f"  ⚠️  Flash briefing DB write failed: {db_err}")
 
-        # Send to #logs-silent
-        self.alerts.send_silent_log('flash_briefing', {
+        # Send to #all-hightrade (push notification) and mirror to #logs-silent
+        payload = {
             'label':      label,
             'emoji':      emoji,
             'summary':    summary_text,
@@ -1094,7 +1123,9 @@ DATA GAPS: On a final line starting with "GAPS:" list any specific data that was
             'macro_score': macro_score,
             'in_tokens':  in_tok,
             'out_tokens': out_tok,
-        })
+        }
+        self.alerts.send_notify('flash_briefing', payload)
+        self.alerts.send_silent_log('flash_briefing', payload)
 
     def _check_daily_briefing(self, force: bool = False):
         """Fire daily briefing once per day after market close (4:30 PM ET)."""

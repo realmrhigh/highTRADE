@@ -773,6 +773,24 @@ def _send_slack_summary(date_str: str, ctx: Dict, results: Dict):
                 f"👀 *Watchlist:* {', '.join(watchlist) if watchlist else 'None'}\n"
             )
 
+        # Post to #all-hightrade (push notification) via send_notify()
+        # Also keep a mirror copy in #logs-silent
+        reasoning_result = results.get('reasoning', {})
+        gaps = reasoning_result.get('data_gaps', [])
+        notify_payload = {
+            'model_key':        'reasoning',
+            'market_regime':    reasoning_result.get('market_regime', '?'),
+            'headline':         (reasoning_result.get('headline_summary') or '').strip(),
+            'biggest_risk':     (reasoning_result.get('biggest_risk_today') or '').strip(),
+            'best_opportunity': (reasoning_result.get('biggest_opportunity_today') or '').strip(),
+            'defcon_forecast':  reasoning_result.get('defcon_forecast', '?'),
+            'data_gaps':        gaps,
+            'in_tokens':        reasoning_result.get('_input_tokens', 0),
+            'out_tokens':       reasoning_result.get('_output_tokens', 0),
+        }
+        alerts.send_notify('daily_briefing', notify_payload)
+
+        # Mirror full formatted text to #logs-silent
         webhook_url = alerts.config.get('channels', {}).get('slack_logging', {}).get('webhook_url')
         if webhook_url:
             payload = {
@@ -781,7 +799,7 @@ def _send_slack_summary(date_str: str, ctx: Dict, results: Dict):
                 'icon_emoji': ':bar_chart:'
             }
             requests.post(webhook_url, json=payload, timeout=10)
-            logger.info("  📤 Daily briefing posted to #logs-silent")
+            logger.info("  📤 Daily briefing posted to #all-hightrade + #logs-silent")
 
     except Exception as e:
         logger.warning(f"Slack daily briefing failed: {e}")
