@@ -567,7 +567,7 @@ class AlertSystem:
                 recurring_gaps = data.get('recurring_gaps', [])
                 apis_down  = data.get('apis_down', [])
                 emoji = {'ok': '✅', 'warning': '⚠️', 'critical': '🚨'}.get(status, '📊')
-                sections = [f"{emoji} *Bi-Weekly Health Report* — {status.upper()}", summary]
+                sections = [f"{emoji} *Twice-Weekly Health Report* — {status.upper()}", summary]
                 if apis_down:
                     sections.append(f"🔴 APIs Down: {', '.join(apis_down)}")
                 if new_models:
@@ -579,13 +579,34 @@ class AlertSystem:
             else:
                 text = f"📢 *{event_type}*: {json.dumps(data, indent=2)}"
 
-            payload = {
-                'text': text,
-                'username': 'HighTrade',
-                'icon_emoji': ':chart_with_upwards_trend:'
-            }
-            response = requests.post(webhook_url, json=payload, timeout=5)
-            return response.status_code == 200
+            # Post via bot token + chat.postMessage so Slack treats it as
+            # a proper bot message — this is what triggers user notifications.
+            # Webhook posts arrive silently; bot posts respect channel notification
+            # settings and show up in the activity feed.
+            bot_token  = slack_config.get('bot_token', '')
+            channel_id = slack_config.get('channel_id', '')
+
+            if bot_token and channel_id:
+                response = requests.post(
+                    'https://slack.com/api/chat.postMessage',
+                    headers={
+                        'Authorization': f'Bearer {bot_token}',
+                        'Content-Type': 'application/json',
+                    },
+                    json={
+                        'channel':  channel_id,
+                        'text':     text,
+                        'username': 'HighTrade',
+                        'icon_emoji': ':chart_with_upwards_trend:',
+                    },
+                    timeout=5,
+                )
+                data = response.json()
+                return data.get('ok', False)
+            else:
+                # Fallback to webhook if bot token not configured
+                response = requests.post(webhook_url, json={'text': text}, timeout=5)
+                return response.status_code == 200
 
         except Exception:
             return False
