@@ -230,6 +230,15 @@ def _gather_daily_context(db_path: str, date_str: str = None) -> Dict:
     """, (week_ago,))
     ctx['recent_closed'] = [dict(r) for r in cursor.fetchall()]
 
+    # ── 10. Intraday Flash briefings (morning + midday check-ins) ───────
+    cursor.execute("""
+        SELECT model_key, headline_summary, macro_alignment, created_at
+        FROM daily_briefings
+        WHERE date = ? AND model_key IN ('morning_flash', 'midday_flash')
+        ORDER BY created_at ASC
+    """, (date_str,))
+    ctx['intraday_flashes'] = [dict(r) for r in cursor.fetchall()]
+
     conn.close()
     return ctx
 
@@ -266,6 +275,7 @@ def _build_daily_prompt(ctx: Dict) -> str:
     positions = ctx.get('open_positions', [])
     closed = ctx.get('recent_closed', [])
     top_signals = ctx.get('top_news_signals', [])
+    intraday_flashes = ctx.get('intraday_flashes', [])
 
     # Format DEFCON timeline
     defcon_timeline = ""
@@ -345,6 +355,16 @@ def _build_daily_prompt(ctx: Dict) -> str:
     else:
         pos_text = "  No open positions (cash deployed: $0)\n"
 
+    # Format intraday Flash briefings (morning + midday)
+    intraday_text = ""
+    if intraday_flashes:
+        for f in intraday_flashes:
+            label = f.get('model_key', '?').replace('_', ' ').title()
+            ts    = (f.get('created_at') or '')[:16]
+            intraday_text += f"  [{label} @ {ts}]\n  {f.get('headline_summary','')}\n  State: {f.get('macro_alignment','')}\n\n"
+    else:
+        intraday_text = "  No intraday Flash briefings recorded today (market may not have been open)\n"
+
     # Format recent trades
     trades_text = ""
     if closed:
@@ -374,6 +394,10 @@ def _build_daily_prompt(ctx: Dict) -> str:
         "═══════════════════════════════════════════════════════════\n"
         "Gemini Pro analysis consensus:\n" + pro_summary +
         "Gemini Flash themes across cycles:\n" + flash_themes + "\n"
+        "═══════════════════════════════════════════════════════════\n"
+        "SECTION 2.5: INTRADAY FLASH BRIEFINGS (Morning + Midday)\n"
+        "═══════════════════════════════════════════════════════════\n"
+        + intraday_text +
         "═══════════════════════════════════════════════════════════\n"
         "SECTION 3: DEFCON & MARKET DATA TIMELINE\n"
         "═══════════════════════════════════════════════════════════\n"

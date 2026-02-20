@@ -139,6 +139,8 @@ class HighTradeOrchestrator:
         self._new_interval = None  # Set by /interval command
         self._daily_briefing_date = None  # Track last briefing date
         self._acquisition_pipeline_date = None  # Track last research+analyst run
+        self._morning_flash_date = None   # Track morning Flash briefing (9:30 AM)
+        self._midday_flash_date  = None   # Track midday Flash briefing (12:00 PM)
 
         # Slash command processor
         self.cmd_processor = CommandProcessor(self)
@@ -825,8 +827,202 @@ Check dashboard for detailed analysis.
         finally:
             self.monitor.disconnect()
 
+        # ── Intraday Flash Briefings (morning 9:30 AM, midday 12:00 PM) ───
+        self._check_flash_briefings()
+
         # ── Daily Briefing (fires once per day at/after 4:30 PM) ──────────
         self._check_daily_briefing()
+
+    def _check_flash_briefings(self):
+        """
+        Fire lightweight Gemini Flash briefings at two intraday checkpoints:
+          • Morning  — 9:30 AM ET  (market open snapshot)
+          • Midday   — 12:00 PM ET (lunch check-in)
+
+        Each fires once per calendar day. Results saved to daily_briefings table
+        (model_key = 'morning_flash' / 'midday_flash') so the 4:30 PM Pro synthesis
+        has structured intraday context. Summary also sent to #logs-silent.
+        """
+        now   = datetime.now()
+        today = now.strftime('%Y-%m-%d')
+        hour  = now.hour
+        minute = now.minute
+
+        windows = [
+            ('morning', 9,  30,  '_morning_flash_date', '🌅 Morning'),
+            ('midday',  12,  0,  '_midday_flash_date',  '☀️  Midday'),
+        ]
+
+        for label, tgt_hour, tgt_min, attr, emoji in windows:
+            past_window = (hour > tgt_hour or (hour == tgt_hour and minute >= tgt_min))
+            already_ran = getattr(self, attr) == today
+            if not past_window or already_ran:
+                continue
+
+            setattr(self, attr, today)
+            logger.info(f"📊 {emoji} Flash briefing firing ({tgt_hour:02d}:{tgt_min:02d})...")
+            try:
+                self._run_flash_briefing(label, emoji)
+            except Exception as e:
+                logger.warning(f"{emoji} Flash briefing failed: {e}")
+
+    def _run_flash_briefing(self, label: str, emoji: str):
+        """Build a concise Flash prompt from live state and send summary to #logs-silent."""
+        import sqlite3 as _sq
+
+        # ── Gather context ────────────────────────────────────────────────
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
+
+        # Latest news signal from DB
+        try:
+            conn = _sq.connect(str(DB_PATH))
+            conn.row_factory = _sq.Row
+            row = conn.execute("""
+                SELECT news_score, dominant_crisis_type, sentiment_summary,
+                       crisis_description, breaking_news_override
+                FROM news_signals ORDER BY timestamp DESC LIMIT 1
+            """).fetchone()
+            conn.close()
+            if row:
+                news_ctx = (
+                    f"Score: {row['news_score']:.1f}/100 | "
+                    f"Type: {row['dominant_crisis_type']} | "
+                    f"Sentiment: {row['sentiment_summary']} | "
+                    f"Breaking: {'YES' if row['breaking_news_override'] else 'no'}\n"
+                    f"Description: {row['crisis_description']}"
+                )
+            else:
+                news_ctx = "No recent news signal available."
+        except Exception:
+            news_ctx = "News signal unavailable."
+
+        # Open positions
+        try:
+            open_positions = self.paper_trading.get_open_positions()
+            pos_lines = [
+                f"  {p['asset_symbol']}: {p['shares']} shares @ ${p['entry_price']:.2f} entry"
+                for p in open_positions
+            ] or ["  (none)"]
+            pos_ctx = "\n".join(pos_lines)
+        except Exception:
+            pos_ctx = "  Position data unavailable."
+
+        # Active conditionals
+        try:
+            conn = _sq.connect(str(DB_PATH))
+            rows = conn.execute("""
+                SELECT ticker, entry_price_target, watch_tag
+                FROM conditional_tracking WHERE status = 'active'
+                ORDER BY ticker
+            """).fetchall()
+            conn.close()
+            cond_ctx = ", ".join(
+                f"{r[0]} [${r[1]:.2f}{' '+r[2] if r[2] else ''}]" for r in rows
+            ) or "none"
+        except Exception:
+            cond_ctx = "unavailable"
+
+        macro_score = self._get_latest_macro_score()
+        defcon = self.previous_defcon
+
+        # ── Build prompt ─────────────────────────────────────────────────
+        prompt = f"""You are HighTrade's intraday market analyst. Today is {now_str}.
+Provide a BRIEF {label} market check-in — 4 to 6 sentences max. Be direct and actionable.
+
+CURRENT STATE:
+  DEFCON: {defcon}/5
+  Macro Score: {macro_score:.0f}/100
+  News: {news_ctx}
+
+OPEN POSITIONS:
+{pos_ctx}
+
+ACTIVE CONDITIONALS WATCHING:
+  {cond_ctx}
+
+OUTPUT FORMAT (plain text, no JSON needed):
+1. One sentence on overall market tone right now.
+2. Any immediate risks or catalysts to watch.
+3. One sentence on open positions — are they behaving as expected?
+4. Any conditionals close to triggering?
+5. One actionable takeaway for the next few hours."""
+
+        from gemini_client import call as gemini_call
+        text, in_tok, out_tok = gemini_call(prompt, model_key='fast')
+
+        if not text:
+            logger.warning(f"{emoji} Flash briefing: no response from Gemini")
+            return
+
+        logger.info(f"  {emoji} Flash ({in_tok}→{out_tok} tok): {text[:120]}...")
+
+        # ── Write to daily_briefings DB so Pro end-of-day has structured intraday context ──
+        date_str = datetime.now().strftime('%Y-%m-%d')
+        model_key_db = f"{label}_flash"  # e.g. 'morning_flash', 'midday_flash'
+        try:
+            import sqlite3 as _sq
+            conn = _sq.connect(str(DB_PATH))
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS daily_briefings (
+                    briefing_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date             TEXT NOT NULL,
+                    model_key        TEXT NOT NULL,
+                    model_id         TEXT,
+                    market_regime    TEXT,
+                    regime_confidence REAL,
+                    headline_summary TEXT,
+                    key_themes_json  TEXT,
+                    biggest_risk     TEXT,
+                    biggest_opportunity TEXT,
+                    signal_quality   TEXT,
+                    macro_alignment  TEXT,
+                    congressional_alpha TEXT,
+                    portfolio_assessment TEXT,
+                    watchlist_json   TEXT,
+                    entry_conditions TEXT,
+                    defcon_forecast  TEXT,
+                    reasoning_chain  TEXT,
+                    model_confidence REAL,
+                    input_tokens     INTEGER,
+                    output_tokens    INTEGER,
+                    full_response_json TEXT,
+                    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(date, model_key)
+                )
+            """)
+            conn.execute("""
+                INSERT OR REPLACE INTO daily_briefings
+                (date, model_key, model_id, headline_summary,
+                 macro_alignment, input_tokens, output_tokens, full_response_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                date_str,
+                model_key_db,
+                'gemini-2.5-flash',
+                text,
+                f"DEFCON {defcon}/5 | Macro {macro_score:.0f}/100",
+                in_tok,
+                out_tok,
+                json.dumps({'label': label, 'defcon': defcon,
+                            'macro_score': macro_score, 'summary': text}),
+            ))
+            conn.commit()
+            conn.close()
+            logger.info(f"  💾 {emoji} Flash briefing saved to daily_briefings ({model_key_db})")
+        except Exception as db_err:
+            logger.warning(f"  ⚠️  Flash briefing DB write failed: {db_err}")
+
+        # Send to #logs-silent
+        self.alerts.send_silent_log('flash_briefing', {
+            'label':      label,
+            'emoji':      emoji,
+            'summary':    text,
+            'defcon':     defcon,
+            'macro_score': macro_score,
+            'in_tokens':  in_tok,
+            'out_tokens': out_tok,
+        })
 
     def _check_daily_briefing(self, force: bool = False):
         """Fire daily briefing once per day after market close (4:30 PM ET)."""

@@ -470,6 +470,20 @@ class AlertSystem:
                     f"Pipeline: researcher → analyst → verifier will find re-entry below `${exit_price:.2f}`"
                 )
 
+            elif event_type == 'flash_briefing':
+                emoji      = data.get('emoji', '📊')
+                label      = data.get('label', '').capitalize()
+                summary    = data.get('summary', '')
+                defcon     = data.get('defcon', '?')
+                macro      = data.get('macro_score', 0)
+                in_tok     = data.get('in_tokens', 0)
+                out_tok    = data.get('out_tokens', 0)
+                text = (
+                    f"{emoji} *{label} Flash Briefing* — DEFCON {defcon}/5 | Macro {macro:.0f}/100\n"
+                    f"{summary}\n"
+                    f"_({in_tok}→{out_tok} tokens)_"
+                )
+
             else:
                 text = f"{event_type}: {json.dumps(data, indent=2)}"
 
