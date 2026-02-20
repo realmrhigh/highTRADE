@@ -575,6 +575,40 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
     total_pnl_pct = total_pnl / total_capital * 100
     defcon_mod_val = float(macro.get('defcon_modifier') or 0)
 
+    # Broker mode + live DB row counts for architecture panel
+    try:
+        import sqlite3 as _sq
+        _conn = _sq.connect(str(DB_PATH))
+        _rows = _conn.execute("""
+            SELECT SUM(cnt) FROM (
+                SELECT COUNT(*) AS cnt FROM signal_monitoring
+                UNION ALL SELECT COUNT(*) FROM news_signals
+                UNION ALL SELECT COUNT(*) FROM gemini_analysis
+                UNION ALL SELECT COUNT(*) FROM macro_indicators
+                UNION ALL SELECT COUNT(*) FROM daily_briefings
+                UNION ALL SELECT COUNT(*) FROM conditional_tracking
+            )
+        """).fetchone()
+        _conn.close()
+        db_rows = int(_rows[0]) if _rows and _rows[0] else 0
+    except Exception:
+        db_rows = 0
+
+    try:
+        import subprocess as _sp
+        _ps = _sp.run(['pgrep', '-a', '-f', 'hightrade_orchestrator'], capture_output=True, text=True)
+        _line = _ps.stdout.strip()
+        if '--broker' in _line:
+            broker_mode = _line.split('--broker')[1].strip().split()[0]
+        elif 'full_auto' in _line:
+            broker_mode = 'full_auto'
+        elif 'disabled' in _line:
+            broker_mode = 'disabled'
+        else:
+            broker_mode = 'semi_auto'
+    except Exception:
+        broker_mode = 'semi_auto'
+
     html = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -933,83 +967,99 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
 <div class="grid-three">
 
   <div class="panel">
-    <div class="panel-title">Research Team</div>
+    <div class="panel-title">&#128269; Research Pipeline</div>
     <div style="display:flex;flex-direction:column;gap:8px;">
       <div class="stat">
         <div class="stat-label">News Engine</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; ACTIVE &mdash; 15-min cycles</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">5-component scoring: sentiment &middot; concentration &middot; urgency &middot; confidence &middot; specificity</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; ACTIVE &mdash; 15-min cycles &middot; dedup-gated Gemini</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">5-component scoring: sentiment &middot; concentration &middot; urgency &middot; confidence &middot; specificity &middot; Flash+Pro only fires on new articles or breaking</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">FRED Macro Tracker</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; ACTIVE &mdash; Score {macro_score_val:.0f}/100 &middot; every ~60 min</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">9 indicators: yield curve &middot; fed funds &middot; unemployment &middot; M2 &middot; HY spreads &middot; consumer sentiment &middot; DEFCON modifier</div>
       </div>
       <div class="stat">
         <div class="stat-label">Congressional Tracker</div>
-        <div style="color:{'#ffd700' if not cong_clusters else '#00ff88'};font-size:11px;">{'&#9888;&#65039; S3 intermittent &mdash; Capitol Trades fallback' if not cong_clusters else '&#9679; ACTIVE'}</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">House + Senate disclosures &middot; cluster detection (3+ politicians in 30 days)</div>
+        <div style="color:{'#ffd700' if not cong_clusters else '#00ff88'};font-size:11px;">{'&#9888;&#65039; S3 intermittent &mdash; Capitol Trades fallback' if not cong_clusters else '&#9679; ACTIVE &mdash; every ~60 min'}</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">House + Senate disclosures &middot; cluster detection (3+ politicians/30 days) &middot; bipartisan signal weighting</div>
       </div>
       <div class="stat">
-        <div class="stat-label">FRED Macro</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; ACTIVE &mdash; Score {macro_score_val:.0f}/100</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">9 indicators: yield curve &middot; fed funds &middot; unemployment &middot; M2 &middot; HY spreads &middot; sentiment</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Acquisition Researcher</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; ACTIVE</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">yfinance &middot; SEC EDGAR &middot; analyst targets &middot; news + congressional integration</div>
+        <div class="stat-label">Acquisition Pipeline</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; ACTIVE &mdash; daily post-briefing</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Researcher (yfinance &middot; SEC EDGAR &middot; analyst targets) &rarr; Analyst (Pro 3 &middot; watch tags) &rarr; Verifier (Flash reverification) &rarr; Conditionals</div>
       </div>
     </div>
   </div>
 
   <div class="panel">
-    <div class="panel-title">Intelligence Team</div>
+    <div class="panel-title">&#129504; Intelligence Layer</div>
     <div style="display:flex;flex-direction:column;gap:8px;">
       <div class="stat">
-        <div class="stat-label">Gemini Fast (Flash)</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; thinkingBudget=0 &mdash; news triage</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Real-time article analysis, action classification every cycle</div>
+        <div class="stat-label">Gemini Flash &mdash; Fast Tier</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; gemini-2.5-flash &middot; thinking=0 &middot; OAuth</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Per-cycle news triage &middot; 🌅 9:30 AM morning briefing &middot; ☀️ 12:00 PM midday briefing &middot; acquisition verifier</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Gemini Balanced (Flash 8k)</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; thinkingBudget=8000 &mdash; daily fast tier</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Daily briefing balanced depth, broader reasoning</div>
+        <div class="stat-label">Gemini Flash &mdash; Balanced Tier</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; gemini-2.5-flash &middot; thinking=8k &middot; OAuth</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Elevated signal analysis &middot; broader reasoning on breaking news &middot; secondary daily review</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Gemini Reasoning (Pro 3)</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; thinkingBudget=-1 &mdash; deep analysis</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Primary daily briefing &middot; acquisition analyst &middot; 16k+ output tokens</div>
+        <div class="stat-label">Gemini Pro 3 &mdash; Reasoning Tier</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; gemini-3-pro-preview &middot; thinking=-1 &middot; OAuth &middot; 3.1 ready</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">📋 4:30 PM deep daily briefing &middot; acquisition analyst &middot; pre-purchase gate &middot; 16k output tokens &middot; dynamic thinking budget</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Acquisition Verifier</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; Flash daily reverification</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Confirms / flags / invalidates conditional tracking entries</div>
+        <div class="stat-label">Auth &amp; Token Efficiency</div>
+        <div style="color:#7eb8f7;font-size:11px;">&#128274; OAuth-only &middot; Gemini CLI 0.29.2 &middot; ~2-5% daily quota used</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">No API key &middot; dedup gate skips Flash+Pro on zero new articles &middot; massive headroom for scale</div>
       </div>
     </div>
   </div>
 
   <div class="panel">
-    <div class="panel-title">Broker / Execution</div>
+    <div class="panel-title">&#129302; Broker / Execution</div>
     <div style="display:flex;flex-direction:column;gap:8px;">
       <div class="stat">
         <div class="stat-label">DEFCON System</div>
-        <div style="color:{dc_color};font-size:11px;">&#9679; D{defcon} &mdash; {dc_label}</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Signal-driven 1&ndash;5 scale &middot; Macro modifier: {defcon_mod_val:+.1f}</div>
+        <div style="color:{dc_color};font-size:11px;">&#9679; D{defcon} &mdash; {dc_label} &middot; Macro modifier: {defcon_mod_val:+.1f}</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Signal-driven 1&ndash;5 scale &middot; news + yield + VIX + macro composite &middot; escalation AND de-escalation tracked</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Broker Agent</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; AUTONOMOUS mode</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Buys on DEFCON 1&ndash;2 &middot; profit target + stop loss exits &middot; acq. conditionals</div>
+        <div class="stat-label">Broker Agent &mdash; {broker_mode.upper()}</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; Buys DEFCON 1&ndash;2 &middot; conditional entries &middot; autonomous exits</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Watch tags: breakout &middot; momentum &middot; mean-reversion &middot; defensive-hedge &middot; macro-hedge &middot; earnings-play &middot; rebound</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Position Sizing</div>
-        <div style="color:#aaa;font-size:11px;">Base $10K &middot; Min $3K &middot; Max $20K</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">{len(positions)} open &middot; ${deployed:,.0f} deployed &middot; ${cash:,.0f} available</div>
+        <div class="stat-label">Pre-Purchase Gate</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; Pro 3 veto at trigger time &middot; fail-open</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Live DEFCON + news score + macro score + VIX &middot; vetoed entries stay active and retry next cycle</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Manual Commands</div>
-        <div style="color:#7eb8f7;font-size:11px;">Slack: /buy &middot; /sell &middot; /hold &middot; /briefing</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">IPC file bridge &middot; full override capability</div>
+        <div class="stat-label">Position Sizing &amp; Commands</div>
+        <div style="color:#aaa;font-size:11px;">Base $10K &middot; Min $3K &middot; Max $20K &middot; {len(positions)} open &middot; ${deployed:,.0f} deployed</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Slack: /buy &middot; /sell &middot; /hold &middot; /briefing &middot; /status &middot; IPC file bridge &middot; full override</div>
       </div>
     </div>
   </div>
 
+</div>
+
+<!-- ═══ DATA LAYER ═══ -->
+<div style="margin-top:16px;">
+  <div class="panel" style="border-color:#2a2a3a;">
+    <div class="panel-title" style="color:#888;">&#128451; Data Layer &mdash; SQLite WAL &middot; {db_rows} active rows across 6 tables &middot; 5 performance indexes &middot; 3 SQL views</div>
+    <div style="display:flex;gap:24px;flex-wrap:wrap;margin-top:6px;">
+      <div style="color:#555;font-size:10px;">&#128202; signal_monitoring &mdash; 15-min cycle snapshots</div>
+      <div style="color:#555;font-size:10px;">&#128240; news_signals &mdash; scored article batches + Flash JSON</div>
+      <div style="color:#555;font-size:10px;">&#129504; gemini_analysis &mdash; Flash + Pro reasoning records</div>
+      <div style="color:#555;font-size:10px;">&#128200; macro_indicators &mdash; FRED snapshots</div>
+      <div style="color:#555;font-size:10px;">&#128203; daily_briefings &mdash; morning &middot; midday &middot; close synthesis</div>
+      <div style="color:#555;font-size:10px;">&#127919; conditional_tracking &mdash; watch-tagged entry conditionals</div>
+      <div style="color:#555;font-size:10px;">&#128065;&#65039; v_active_positions &middot; v_active_conditionals &middot; v_daily_signal_summary</div>
+    </div>
+  </div>
 </div>
 
 <div class="footer">HIGHTRADE &middot; PAPER TRADING &middot; NOT FINANCIAL ADVICE &middot; {now_str}</div>
