@@ -896,31 +896,82 @@ Check dashboard for detailed analysis.
         except Exception:
             news_ctx = "News signal unavailable."
 
-        # Open positions
+        # Open positions — enriched with live prices and unrealized P&L
         try:
             open_positions = self.paper_trading.get_open_positions()
-            pos_lines = [
-                f"  {p['asset_symbol']}: {p['shares']} shares @ ${p['entry_price']:.2f} entry"
-                for p in open_positions
-            ] or ["  (none)"]
-            pos_ctx = "\n".join(pos_lines)
-        except Exception:
-            pos_ctx = "  Position data unavailable."
+            open_positions = self._enrich_positions_with_live_prices(open_positions)
+            pos_lines = []
+            for p in open_positions:
+                sym        = p['asset_symbol']
+                shares     = p.get('shares', 0)
+                entry      = p.get('entry_price', 0)
+                current    = p.get('current_price')
+                upnl_d     = p.get('unrealized_pnl_dollars')
+                upnl_pct   = p.get('unrealized_pnl_percent')
+                stop       = p.get('stop_loss')
+                tp1        = p.get('take_profit_1')
+                if current is not None:
+                    pnl_str  = f"  P&L: ${upnl_d:+,.0f} ({upnl_pct:+.1f}%)"
+                    stop_str = f"  Stop: ${stop:.2f}" if stop else ""
+                    tp_str   = f"  TP1: ${tp1:.2f}" if tp1 else ""
+                    pos_lines.append(
+                        f"  {sym}: {shares} shares | entry ${entry:.2f} → now ${current:.2f}{pnl_str}{stop_str}{tp_str}"
+                    )
+                else:
+                    pos_lines.append(
+                        f"  {sym}: {shares} shares @ ${entry:.2f} entry (live price unavailable)"
+                    )
+            pos_ctx = "\n".join(pos_lines) if pos_lines else "  (none)"
+        except Exception as e:
+            pos_ctx = f"  Position data unavailable ({e})."
 
-        # Active conditionals
+        # Active conditionals — with live price and distance to trigger
         try:
+            import yfinance as _yf
             conn = _sq.connect(str(DB_PATH))
-            rows = conn.execute("""
-                SELECT ticker, entry_price_target, watch_tag
+            cond_rows = conn.execute("""
+                SELECT ticker, entry_price_target, watch_tag,
+                       stop_loss, take_profit_1, thesis_summary
                 FROM conditional_tracking WHERE status = 'active'
                 ORDER BY ticker
             """).fetchall()
             conn.close()
-            cond_ctx = ", ".join(
-                f"{r[0]} [${r[1]:.2f}{' '+r[2] if r[2] else ''}]" for r in rows
-            ) or "none"
-        except Exception:
-            cond_ctx = "unavailable"
+
+            # Batch-fetch all unique tickers in one yfinance call
+            cond_tickers = list({r[0] for r in cond_rows})
+            if cond_tickers:
+                raw = _yf.download(
+                    cond_tickers, period='1d', interval='1m',
+                    group_by='ticker', progress=False, auto_adjust=True
+                )
+
+            def _live_price(sym):
+                try:
+                    if len(cond_tickers) == 1:
+                        return float(raw['Close'].iloc[-1])
+                    return float(raw[sym]['Close'].iloc[-1])
+                except Exception:
+                    return None
+
+            cond_lines = []
+            for r in cond_rows:
+                sym, target, tag, stop, tp1, thesis = r
+                live = _live_price(sym)
+                if live is not None:
+                    dist_pct = (live - target) / target * 100
+                    arrow    = "🔴 ABOVE target" if live > target else f"📍 {abs(dist_pct):.1f}% away"
+                    stop_str = f" | stop ${stop:.2f}" if stop else ""
+                    tp_str   = f" | TP1 ${tp1:.2f}" if tp1 else ""
+                    cond_lines.append(
+                        f"  {sym} [{tag or 'untagged'}]: target ${target:.2f} | live ${live:.2f} ({arrow}){stop_str}{tp_str}"
+                    )
+                else:
+                    cond_lines.append(
+                        f"  {sym} [{tag or 'untagged'}]: target ${target:.2f} (live price unavailable)"
+                    )
+            cond_ctx = "\n".join(cond_lines) if cond_lines else "  none"
+        except Exception as e:
+            cond_ctx = f"  unavailable ({e})"
 
         macro_score = self._get_latest_macro_score()
         defcon = self.previous_defcon
@@ -934,17 +985,17 @@ CURRENT STATE:
   Macro Score: {macro_score:.0f}/100
   News: {news_ctx}
 
-OPEN POSITIONS:
+OPEN POSITIONS (live prices + unrealized P&L):
 {pos_ctx}
 
-ACTIVE CONDITIONALS WATCHING:
-  {cond_ctx}
+ACTIVE CONDITIONALS (live price vs entry target):
+{cond_ctx}
 
 OUTPUT FORMAT (plain text, no JSON needed):
 1. One sentence on overall market tone right now.
 2. Any immediate risks or catalysts to watch.
-3. One sentence on open positions — are they behaving as expected?
-4. Any conditionals close to triggering?
+3. Open positions — are they behaving as expected given entry vs current price and P&L?
+4. Which conditionals are closest to triggering (within ~1-2% of target)?
 5. One actionable takeaway for the next few hours."""
 
         from gemini_client import call as gemini_call
