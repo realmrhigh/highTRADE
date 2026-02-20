@@ -63,7 +63,8 @@ _ANALYST_JSON_TEMPLATE = """{
   "thesis_summary": "2-3 sentence explanation of why this trade makes sense NOW",
   "key_risks": ["risk1", "risk2", "risk3"],
   "macro_alignment": "how macro environment supports or contradicts this trade",
-  "reasoning_chain": "step-by-step walk through of how you arrived at these levels"
+  "reasoning_chain": "step-by-step walk through of how you arrived at these levels",
+  "data_gaps": ["<specific missing data that would improve entry precision or confidence — e.g. 'options open interest at $460 strike', 'insider buying last 30 days', 'next earnings date not in research'>"]
 }"""
 
 # Watch tag definitions injected into every analyst prompt
@@ -401,6 +402,7 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection) -> Opt
                     updated_at = CURRENT_TIMESTAMP
                 WHERE ticker = ? AND status = 'active'
             """, (ticker,))
+            gaps = result.get('data_gaps', [])
             conn.execute("""
                 INSERT OR REPLACE INTO conditional_tracking (
                     ticker, date_created,
@@ -414,8 +416,9 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection) -> Opt
                     macro_alignment, reasoning_chain,
                     research_confidence,
                     watch_tag, watch_tag_rationale,
+                    data_gaps_json,
                     status, last_verified
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'active',?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'active',?)
             """, (
                 ticker, date_str,
                 result.get('entry_price_target'),
@@ -437,6 +440,7 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection) -> Opt
                 confidence,
                 result.get('watch_tag', 'mean-reversion'),  # default if Gemini omits
                 result.get('watch_tag_rationale', ''),
+                json.dumps(gaps) if gaps else None,
                 date_str,
             ))
             conn.commit()
@@ -447,6 +451,8 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection) -> Opt
                 f"TP1=${result.get('take_profit_1')}, "
                 f"size={result.get('position_size_pct',0)*100:.0f}% of cash"
             )
+            if gaps:
+                logger.info(f"  🔍 Data gaps ({ticker}): {' | '.join(gaps)}")
 
             # Update acquisition_watchlist status
             conn.execute("""

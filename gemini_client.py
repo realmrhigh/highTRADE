@@ -53,7 +53,7 @@ MODEL_CONFIG = {
         'temperature':     1.0,
     },
     'reasoning': {
-        'model_id':        'gemini-3-pro-preview',
+        'model_id':        'gemini-3-pro-preview',   # upgrade to gemini-3.1-pro-preview once CLI + API key support it
         'thinking_budget': -1,
         'max_output_tokens': 16384,
         'temperature':     1.0,
@@ -66,7 +66,7 @@ MODEL_CONFIG = {
         'temperature':     0.4,
     },
     'pro': {
-        'model_id':        'gemini-3-pro-preview',
+        'model_id':        'gemini-3-pro-preview',   # upgrade to gemini-3.1-pro-preview once CLI + API key support it
         'thinking_budget': -1,
         'max_output_tokens': 16384,
         'temperature':     1.0,
@@ -209,7 +209,11 @@ def _call_via_cli(prompt: str, cfg: dict) -> Tuple[Optional[str], int, int]:
 # ── REST API path ──────────────────────────────────────────────────────────────
 
 def _call_via_api(prompt: str, cfg: dict) -> Tuple[Optional[str], int, int]:
-    """Call via REST API with API key. Supports thinkingConfig."""
+    """Call via REST API with API key. Supports thinkingConfig.
+    Only used as fallback if CLI is unavailable. Primary auth is OAuth via Gemini CLI."""
+    if not GEMINI_API_KEY:
+        logger.debug("REST API skipped — no GEMINI_API_KEY set (OAuth-only mode)")
+        return None, 0, 0
     model_id = cfg['model_id']
     url = f"{GEMINI_API_BASE}/{model_id}:generateContent?key={GEMINI_API_KEY}"
 

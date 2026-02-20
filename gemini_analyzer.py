@@ -117,7 +117,8 @@ Respond with ONLY valid JSON in this exact structure:
   "confidence_in_signal": <float 0.0-1.0, is this a real market signal or just noise>,
   "dominant_theme": "<string: single most important market theme from these articles>",
   "recommended_action": "<BUY|HOLD|SELL|WAIT>",
-  "reasoning": "<string: 2-3 sentence explanation of your assessment>"
+  "reasoning": "<string: 2-3 sentence explanation of your assessment>",
+  "data_gaps": ["<specific data item that was missing or stale that would have improved this analysis>", "<another gap if any — e.g. 'live VIX reading', 'earnings date for NVDA', 'Fed statement full text'>"]
 }}"""
 
     def _build_pro_prompt(self, articles: List[Dict], score_components: Dict,
@@ -185,7 +186,8 @@ Provide a comprehensive trading risk analysis. Respond with ONLY valid JSON:
   "defcon_recommendation": <int 1-5, recommended DEFCON level based on news>,
   "position_risk_assessment": "<string: assessment of risk to current positions>",
   "key_watchpoints": [<string>, <string>, <string>],
-  "reasoning": "<detailed 4-6 sentence chain of thought explaining your full assessment>"
+  "reasoning": "<detailed 4-6 sentence chain of thought explaining your full assessment>",
+  "data_gaps": ["<specific data that was absent or stale and would have sharpened this analysis — e.g. 'options flow for SPY', 'Fed minutes released today not in articles', 'sector rotation data'>"]
 }}"""
 
     def run_flash_analysis(self, articles: List[Dict], score_components: Dict,

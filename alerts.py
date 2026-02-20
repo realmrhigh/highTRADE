@@ -478,9 +478,11 @@ class AlertSystem:
                 macro      = data.get('macro_score', 0)
                 in_tok     = data.get('in_tokens', 0)
                 out_tok    = data.get('out_tokens', 0)
+                gaps       = data.get('gaps', [])
+                gaps_line  = f"\n_🔍 Gaps: {', '.join(gaps)}_" if gaps else ""
                 text = (
                     f"{emoji} *{label} Flash Briefing* — DEFCON {defcon}/5 | Macro {macro:.0f}/100\n"
-                    f"{summary}\n"
+                    f"{summary}{gaps_line}\n"
                     f"_({in_tok}→{out_tok} tokens)_"
                 )
 

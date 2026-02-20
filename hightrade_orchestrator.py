@@ -996,7 +996,8 @@ OUTPUT FORMAT (plain text, no JSON needed):
 2. Any immediate risks or catalysts to watch.
 3. Open positions — are they behaving as expected given entry vs current price and P&L?
 4. Which conditionals are closest to triggering (within ~1-2% of target)?
-5. One actionable takeaway for the next few hours."""
+5. One actionable takeaway for the next few hours.
+DATA GAPS: On a final line starting with "GAPS:" list any specific data that was missing or would have sharpened this analysis — e.g. "GAPS: real-time sector rotation, VIX term structure, MSFT options flow". If nothing is missing write "GAPS: none"."""
 
         from gemini_client import call as gemini_call
         text, in_tok, out_tok = gemini_call(prompt, model_key='fast')
@@ -1005,11 +1006,26 @@ OUTPUT FORMAT (plain text, no JSON needed):
             logger.warning(f"{emoji} Flash briefing: no response from Gemini")
             return
 
-        logger.info(f"  {emoji} Flash ({in_tok}→{out_tok} tok): {text[:120]}...")
+        # ── Parse GAPS: line from end of response ────────────────────────
+        gaps_list = []
+        summary_text = text
+        lines = text.strip().splitlines()
+        for i, line in enumerate(lines):
+            if line.strip().upper().startswith('GAPS:'):
+                gaps_raw = line.split(':', 1)[1].strip()
+                if gaps_raw.lower() != 'none':
+                    gaps_list = [g.strip() for g in gaps_raw.split(',') if g.strip()]
+                # Remove GAPS line from display summary
+                summary_text = '\n'.join(lines[:i] + lines[i+1:]).strip()
+                break
+
+        logger.info(f"  {emoji} Flash ({in_tok}→{out_tok} tok): {summary_text[:120]}...")
+        if gaps_list:
+            logger.info(f"  🔍 Flash data gaps: {' | '.join(gaps_list)}")
 
         # ── Write to daily_briefings DB so Pro end-of-day has structured intraday context ──
         date_str = datetime.now().strftime('%Y-%m-%d')
-        model_key_db = f"{label}_flash"  # e.g. 'morning_flash', 'midday_flash'
+        model_key_db = f"{label.lower().replace(' ', '_')}_flash"  # e.g. 'morning_flash', 'midday_flash'
         try:
             import sqlite3 as _sq
             conn = _sq.connect(str(DB_PATH))
@@ -1038,6 +1054,7 @@ OUTPUT FORMAT (plain text, no JSON needed):
                     input_tokens     INTEGER,
                     output_tokens    INTEGER,
                     full_response_json TEXT,
+                    data_gaps_json   TEXT,
                     created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(date, model_key)
                 )
@@ -1045,18 +1062,21 @@ OUTPUT FORMAT (plain text, no JSON needed):
             conn.execute("""
                 INSERT OR REPLACE INTO daily_briefings
                 (date, model_key, model_id, headline_summary,
-                 macro_alignment, input_tokens, output_tokens, full_response_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 macro_alignment, input_tokens, output_tokens,
+                 full_response_json, data_gaps_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 date_str,
                 model_key_db,
                 'gemini-2.5-flash',
-                text,
+                summary_text,
                 f"DEFCON {defcon}/5 | Macro {macro_score:.0f}/100",
                 in_tok,
                 out_tok,
                 json.dumps({'label': label, 'defcon': defcon,
-                            'macro_score': macro_score, 'summary': text}),
+                            'macro_score': macro_score, 'summary': summary_text,
+                            'gaps': gaps_list}),
+                json.dumps(gaps_list) if gaps_list else None,
             ))
             conn.commit()
             conn.close()
@@ -1068,7 +1088,8 @@ OUTPUT FORMAT (plain text, no JSON needed):
         self.alerts.send_silent_log('flash_briefing', {
             'label':      label,
             'emoji':      emoji,
-            'summary':    text,
+            'summary':    summary_text,
+            'gaps':       gaps_list,
             'defcon':     defcon,
             'macro_score': macro_score,
             'in_tokens':  in_tok,

@@ -513,7 +513,8 @@ class BrokerDecisionEngine:
             f'  "approve": true,\n'
             f'  "conditions_met": ["condition 1: PASS/FAIL — reason", "condition 2: PASS/FAIL — reason"],\n'
             f'  "reason": "brief reason for approval (empty if vetoing)",\n'
-            f'  "veto_reason": "detailed reason for veto (empty if approving)"\n'
+            f'  "veto_reason": "detailed reason for veto (empty if approving)",\n'
+            f'  "data_gaps": ["<data absent at trigger time that would have made this decision sharper — e.g. \'real-time options flow\', \'volume confirmation not yet available\', \'earnings in 3 days not flagged in entry conditions\'>"] \n'
             f'}}'
         )
 
@@ -662,6 +663,9 @@ class BrokerDecisionEngine:
                 logger.info(
                     f"  ✅ {ticker} gate APPROVED: {gate.get('reason', 'conditions met')}"
                 )
+                gate_gaps = gate.get('data_gaps', [])
+                if gate_gaps:
+                    logger.info(f"  🔍 Gate data gaps ({ticker}): {' | '.join(gate_gaps)}")
 
                 decision = {
                     'timestamp':      now.isoformat(),

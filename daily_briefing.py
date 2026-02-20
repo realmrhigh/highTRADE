@@ -258,7 +258,8 @@ _JSON_TEMPLATE = """{
   "entry_conditions_tomorrow": "specific conditions that would trigger a buy signal",
   "defcon_forecast": "expected DEFCON level tomorrow if current trends continue",
   "reasoning_chain": "step-by-step walk through how you connected the data points",
-  "model_confidence": 0.0
+  "model_confidence": 0.0,
+  "data_gaps": ["<specific data that was absent today that would have improved this briefing — e.g. 'no congressional trades data this week', 'FRED macro data is 3 days stale', 'earnings reports from today not in news cycle yet', 'options expiry data not available'>"]
 }"""
 
 
@@ -579,6 +580,7 @@ def _save_to_db(date_str: str, ctx: Dict, results: Dict):
         if 'error' in result and len(result) <= 2:
             continue
         try:
+            gaps = result.get('data_gaps', [])
             cursor.execute("""
                 INSERT OR REPLACE INTO daily_briefings
                 (date, model_key, model_id, market_regime, regime_confidence,
@@ -586,8 +588,8 @@ def _save_to_db(date_str: str, ctx: Dict, results: Dict):
                  signal_quality, macro_alignment, congressional_alpha,
                  portfolio_assessment, watchlist_json, entry_conditions,
                  defcon_forecast, reasoning_chain, model_confidence,
-                 input_tokens, output_tokens, full_response_json)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 input_tokens, output_tokens, full_response_json, data_gaps_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 date_str,
                 model_key,
@@ -609,8 +611,12 @@ def _save_to_db(date_str: str, ctx: Dict, results: Dict):
                 result.get('model_confidence', 0),
                 result.get('_input_tokens', 0),
                 result.get('_output_tokens', 0),
-                json.dumps({k: v for k, v in result.items() if not k.startswith('_')})
+                json.dumps({k: v for k, v in result.items() if not k.startswith('_')}),
+                json.dumps(gaps) if gaps else None
             ))
+            # Log any data gaps at INFO level so they're visible in orchestrator log
+            if gaps and model_key == 'reasoning':
+                logger.info(f"  🔍 Data gaps identified by {model_key}: {' | '.join(gaps)}")
         except Exception as e:
             logger.warning(f"DB save failed for {model_key}: {e}")
 
