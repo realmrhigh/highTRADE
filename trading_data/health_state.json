@@ -1,0 +1,22 @@
+{
+  "last_run_date": "2026-02-20",
+  "flagged_gaps": [],
+  "last_result": {
+    "status": "ok",
+    "summary": "4/4 APIs healthy",
+    "apis_ok": [
+      "yfinance",
+      "FRED",
+      "Gemini CLI",
+      "Capitol Trades (reachable)"
+    ],
+    "apis_down": [],
+    "signal_healthy": true,
+    "signal_message": "Monitoring healthy \u2014 last cycle 15m ago",
+    "recurring_gaps": [],
+    "new_gaps": [],
+    "new_models": [],
+    "run_date": "2026-02-20",
+    "gap_counts": {}
+  }
+}
