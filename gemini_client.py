@@ -53,7 +53,7 @@ MODEL_CONFIG = {
         'temperature':     1.0,
     },
     'reasoning': {
-        'model_id':        'gemini-3-pro-preview',   # upgrade to gemini-3.1-pro-preview once CLI + API key support it
+        'model_id':        'gemini-3.1-pro-preview',
         'thinking_budget': -1,
         'max_output_tokens': 16384,
         'temperature':     1.0,
@@ -66,7 +66,7 @@ MODEL_CONFIG = {
         'temperature':     0.4,
     },
     'pro': {
-        'model_id':        'gemini-3-pro-preview',   # upgrade to gemini-3.1-pro-preview once CLI + API key support it
+        'model_id':        'gemini-3.1-pro-preview',
         'thinking_budget': -1,
         'max_output_tokens': 16384,
         'temperature':     1.0,

@@ -14,14 +14,136 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import gemini_client
+import grok_client
 
 logger = logging.getLogger(__name__)
 
 FLASH_MODEL = "gemini-2.5-flash"
-PRO_MODEL   = "gemini-3-pro-preview"
+PRO_MODEL   = "gemini-3.1-pro-preview"
+GROK_MODEL  = "grok-3"
 
-# Trigger Pro analysis when score exceeds this
+# Trigger Pro/Grok analysis when score exceeds this
 PRO_TRIGGER_SCORE = 40.0
+
+
+class GrokAnalyzer:
+    """X.com analysis and second opinion using xAI Grok"""
+
+    def __init__(self, model: str = GROK_MODEL):
+        self.model = model
+
+    def _parse_json_response(self, text: str) -> dict:
+        """Robustly parse JSON from Grok response, handling markdown wrapping"""
+        if "```json" in text:
+            text = text.split("```json")[1].split("```")[0].strip()
+        elif "```" in text:
+            text = text.split("```")[1].split("```")[0].strip()
+        text = text.strip()
+
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            logger.error(f"  ❌ Grok JSON parse error: {e}")
+            raise ValueError(f"Could not parse JSON from Grok response: {text[:100]}")
+
+    def run_analysis(self, articles: List[Dict], crisis_type: str, news_score: float,
+                     sector_rotation: Optional[Dict] = None,
+                     vix_term_structure: Optional[Dict] = None) -> Optional[Dict]:
+        """
+        Run Grok analysis for X.com sentiment and second opinion on market news.
+        """
+        logger.info(f"  𝕏 Running Grok analysis for X.com sentiment ({self.model})...")
+
+        # Format context for Grok
+        summary = "\n".join([f"- {a.get('title')}" for a in articles[:10]])
+        
+        # Macro Context
+        macro_parts = []
+        if sector_rotation:
+            macro_parts.append(f"Sector Rotation: Top={sector_rotation.get('top_sector_1w')}, Bottom={sector_rotation.get('bottom_sector_1w')}")
+        if vix_term_structure:
+            macro_parts.append(f"VIX Regime: {vix_term_structure.get('regime')} (Ratio: {vix_term_structure.get('vix_vxv_ratio', 0):.2f})")
+        
+        macro_text = "\n".join(macro_parts) if macro_parts else "Standard market conditions."
+        
+        prompt = f"""You are an expert market analyst with deep understanding of social sentiment and X.com trends.
+The market is currently seeing a {crisis_type} signal with a score of {news_score:.1f}/100.
+
+MARKET CONTEXT:
+{macro_text}
+
+LATEST NEWS HEADLINES:
+{summary}
+
+TASK:
+1. Search your knowledge/real-time data for current X.com (Twitter) sentiment related to these events.
+2. Provide a "second opinion" to challenge or confirm the mainstream news narrative.
+3. Identify hidden narratives or contrarian views gaining traction on social media.
+
+Respond with ONLY valid JSON:
+{{
+  "x_sentiment_score": <float -1.0 to 1.0, negative to positive sentiment>,
+  "trending_topics": [<string>, <string>, <string>],
+  "hidden_narratives": ["<specific narrative 1>", "<specific narrative 2>"],
+  "second_opinion_action": "<BUY|HOLD|SELL|WAIT>",
+  "reasoning": "<string: 3-4 sentences explaining the X.com sentiment and how it differs from news>",
+  "contrarian_signal": <float 0.0-1.0, how much does social sentiment diverge from news>
+}}"""
+
+        text, in_tok, out_tok = grok_client.call(prompt, model_id=self.model)
+
+        if not text:
+            logger.warning("  ⚠️  Grok returned no response")
+            return None
+
+        try:
+            result = self._parse_json_response(text)
+            result['model'] = self.model
+            result['input_tokens'] = in_tok
+            result['output_tokens'] = out_tok
+            result['timestamp'] = datetime.now().isoformat()
+            
+            action = result.get('second_opinion_action', 'WAIT')
+            sentiment = result.get('x_sentiment_score', 0)
+            logger.info(f"  ✅ Grok: action={action}, x_sentiment={sentiment:.2f} ({in_tok}→{out_tok} tokens)")
+            return result
+            
+        except Exception as e:
+            logger.error(f"  ❌ Grok analysis failed: {e}")
+            return None
+
+    def save_analysis_to_db(self, db_path: str, news_signal_id: int, analysis: Dict) -> Optional[int]:
+        """Save Grok analysis to grok_analysis table"""
+        import sqlite3
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                INSERT INTO grok_analysis
+                (news_signal_id, model_used, x_sentiment_score, trending_topics,
+                 hidden_narratives, second_opinion_action, reasoning, 
+                 input_tokens, output_tokens)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                news_signal_id,
+                analysis.get('model', ''),
+                analysis.get('x_sentiment_score', 0),
+                json.dumps(analysis.get('trending_topics', [])),
+                json.dumps(analysis.get('hidden_narratives', [])),
+                analysis.get('second_opinion_action', 'WAIT'),
+                analysis.get('reasoning', ''),
+                analysis.get('input_tokens', 0),
+                analysis.get('output_tokens', 0)
+            ))
+            
+            conn.commit()
+            analysis_id = cursor.lastrowid
+            conn.close()
+            return analysis_id
+        except Exception as e:
+            logger.error(f"  ❌ Failed to save Grok analysis: {e}")
+            return None
 
 
 class GeminiAnalyzer:
@@ -81,7 +203,9 @@ class GeminiAnalyzer:
         )
 
     def _build_flash_prompt(self, articles: List[Dict], score_components: Dict, 
-                             sentiment_summary: str, crisis_type: str) -> str:
+                             sentiment_summary: str, crisis_type: str,
+                             sector_rotation: Optional[Dict] = None,
+                             vix_term_structure: Optional[Dict] = None) -> str:
         """Build prompt for Flash pre-analysis"""
         
         # Format articles: title + description (first 200 chars)
@@ -98,12 +222,29 @@ class GeminiAnalyzer:
         
         components_text = json.dumps(score_components, indent=2) if score_components else "{}"
         
+        # Additional context from data gap fixes
+        context_parts = []
+        if sector_rotation:
+            top = sector_rotation.get('top_sector_1w', 'N/A')
+            bot = sector_rotation.get('bottom_sector_1w', 'N/A')
+            context_parts.append(f"SECTOR ROTATION (1W): Top={top}, Bottom={bot}")
+        
+        if vix_term_structure:
+            regime = vix_term_structure.get('regime', 'N/A')
+            ratio = vix_term_structure.get('vix_vxv_ratio', 0)
+            context_parts.append(f"VIX TERM STRUCTURE: Regime={regime}, VIX/VXV Ratio={ratio:.2f}")
+            
+        extra_context = "\n".join(context_parts) if context_parts else "No additional macro context available."
+        
         return f"""You are a quantitative financial analyst AI. Analyze these {len(articles)} market news articles and provide a JSON response.
 
 CURRENT SIGNAL METRICS:
 - Crisis Type: {crisis_type}
 - Sentiment: {sentiment_summary}
 - Score Components: {components_text}
+
+MARKET CONTEXT:
+{extra_context}
 
 NEWS ARTICLES:
 {articles_text}
@@ -118,13 +259,15 @@ Respond with ONLY valid JSON in this exact structure:
   "dominant_theme": "<string: single most important market theme from these articles>",
   "recommended_action": "<BUY|HOLD|SELL|WAIT>",
   "reasoning": "<string: 2-3 sentence explanation of your assessment>",
-  "data_gaps": ["<specific data item that was missing or stale that would have improved this analysis>", "<another gap if any — e.g. 'live VIX reading', 'earnings date for NVDA', 'Fed statement full text'>"]
+  "data_gaps": ["<specific data item that was missing or stale that would have improved this analysis>", "<another gap if any — e.g. 'options flow for MSFT', 'earnings date for NVDA'>"]
 }}"""
 
     def _build_pro_prompt(self, articles: List[Dict], score_components: Dict,
                            sentiment_summary: str, crisis_type: str, news_score: float,
                            flash_analysis: Optional[Dict], current_defcon: int,
-                           positions: Optional[List] = None) -> str:
+                           positions: Optional[List] = None,
+                           sector_rotation: Optional[Dict] = None,
+                           vix_term_structure: Optional[Dict] = None) -> str:
         """Build deep analysis prompt for Pro model"""
         
         # All articles with full description
@@ -154,6 +297,18 @@ Respond with ONLY valid JSON in this exact structure:
         if positions:
             pos_lines = [f"  - {p.get('symbol', 'N/A')}: {p.get('shares', 0)} shares @ ${p.get('entry_price', 0):.2f}, current P&L: {p.get('pnl_pct', 0):+.1f}%" for p in positions]
             positions_text = "\nCURRENT POSITIONS:\n" + "\n".join(pos_lines)
+
+        # Macro Context
+        macro_lines = []
+        if sector_rotation:
+            macro_lines.append("SECTOR ROTATION (Relative Strength to SPY):")
+            for s in sector_rotation.get('sectors', [])[:5]:
+                macro_lines.append(f"  - {s['name']} ({s['symbol']}): 1W Rel={s['rel_1w']:+.2f}%, 1M Rel={s['rel_1m']:+.2f}%")
+        
+        if vix_term_structure:
+            macro_lines.append(f"VIX TERM STRUCTURE: {vix_term_structure['regime']} (VIX/VXV={vix_term_structure['vix_vxv_ratio']:.2f})")
+
+        macro_text = "\n".join(macro_lines) if macro_lines else "No additional macro data available."
         
         return f"""You are a senior quantitative trading analyst with expertise in crisis detection and risk management. 
 This is a DEEP ANALYSIS triggered because the news signal score ({news_score:.1f}/100) exceeded the alert threshold.
@@ -164,6 +319,9 @@ SYSTEM STATE:
 - Crisis Type: {crisis_type}
 - Sentiment: {sentiment_summary}
 {positions_text}
+
+MACRO & SECTOR CONTEXT:
+{macro_text}
 
 SCORE COMPONENTS:
 {json.dumps(score_components, indent=2)}
@@ -187,18 +345,23 @@ Provide a comprehensive trading risk analysis. Respond with ONLY valid JSON:
   "position_risk_assessment": "<string: assessment of risk to current positions>",
   "key_watchpoints": [<string>, <string>, <string>],
   "reasoning": "<detailed 4-6 sentence chain of thought explaining your full assessment>",
-  "data_gaps": ["<specific data that was absent or stale and would have sharpened this analysis — e.g. 'options flow for SPY', 'Fed minutes released today not in articles', 'sector rotation data'>"]
+  "data_gaps": ["<specific data that was absent or stale and would have sharpened this analysis — e.g. 'options flow for AAPL', 'Fed minutes released today not in articles'>"]
 }}"""
 
     def run_flash_analysis(self, articles: List[Dict], score_components: Dict,
-                           sentiment_summary: str, crisis_type: str) -> Optional[Dict]:
+                           sentiment_summary: str, crisis_type: str,
+                           sector_rotation: Optional[Dict] = None,
+                           vix_term_structure: Optional[Dict] = None) -> Optional[Dict]:
         """
         Run Gemini Flash analysis - called every monitoring cycle.
         Fast, cheap, enriches stored data.
         """
         logger.info(f"  🤖 Running Gemini Flash analysis ({len(articles)} articles)...")
         
-        prompt = self._build_flash_prompt(articles, score_components, sentiment_summary, crisis_type)
+        prompt = self._build_flash_prompt(
+            articles, score_components, sentiment_summary, crisis_type,
+            sector_rotation, vix_term_structure
+        )
         
         text, input_tokens, output_tokens = self._call_gemini(self.flash_model, prompt, temperature=0.2)
         
@@ -228,7 +391,9 @@ Provide a comprehensive trading risk analysis. Respond with ONLY valid JSON:
     def run_pro_analysis(self, articles: List[Dict], score_components: Dict,
                          sentiment_summary: str, crisis_type: str, news_score: float,
                          flash_analysis: Optional[Dict], current_defcon: int,
-                         positions: Optional[List] = None) -> Optional[Dict]:
+                         positions: Optional[List] = None,
+                         sector_rotation: Optional[Dict] = None,
+                         vix_term_structure: Optional[Dict] = None) -> Optional[Dict]:
         """
         Run Gemini Pro deep analysis - triggered on elevated signals.
         Thorough, full context, influences DEFCON decisions.
@@ -237,7 +402,8 @@ Provide a comprehensive trading risk analysis. Respond with ONLY valid JSON:
         
         prompt = self._build_pro_prompt(
             articles, score_components, sentiment_summary, crisis_type,
-            news_score, flash_analysis, current_defcon, positions
+            news_score, flash_analysis, current_defcon, positions,
+            sector_rotation, vix_term_structure
         )
         
         # Pro gets full reasoning budget via gemini_client

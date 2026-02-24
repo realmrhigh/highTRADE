@@ -91,16 +91,32 @@ class HighTradeOrchestrator:
             logger.warning("   Continuing with quantitative signals only")
             self.news_enabled = False
 
-        # Initialize Gemini AI analyzer
+        # Initialize new data gap modules
         try:
-            from gemini_analyzer import GeminiAnalyzer
-            self.gemini = GeminiAnalyzer()
-            self.gemini_enabled = True
-            logger.info("🤖 Gemini AI Analyzer initialized (Flash + Pro)")
+            from sector_rotation import SectorRotationAnalyzer
+            from vix_term_structure import VIXTermStructure
+            self.sector_analyzer = SectorRotationAnalyzer()
+            self.vix_analyzer = VIXTermStructure()
+            logger.info("📡 Data gap modules initialized (Sector Rotation + VIX Term Structure)")
         except Exception as e:
-            logger.warning(f"⚠️  Gemini initialization failed: {e}")
+            logger.warning(f"⚠️  Data gap modules init failed: {e}")
+            self.sector_analyzer = None
+            self.vix_analyzer = None
+
+        # Initialize AI analyzers
+        try:
+            from gemini_analyzer import GeminiAnalyzer, GrokAnalyzer
+            self.gemini = GeminiAnalyzer()
+            self.grok = GrokAnalyzer()
+            self.gemini_enabled = True
+            self.grok_enabled = True
+            logger.info("🤖 AI Analyzers initialized (Gemini Flash/Pro + Grok)")
+        except Exception as e:
+            logger.warning(f"⚠️  AI initialization failed: {e}")
             self.gemini = None
+            self.grok = None
             self.gemini_enabled = False
+            self.grok_enabled = False
 
         # Initialize Congressional Trading Tracker
         try:
@@ -467,13 +483,17 @@ class HighTradeOrchestrator:
                                 articles_for_gemini,
                                 score_components=components,
                                 sentiment_summary=fresh_news_signal['sentiment_summary'],
-                                crisis_type=fresh_news_signal['dominant_crisis_type']
+                                crisis_type=fresh_news_signal['dominant_crisis_type'],
+                                sector_rotation=sector_result,
+                                vix_term_structure=vix_result
                             )
 
-                            # --- GEMINI LAYER 2: Pro deep analysis on elevated signals ---
+                            # --- LAYER 2: Pro deep analysis + Grok second opinion on elevated signals ---
                             if self.gemini.should_run_pro(score, fresh_news_signal['breaking_count'], defcon_changed):
-                                logger.info(f"  🧠 Elevated signal ({score:.1f}) — triggering Pro analysis...")
+                                logger.info(f"  🧠 Elevated signal ({score:.1f}) — triggering deep AI analysis (Gemini Pro + Grok)...")
                                 open_positions = self.paper_trading.get_open_positions()
+                                
+                                # 1. Gemini Pro (Standard Tier)
                                 gemini_pro_result = self.gemini.run_pro_analysis(
                                     articles_for_gemini,
                                     score_components=components,
@@ -482,8 +502,22 @@ class HighTradeOrchestrator:
                                     news_score=score,
                                     flash_analysis=gemini_flash_result,
                                     current_defcon=self.previous_defcon,
-                                    positions=open_positions
+                                    positions=open_positions,
+                                    sector_rotation=sector_result,
+                                    vix_term_structure=vix_result
                                 )
+                                
+                                # 2. Grok Second Opinion (X.com Analysis)
+                                if self.grok_enabled:
+                                    grok_result = self.grok.run_analysis(
+                                        articles_for_gemini,
+                                        crisis_type=fresh_news_signal['dominant_crisis_type'],
+                                        news_score=score,
+                                        sector_rotation=sector_result,
+                                        vix_term_structure=vix_result
+                                    )
+                                else:
+                                    grok_result = None
                         elif self.gemini_enabled:
                             logger.info(f"  ⏭️  Skipping Gemini — 0 new articles (reusing previous analysis)")
 
@@ -500,6 +534,12 @@ class HighTradeOrchestrator:
                                 str(DB_PATH), signal_id, gemini_pro_result,
                                 trigger_type='elevated' if score >= 40 else 'breaking'
                             )
+                            
+                        # Save Grok analysis to grok_analysis table
+                        if grok_result and signal_id and self.grok_enabled:
+                            self.grok.save_analysis_to_db(
+                                str(DB_PATH), signal_id, grok_result
+                            )
 
                         if fresh_news_signal['article_count'] > 0:
                             # Extract dominant sentiment label
@@ -515,7 +555,7 @@ class HighTradeOrchestrator:
                             else:
                                 dominant = sentiment_text.lower()
 
-                            # Build Gemini summary for Slack if available
+                            # Build AI summaries for Slack if available
                             gemini_summary = None
                             if gemini_flash_result:
                                 gemini_summary = {
@@ -524,6 +564,14 @@ class HighTradeOrchestrator:
                                     'confidence': gemini_flash_result.get('confidence_in_signal', 0),
                                     'theme': gemini_flash_result.get('dominant_theme', ''),
                                     'reasoning': gemini_flash_result.get('reasoning', '')[:200]
+                                }
+                                
+                            grok_summary = None
+                            if 'grok_result' in locals() and grok_result:
+                                grok_summary = {
+                                    'action': grok_result.get('second_opinion_action', 'WAIT'),
+                                    'x_sentiment': grok_result.get('x_sentiment_score', 0),
+                                    'reasoning': grok_result.get('reasoning', '')[:200]
                                 }
 
                             # Send silent notification to #logs-silent every cycle
@@ -537,6 +585,7 @@ class HighTradeOrchestrator:
                                 'score_components': components,
                                 'top_articles': latest_articles[:3],
                                 'gemini': gemini_summary,
+                                'grok': grok_summary,
                                 'timestamp': datetime.now().isoformat()
                             })
                             logger.info(f"  ✅ News notification sent to #logs-silent ({new_count} new, {fresh_news_signal['article_count']} total)")
@@ -582,10 +631,22 @@ class HighTradeOrchestrator:
             elif self.congressional_enabled:
                 logger.debug(f"  🏛️ Congressional scan: {self._congressional_scan_interval - self._congressional_scan_cycle} cycles until next scan")
 
-            # ── FRED Macro Tracker (every ~60 min) ────────────────────────
-            macro_result = None
-            self._fred_scan_cycle = getattr(self, '_fred_scan_cycle', 0) + 1
-            if self.fred_enabled and self._fred_scan_cycle >= self._fred_scan_interval:
+            # --- CORE DATA GATHERING CYCLE ---
+            # 1. News/Signals (already runs every cycle)
+            # 2. Macro (every ~60 min)
+            # 3. Congressional (every ~60 min)
+            # 4. NEW: Sector/VIX (every cycle)
+            
+            sector_result = None
+            if self.sector_analyzer:
+                sector_result = self.sector_analyzer.get_rotation_data()
+            
+            vix_result = None
+            if self.vix_analyzer:
+                vix_result = self.vix_analyzer.get_term_structure_data()
+
+            # Pass these into Gemini/Grok prompts later in the cycle...
+
                 self._fred_scan_cycle = 0
                 logger.info("📊 Running FRED macro analysis...")
                 try:
