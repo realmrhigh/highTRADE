@@ -4,6 +4,7 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>HighTrade Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
 :root {
   --bg:#08090f; --panel:#0d0e1a; --border:#1e2040;
@@ -25,6 +26,7 @@ body { background:var(--bg); color:var(--text); font-family:'SF Mono','Fira Code
 .grid-top    { display:grid; grid-template-columns:260px 1fr 260px; gap:16px; margin-bottom:16px; }
 .grid-mid    { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }
 .grid-three  { display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px; margin-bottom:16px; }
+.grid-four   { display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:16px; margin-bottom:16px; }
 .grid-full   { margin-bottom:16px; }
 
 /* Panels */
@@ -52,7 +54,8 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
      padding:6px 8px; border-bottom:1px solid var(--border); text-align:left; font-weight:400; }
 .trow td { padding:8px 8px; border-bottom:1px solid #111; font-size:12px; }
 .trow:hover { background:#ffffff05; }
-.sym { font-weight:700; color:var(--accent); font-size:14px; }
+.sym { font-weight:700; color:var(--accent); font-size:14px; cursor:pointer; text-decoration:none; }
+.sym:hover { text-decoration:underline; color:#fff; }
 
 /* Model cards */
 .model-card { background:#0a0b14; border:1px solid var(--border); border-radius:8px; padding:14px; }
@@ -101,6 +104,24 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
 .wr-bar  { background:#111; border-radius:4px; height:6px; overflow:hidden; margin-top:4px; }
 .wr-fill { height:100%; border-radius:4px; background:linear-gradient(90deg,var(--green),#00d4ff); }
 
+/* Chart Modal */
+#chart-modal { 
+    display:none; position:fixed; z-index:1000; left:0; top:0; width:100%; height:100%; 
+    background:rgba(0,0,0,0.85); backdrop-filter:blur(5px);
+}
+.modal-content {
+    background:var(--panel); margin:5% auto; padding:24px; border:1px solid var(--border);
+    width:80%; max-width:900px; border-radius:12px; box-shadow:0 20px 50px rgba(0,0,0,0.5);
+}
+.chart-controls { display:flex; gap:10px; margin-bottom:20px; }
+.chart-btn { 
+    background:#1a1a2e; color:#888; border:1px solid var(--border); padding:6px 12px; 
+    border-radius:4px; cursor:pointer; font-size:11px; font-weight:700;
+}
+.chart-btn.active { background:var(--accent); color:#000; border-color:var(--accent); }
+.close-modal { float:right; cursor:pointer; font-size:24px; color:var(--dim); }
+.close-modal:hover { color:#fff; }
+
 /* Footer */
 .footer { text-align:center; color:#2a2a40; font-size:10px; letter-spacing:2px; padding:24px 0; margin-top:10px; }
 </style>
@@ -111,15 +132,192 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
 <!-- ═══ HEADER ═══ -->
 <div class="header">
   <div>
-    <div class="header-title">&#9889; HIGHTRADE</div>
+    <div class="header-title">&#9889; HIGHTRADE <span style="font-size:10px;vertical-align:middle;opacity:0.5;">v2.4-INTERACTIVE</span></div>
     <div style="font-size:10px;color:#2a3a4a;letter-spacing:3px;margin-top:3px;">AUTONOMOUS TRADING INTELLIGENCE SYSTEM</div>
   </div>
   <div class="header-meta">
     <span class="live-dot"></span>LIVE<br/>
-    Generated: 2026-02-18 12:11:10<br/>
-    Last cycle: 2026-02-18 20:00:17
+    Generated: 2026-02-24 15:51:58<br/>
+    Last cycle: 2026-02-24 23:50:35
   </div>
 </div>
+
+<!-- ═══ COMMAND CENTER ═══ -->
+<div class="grid-full">
+  <div class="panel" style="border-color:var(--accent)44;">
+    <div class="panel-title">📡 Command Center &mdash; AI &amp; Execution Control</div>
+    <div style="display:grid;grid-template-columns:1fr 300px;gap:20px;">
+      
+      <!-- Custom Prompt Box -->
+      <div>
+        <div class="micro-label">CUSTOM AI PROMPT</div>
+        <div style="display:flex;gap:10px;margin-bottom:10px;">
+          <select id="model-select" style="background:#1a1a2e;color:#ddd;border:1px solid var(--border);padding:5px;border-radius:4px;">
+            <option value="reasoning">Gemini 3.1 Pro (Reasoning)</option>
+            <option value="balanced">Gemini 2.5 Flash (Balanced)</option>
+            <option value="fast">Gemini 2.5 Flash (Fast)</option>
+            <option value="grok">Grok 4.1 (X-Powered)</option>
+          </select>
+          <input type="text" id="custom-prompt" placeholder="Ask AI about the market, positions, or specific tickers..." 
+                 style="flex:1;background:#0a0b14;color:var(--text);border:1px solid var(--border);padding:8px;border-radius:4px;">
+          <button onclick="sendPrompt()" style="background:var(--accent);color:#000;border:none;padding:0 20px;border-radius:4px;font-weight:700;cursor:pointer;">SEND</button>
+        </div>
+        <div id="ai-response" style="background:#0a0b14;border:1px solid #111;border-radius:4px;padding:10px;min-height:60px;font-size:12px;color:#aaa;white-space:pre-wrap;">AI response will appear here...</div>
+      </div>
+
+      <!-- Quick Control Buttons -->
+      <div style="border-left:1px solid #111;padding-left:20px;">
+        <div class="micro-label">SYSTEM OVERRIDES</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:5px;">
+          <button onclick="sendCommand('/status')" style="background:#1a1a2e;color:var(--accent);border:1px solid var(--accent)44;padding:8px;border-radius:4px;cursor:pointer;">STATUS</button>
+          <button onclick="sendCommand('/update')" style="background:#1a1a2e;color:var(--green);border:1px solid var(--green)44;padding:8px;border-radius:4px;cursor:pointer;">RUN CYCLE</button>
+          <button onclick="sendCommand('/hold')" style="background:#1a1a2e;color:var(--gold);border:1px solid var(--gold)44;padding:8px;border-radius:4px;cursor:pointer;">HOLD</button>
+          <button onclick="sendCommand('/start')" style="background:#1a1a2e;color:var(--green);border:1px solid var(--green)44;padding:8px;border-radius:4px;cursor:pointer;">START</button>
+          <button onclick="sendCommand('/briefing')" style="background:#1a1a2e;color:#c084fc;border:1px solid #c084fc44;padding:8px;border-radius:4px;cursor:pointer;">DAILY RPT</button>
+          <button onclick="sendCommand('/research')" style="background:#1a1a2e;color:var(--accent);border:1px solid var(--accent)44;padding:8px;border-radius:4px;cursor:pointer;">RESEARCH</button>
+          <button onclick="sendCommand('/estop')" style="background:#1a1a2e;color:var(--red);border:1px solid var(--red)44;padding:8px;border-radius:4px;cursor:pointer;">E-STOP</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+async function sendCommand(cmd) {
+    const btn = event.target;
+    const originalText = btn.innerText;
+    btn.innerText = 'WAIT...';
+    btn.disabled = true;
+    
+    try {
+        const resp = await fetch('/api/command', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: cmd })
+        });
+        const data = await resp.json();
+        alert(data.message || 'Command sent successfully');
+    } catch (e) {
+        alert('Error: ' + e);
+    } finally {
+        btn.innerText = originalText;
+        btn.disabled = false;
+    }
+}
+
+async function sendPrompt() {
+    const promptInput = document.getElementById('custom-prompt');
+    const prompt = promptInput.value;
+    const model = document.getElementById('model-select').value;
+    const output = document.getElementById('ai-response');
+    
+    if (!prompt) return;
+    
+    // Append user message to local log
+    const timestamp = new Date().toLocaleTimeString();
+    appendChat('USER', prompt, timestamp);
+    promptInput.value = '';
+    
+    output.innerText = '🤖 Thinking...';
+    output.style.color = 'var(--accent)';
+    
+    try {
+        const resp = await fetch('/api/prompt', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt, model })
+        });
+        const data = await resp.json();
+        if (data.ok) {
+            output.innerText = data.response;
+            output.style.color = '#ddd';
+            appendChat('AI (' + model + ')', data.response, new Date().toLocaleTimeString());
+        } else {
+            output.innerText = '❌ Error: ' + data.message;
+            output.style.color = 'var(--red)';
+        }
+    } catch (e) {
+        output.innerText = '❌ Failed to connect to server';
+        output.style.color = 'var(--red)';
+    }
+}
+
+function appendChat(role, text, time) {
+    const log = JSON.parse(localStorage.getItem('hightrade_chat_log') || '[]');
+    log.push({ role, text, time });
+    // Keep last 20 messages
+    if (log.length > 20) log.shift();
+    localStorage.setItem('hightrade_chat_log', JSON.stringify(log));
+    renderChat();
+}
+
+function renderChat() {
+    const output = document.getElementById('ai-response');
+    if (!output) return;
+    const log = JSON.parse(localStorage.getItem('hightrade_chat_log') || '[]');
+    if (log.length === 0) {
+        output.innerText = 'AI response will appear here...';
+        return;
+    }
+    
+    output.innerHTML = log.map(m => 
+        `<div style="margin-bottom:8px; border-bottom:1px solid #ffffff05; padding-bottom:4px;">
+            <span style="color:var(--dim); font-size:9px;">[${m.time}]</span> 
+            <b style="color:${m.role === 'USER' ? 'var(--accent)' : 'var(--green)'}; font-size:10px;">${m.role}:</b> 
+            <div style="margin-top:2px; color:#ccc; font-size:11px;">${m.text}</div>
+        </div>`
+    ).join('');
+    // Scroll to bottom
+    output.scrollTop = output.scrollHeight;
+}
+
+// Initialize chat on load
+setTimeout(renderChat, 100);
+
+async function approveTicker(ticker) {
+    if (!confirm('Send ' + ticker + ' to Acquisition Pipeline for deep analysis?')) return;
+    
+    try {
+        const resp = await fetch('/api/approve', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ticker: ticker })
+        });
+        const data = await resp.json();
+        if (data.ok) {
+            alert(data.message);
+            location.reload();
+        } else {
+            alert('Error: ' + data.message);
+        }
+    } catch (e) {
+        alert('Error: ' + e);
+    }
+}
+
+async function rejectTicker(ticker) {
+    if (!confirm('Are you sure you want to ignore ' + ticker + '?')) return;
+    
+    try {
+        const resp = await fetch('/api/reject', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ticker: ticker })
+        });
+        const data = await resp.json();
+        if (data.ok) location.reload();
+        else alert('Error: ' + data.message);
+    } catch (e) {
+        alert('Error: ' + e);
+    }
+}
+
+// Handle Enter key in prompt box
+document.getElementById('custom-prompt')?.addEventListener('keypress', function (e) {
+    if (e.key === 'Enter') sendPrompt();
+});
+</script>
 
 <!-- ═══ ROW 1: DEFCON · PORTFOLIO · MACRO ═══ -->
 <div class="grid-top">
@@ -137,15 +335,15 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
       </div>
       <div class="stat">
         <div class="stat-label">VIX</div>
-        <div class="stat-value" style="font-size:18px;color:#ff8c00;">20.02</div>
+        <div class="stat-value" style="font-size:18px;color:#00ff88;">19.55</div>
       </div>
       <div class="stat">
         <div class="stat-label">10Y Yield</div>
-        <div class="stat-value" style="font-size:16px;color:#aaa;">4.04%</div>
+        <div class="stat-value" style="font-size:16px;color:#aaa;">4.03%</div>
       </div>
       <div class="stat">
         <div class="stat-label">2Y Yield</div>
-        <div class="stat-value" style="font-size:16px;color:#aaa;">3.40%</div>
+        <div class="stat-value" style="font-size:16px;color:#aaa;">3.43%</div>
       </div>
     </div>
   </div>
@@ -156,13 +354,13 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
     <div class="stat-grid">
       <div class="stat">
         <div class="stat-label">Account Value</div>
-        <div class="stat-value" style="font-size:22px;color:#00ff88;">$102,682</div>
+        <div class="stat-value" style="font-size:22px;color:#00ff88;">$102,819</div>
         <div class="stat-sub">Base Capital: $100,000</div>
       </div>
       <div class="stat">
         <div class="stat-label">Total P&amp;L</div>
-        <div class="stat-value" style="font-size:22px;color:#00ff88;">+$2,682.39</div>
-        <div class="stat-sub">+2.68% on capital</div>
+        <div class="stat-value" style="font-size:22px;color:#00ff88;">+$2,819.41</div>
+        <div class="stat-sub">+2.82% on capital</div>
       </div>
       <div class="stat">
         <div class="stat-label">Realized P&amp;L</div>
@@ -171,13 +369,13 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
       </div>
       <div class="stat">
         <div class="stat-label">Unrealized P&amp;L</div>
-        <div class="stat-value" style="font-size:18px;color:#00ff88;">+$70.92</div>
-        <div class="stat-sub">1 open position</div>
+        <div class="stat-value" style="font-size:18px;color:#00ff88;">+$207.94</div>
+        <div class="stat-sub">5 open positions</div>
       </div>
       <div class="stat">
         <div class="stat-label">Cash Available</div>
-        <div class="stat-value" style="font-size:18px;">$100,686</div>
-        <div class="stat-sub">Deployed: $1,925</div>
+        <div class="stat-value" style="font-size:18px;">$79,859</div>
+        <div class="stat-sub">Deployed: $22,753</div>
       </div>
       <div class="stat">
         <div class="stat-label">Win Rate</div>
@@ -197,15 +395,15 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
       </div>
       <div>
         <div class="macro-row"><span style="color:#888;">Fed Funds</span><span>3.64%</span></div>
-        <div class="macro-row"><span style="color:#888;">Yield Curve</span><span style="color:#00ff88;">+0.62%</span></div>
+        <div class="macro-row"><span style="color:#888;">Yield Curve</span><span style="color:#00ff88;">+0.61%</span></div>
         <div class="macro-row"><span style="color:#888;">Unemployment</span><span>4.3%</span></div>
-        <div class="macro-row"><span style="color:#888;">HY Spreads</span><span style="color:#00ff88;">294 bps</span></div>
-        <div class="macro-row"><span style="color:#888;">Cons. Sentiment</span><span style="color:#ff4444;">52.9</span></div>
-        <div class="macro-row"><span style="color:#888;">M2 YoY</span><span>+3.92%</span></div>
+        <div class="macro-row"><span style="color:#888;">HY Spreads</span><span style="color:#00ff88;">295 bps</span></div>
+        <div class="macro-row"><span style="color:#888;">Cons. Sentiment</span><span style="color:#ff4444;">56.4</span></div>
+        <div class="macro-row"><span style="color:#888;">M2 YoY</span><span>+3.96%</span></div>
       </div>
     </div>
     <div style="margin-top:10px;border-top:1px solid #111;padding-top:8px;">
-      <div style="color:#888;font-size:12px;margin:3px 0;">&#9670; Yield curve normal (+0.62%)</div><div style="color:#00ff88;font-size:12px;margin:3px 0;">&#9650; Fed easing (-0.45% in 3mo) — supportive for risk assets</div><div style="color:#ff4444;font-size:12px;margin:3px 0;">&#9660; Consumer sentiment low (52.9) — demand slowdown risk</div>
+      <div style="color:#888;font-size:12px;margin:3px 0;">&#9670; Yield curve normal (+0.61%)</div><div style="color:#00ff88;font-size:12px;margin:3px 0;">&#9650; Fed easing (-0.45% in 3mo) — supportive for risk assets</div><div style="color:#ff4444;font-size:12px;margin:3px 0;">&#9660; Consumer sentiment low (56.4) — demand slowdown risk</div>
     </div>
   </div>
 
@@ -218,56 +416,29 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;">
       <div class="spark-row">
         <div class="spark-label">VIX</div>
-        <svg width="180" height="40" viewBox="0 0 180 40"><defs><linearGradient id="sg8092" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ff8c00" stop-opacity="0.4"/><stop offset="100%" stop-color="#ff8c00" stop-opacity="0"/></linearGradient></defs><polygon points="0,40 0,2 3,2 7,2 11,2 15,15 19,18 22,18 26,16 30,18 34,19 38,22 42,19 45,20 49,20 53,20 57,18 61,14 65,10 68,10 72,14 76,12 80,3 84,7 88,12 91,11 95,7 99,7 103,12 107,6 111,9 114,28 118,30 122,32 126,34 130,36 134,32 137,33 141,29 145,35 149,35 153,37 157,38 160,35 164,29 168,23 172,23 176,18 180,7 180,40" fill="url(#sg8092)"/><polyline points="0,2 3,2 7,2 11,2 15,15 19,18 22,18 26,16 30,18 34,19 38,22 42,19 45,20 49,20 53,20 57,18 61,14 65,10 68,10 72,14 76,12 80,3 84,7 88,12 91,11 95,7 99,7 103,12 107,6 111,9 114,28 118,30 122,32 126,34 130,36 134,32 137,33 141,29 145,35 149,35 153,37 157,38 160,35 164,29 168,23 172,23 176,18 180,7" fill="none" stroke="#ff8c00" stroke-width="1.5" stroke-linejoin="round"/></svg>
-        <div class="spark-val" style="color:#ff8c00;">20.02</div>
+        <svg width="180" height="40" viewBox="0 0 180 40"><defs><linearGradient id="sg70838" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ff8c00" stop-opacity="0.4"/><stop offset="100%" stop-color="#ff8c00" stop-opacity="0"/></linearGradient></defs><polygon points="0,40 0,14 3,10 7,6 11,8 15,7 19,11 22,12 26,12 30,8 34,2 38,18 42,12 45,19 49,28 53,27 57,30 61,29 65,28 68,28 72,28 76,31 80,34 84,35 88,35 91,34 95,34 99,38 103,34 107,36 111,36 114,34 118,32 122,33 126,34 130,32 134,32 137,35 141,34 145,34 149,34 153,34 157,34 160,34 164,34 168,34 172,34 176,34 180,34 180,40" fill="url(#sg70838)"/><polyline points="0,14 3,10 7,6 11,8 15,7 19,11 22,12 26,12 30,8 34,2 38,18 42,12 45,19 49,28 53,27 57,30 61,29 65,28 68,28 72,28 76,31 80,34 84,35 88,35 91,34 95,34 99,38 103,34 107,36 111,36 114,34 118,32 122,33 126,34 130,32 134,32 137,35 141,34 145,34 149,34 153,34 157,34 160,34 164,34 168,34 172,34 176,34 180,34" fill="none" stroke="#ff8c00" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        <div class="spark-val" style="color:#ff8c00;">19.55</div>
       </div>
       <div class="spark-row">
         <div class="spark-label">News Score</div>
-        <svg width="180" height="40" viewBox="0 0 180 40"><defs><linearGradient id="sg83520" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#c084fc" stop-opacity="0.4"/><stop offset="100%" stop-color="#c084fc" stop-opacity="0"/></linearGradient></defs><polygon points="0,40 0,38 3,38 7,38 11,38 15,38 19,38 22,38 26,38 30,38 34,38 38,38 42,38 45,38 49,38 53,38 57,38 61,38 65,38 68,38 72,38 76,38 80,38 84,38 88,38 91,38 95,38 99,38 103,38 107,38 111,38 114,38 118,38 122,38 126,38 130,38 134,38 137,38 141,38 145,38 149,38 153,38 157,38 160,38 164,38 168,38 172,38 176,38 180,38 180,40" fill="url(#sg83520)"/><polyline points="0,38 3,38 7,38 11,38 15,38 19,38 22,38 26,38 30,38 34,38 38,38 42,38 45,38 49,38 53,38 57,38 61,38 65,38 68,38 72,38 76,38 80,38 84,38 88,38 91,38 95,38 99,38 103,38 107,38 111,38 114,38 118,38 122,38 126,38 130,38 134,38 137,38 141,38 145,38 149,38 153,38 157,38 160,38 164,38 168,38 172,38 176,38 180,38" fill="none" stroke="#c084fc" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        <svg width="180" height="40" viewBox="0 0 180 40"><defs><linearGradient id="sg48565" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#c084fc" stop-opacity="0.4"/><stop offset="100%" stop-color="#c084fc" stop-opacity="0"/></linearGradient></defs><polygon points="0,40 0,38 3,38 7,38 11,38 15,38 19,38 22,38 26,38 30,38 34,38 38,38 42,38 45,38 49,38 53,38 57,38 61,38 65,38 68,38 72,38 76,38 80,38 84,38 88,38 91,38 95,38 99,38 103,38 107,38 111,38 114,38 118,38 122,38 126,38 130,38 134,38 137,38 141,38 145,38 149,38 153,38 157,38 160,38 164,38 168,38 172,38 176,38 180,38 180,40" fill="url(#sg48565)"/><polyline points="0,38 3,38 7,38 11,38 15,38 19,38 22,38 26,38 30,38 34,38 38,38 42,38 45,38 49,38 53,38 57,38 61,38 65,38 68,38 72,38 76,38 80,38 84,38 88,38 91,38 95,38 99,38 103,38 107,38 111,38 114,38 118,38 122,38 126,38 130,38 134,38 137,38 141,38 145,38 149,38 153,38 157,38 160,38 164,38 168,38 172,38 176,38 180,38" fill="none" stroke="#c084fc" stroke-width="1.5" stroke-linejoin="round"/></svg>
         <div class="spark-val" style="color:#c084fc;">0.0</div>
       </div>
       <div class="spark-row">
         <div class="spark-label">Signal</div>
-        <svg width="180" height="40" viewBox="0 0 180 40"><defs><linearGradient id="sg48493" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#00d4ff" stop-opacity="0.4"/><stop offset="100%" stop-color="#00d4ff" stop-opacity="0"/></linearGradient></defs><polygon points="0,40 0,38 3,38 7,38 11,38 15,38 19,38 22,38 26,38 30,38 34,38 38,38 42,38 45,38 49,38 53,38 57,38 61,38 65,38 68,38 72,38 76,38 80,38 84,38 88,38 91,38 95,38 99,38 103,38 107,38 111,38 114,38 118,38 122,38 126,38 130,38 134,38 137,38 141,38 145,38 149,38 153,38 157,38 160,38 164,38 168,38 172,38 176,38 180,38 180,40" fill="url(#sg48493)"/><polyline points="0,38 3,38 7,38 11,38 15,38 19,38 22,38 26,38 30,38 34,38 38,38 42,38 45,38 49,38 53,38 57,38 61,38 65,38 68,38 72,38 76,38 80,38 84,38 88,38 91,38 95,38 99,38 103,38 107,38 111,38 114,38 118,38 122,38 126,38 130,38 134,38 137,38 141,38 145,38 149,38 153,38 157,38 160,38 164,38 168,38 172,38 176,38 180,38" fill="none" stroke="#00d4ff" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        <svg width="180" height="40" viewBox="0 0 180 40"><defs><linearGradient id="sg83260" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#00d4ff" stop-opacity="0.4"/><stop offset="100%" stop-color="#00d4ff" stop-opacity="0"/></linearGradient></defs><polygon points="0,40 0,2 3,2 7,2 11,2 15,2 19,2 22,2 26,2 30,2 34,2 38,2 42,2 45,2 49,2 53,2 57,2 61,2 65,2 68,38 72,2 76,2 80,2 84,2 88,2 91,2 95,2 99,2 103,2 107,2 111,2 114,2 118,2 122,2 126,2 130,2 134,2 137,2 141,5 145,5 149,5 153,5 157,5 160,5 164,5 168,5 172,5 176,5 180,5 180,40" fill="url(#sg83260)"/><polyline points="0,2 3,2 7,2 11,2 15,2 19,2 22,2 26,2 30,2 34,2 38,2 42,2 45,2 49,2 53,2 57,2 61,2 65,2 68,38 72,2 76,2 80,2 84,2 88,2 91,2 95,2 99,2 103,2 107,2 111,2 114,2 118,2 122,2 126,2 130,2 134,2 137,2 141,5 145,5 149,5 153,5 157,5 160,5 164,5 168,5 172,5 176,5 180,5" fill="none" stroke="#00d4ff" stroke-width="1.5" stroke-linejoin="round"/></svg>
         <div class="spark-val" style="color:#00d4ff;">1.8</div>
       </div>
     </div>
   </div>
 </div>
 
-<!-- ═══ DAILY INTELLIGENCE BRIEFING ═══ -->
-<div class="section-head">&#129504; Daily Intelligence Briefing &mdash; 2026-02-17</div>
+<!-- ═══ DAILY INTELLIGENCE CONSENSUS ═══ -->
+<div class="section-head">&#129504; Daily Intelligence Consensus &mdash; 2026-02-24</div>
 
-<div class="grid-full">
-  <div class="panel" style="border-color:#7eb8f733;">
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:20px;">
-      <div style="flex:1;">
-        <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;">
-          <span style="background:#ffd70022;color:#ffd700;border:1px solid #ffd700;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">transitioning</span>
-          <span style="color:#888;font-size:11px;">Confidence: <span style="color:#00ff88;font-weight:700;">85%</span></span>
-          <span style="color:#888;font-size:11px;">&bull; Gemini Pro 3 Reasoning</span>
-        </div>
-        <div style="color:#ddd;font-size:13px;line-height:1.75;">Markets absorbed a morning shock driven by AI valuation fears and Strait of Hormuz tensions, resulting in a significant intraday volatility crush as the VIX retreated from 22.48 to 20.29. Despite high-frequency signals flashing 'market correction,' the afternoon stabilization and falling yields suggest the panic bid is fading, though tech weakness remains acute.</div>
-        <div class="themes-row" style="margin-top:10px;"><div class="theme-pill">AI Sector Repricing</div><div class="theme-pill">Geopolitical Energy Risk (Hormuz)</div><div class="theme-pill">Intraday Volatility Compression</div></div>
-      </div>
-      <div style="min-width:240px;max-width:340px;flex-shrink:0;">
-        <div style="margin-bottom:12px;">
-          <div class="micro-label" style="margin-bottom:4px;">Signal Quality Assessment</div>
-          <div style="color:#aaa;font-size:11px;line-height:1.6;word-wrap:break-word;overflow-wrap:break-word;white-space:normal;">High utility. The news signals correctly identified a 'market_correction' crisis type at 04:57, but the underlying sentiment split (32% bullish vs 16% bearish) accurately forecasted that the morning dip would be bought rather than cascade.</div>
-        </div>
-        <div>
-          <div class="micro-label" style="margin-bottom:4px;">Portfolio Assessment</div>
-          <div style="color:#aaa;font-size:11px;line-height:1.6;word-wrap:break-word;overflow-wrap:break-word;white-space:normal;">Critical divergence realized. The portfolio successfully harvested long-term gains in GOOGL (+97.2%) while strictly adhering to risk management on the NVDA collapse (-80.1%). The remaining MSFT position aligns with the current flight to quality within tech.</div>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<div class="grid-three">
-  <div class="model-card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;"><div class="card-label">&#129504; REASONING (Pro 3)</div><div style="display:flex;gap:8px;align-items:center;"><span style="background:#ffd70022;color:#ffd700;border:1px solid #ffd700;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">transitioning</span><span style="color:#00ff88;font-weight:700;font-size:13px;">85%</span></div></div><div style="color:#ddd;font-size:12px;line-height:1.6;margin-bottom:10px;">Markets absorbed a morning shock driven by AI valuation fears and Strait of Hormuz tensions, resulting in a significant intraday volatility crush as the VIX retreated from 22.48 to 20.29. Despite high-frequency signals flashing 'market correction,' the afternoon stabilization and falling yields suggest the panic bid is fading, though tech weakness remains acute.</div><div class="themes-row"><div class="theme-pill">AI Sector Repricing</div><div class="theme-pill">Geopolitical Energy Risk (Hormuz)</div><div class="theme-pill">Intraday Volatility Compression</div></div><div class="two-col" style="margin-top:10px;"><div><div class="micro-label">BIGGEST RISK</div><div style="color:#ff8888;font-size:11px;line-height:1.5;word-wrap:break-word;overflow-wrap:break-word;">Sector-specific capitulation in semiconductors, evidenced by the severe 80% drawdown stop-loss trigger in NVDA and persisting 'AI fear' narratives in the Gemini consensus.</div></div><div><div class="micro-label">OPPORTUNITY</div><div style="color:#88ff88;font-size:11px;line-height:1.5;word-wrap:break-word;overflow-wrap:break-word;">Volatility mean reversion; the disconnect between the morning's maximum urgency news signals (Score 100.0) and the subsequent VIX collapse created an opportunity to accumulate defe</div></div></div><div style="margin-top:10px;"><div class="micro-label">WATCHLIST</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;"><span class="ticker-tag">XLE</span><span class="ticker-tag">TLT</span><span class="ticker-tag">MSFT</span></div></div><div style="margin-top:8px;"><div class="micro-label">DEFCON FORECAST</div><div style="color:#aaa;font-size:11px;line-height:1.5;word-wrap:break-word;overflow-wrap:break-word;">5</div></div></div>
-  <div class="model-card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;"><div class="card-label">&#9889; FAST (Flash)</div><div style="display:flex;gap:8px;align-items:center;"><span style="background:#ffd70022;color:#ffd700;border:1px solid #ffd700;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">transitioning</span><span style="color:#00ff88;font-weight:700;font-size:13px;">85%</span></div></div><div style="color:#ddd;font-size:12px;line-height:1.6;margin-bottom:10px;">Today's market was characterized by a dominant 'market correction' narrative, fueled by 'AI fear' and a high-stakes geopolitical headline concerning the Strait of Hormuz. Despite these bearish triggers, overall news sentiment remained largely neutral, indicating underlying uncertainty rather than widespread panic.</div><div class="themes-row"><div class="theme-pill">Market Correction</div><div class="theme-pill">AI Fear / Tech Selloff</div><div class="theme-pill">Geopolitical Risk (Strait of Hormuz)</div></div><div class="two-col" style="margin-top:10px;"><div><div class="micro-label">BIGGEST RISK</div><div style="color:#ff8888;font-size:11px;line-height:1.5;word-wrap:break-word;overflow-wrap:break-word;">The primary risk today is the combination of 'AI fear' driving a tech selloff and escalating geopolitical tensions around the Strait of Hormuz, which could trigger an energy crisis</div></div><div><div class="micro-label">OPPORTUNITY</div><div style="color:#88ff88;font-size:11px;line-height:1.5;word-wrap:break-word;overflow-wrap:break-word;">Amidst the market correction and tech selloff, the opportunity lies in identifying resilient sectors or fundamentally strong assets that may be oversold due to generalized 'AI fear</div></div></div><div style="margin-top:10px;"><div class="micro-label">WATCHLIST</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;"><span class="ticker-tag">AAPL</span><span class="ticker-tag">XOM</span><span class="ticker-tag">SMCI</span></div></div><div style="margin-top:8px;"><div class="micro-label">DEFCON FORECAST</div><div style="color:#aaa;font-size:11px;line-height:1.5;word-wrap:break-word;overflow-wrap:break-word;">DEFCON is expected to remain at 5, reflecting no immediate systemic risk escalation based on current monitoring.</div></div></div>
-  <div class="model-card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;"><div class="card-label">&#9878;&#65039; BALANCED (Flash 8k)</div><div style="display:flex;gap:8px;align-items:center;"><span style="background:#ff444422;color:#ff4444;border:1px solid #ff4444;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">risk-off</span><span style="color:#00ff88;font-weight:700;font-size:13px;">75%</span></div></div><div style="color:#ddd;font-size:12px;line-height:1.6;margin-bottom:10px;">Market correction narratives dominated today's news flow, with multiple 100-score signals pointing to a broad downturn. This was exacerbated by an 'AI fear' narrative impacting the tech sector and underlying geopolitical concerns regarding the Strait of Hormuz, driving elevated volatility.</div><div class="themes-row"><div class="theme-pill">Market Correction</div><div class="theme-pill">Tech Sector Vulnerability ('AI Fear')</div><div class="theme-pill">Geopolitical Risk Escalation</div></div><div class="two-col" style="margin-top:10px;"><div><div class="micro-label">BIGGEST RISK</div><div style="color:#ff8888;font-size:11px;line-height:1.5;word-wrap:break-word;overflow-wrap:break-word;">Continued market correction, particularly within the tech sector due to 'AI fear' narratives, and potential escalation of geopolitical tensions around the Strait of Hormuz, evidenc</div></div><div><div class="micro-label">OPPORTUNITY</div><div style="color:#88ff88;font-size:11px;line-height:1.5;word-wrap:break-word;overflow-wrap:break-word;">Identifying potential entry points in resilient assets following an anticipated short-term market correction, or strategic profit-taking on existing strong positions, as demonstrat</div></div></div><div style="margin-top:10px;"><div class="micro-label">WATCHLIST</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;"><span class="ticker-tag">MSFT</span><span class="ticker-tag">SMCI</span><span class="ticker-tag">XLE</span></div></div><div style="margin-top:8px;"><div class="micro-label">DEFCON FORECAST</div><div style="color:#aaa;font-size:11px;line-height:1.5;word-wrap:break-word;overflow-wrap:break-word;">DEFCON is expected to remain at level 5, with its underlying score holding stable around 1.8-2.0, indicating persistent caution but no immediate escalation of systemic risk.</div></div></div>
+<div class="grid-mid">
+  <div class="model-card" style="display:flex;flex-direction:column;max-height:600px;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-shrink:0;"><div class="card-label">🔬 REASONING (Gemini 3.1)</div><div style="display:flex;gap:8px;align-items:center;"><span style="background:#ff444422;color:#ff4444;border:1px solid #ff4444;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">risk-off</span><span style="color:#00ff88;font-weight:700;font-size:13px;">88%</span></div></div><div class="scroll-wrap" style="flex:1;overflow-y:auto;padding-right:5px;"><div style="color:#ddd;font-size:12px;line-height:1.6;margin-bottom:12px;font-weight:bold;">Hawkish Fed rhetoric and persistent inflation concerns have triggered a broad market correction, abruptly halting recent rate-cut narratives. The system has elevated to a DEFCON 5 alert state as investors rotate away from high-beta growth into defensive and energy sectors.</div><div class="themes-row" style="margin-bottom:12px;"><div class="theme-pill">Hawkish Fed halts rate-cut expectations</div><div class="theme-pill">Tariff and geopolitical risks elevate market uncertainty</div><div class="theme-pill">Sector rotation favoring defensive and energy equities</div></div><div style="margin-bottom:10px;"><div class="micro-label">SIGNAL QUALITY</div><div style="color:#aaa;font-size:11px;line-height:1.5;">High quality. Multiple high-urgency breaking news events consistently point to a single, corroborated macroeconomic driver: hawkish Fed commentary altering the near-term equity risk premium.</div></div><div style="margin-bottom:10px;"><div class="micro-label">PORTFOLIO ASSESSMENT</div><div style="color:#aaa;font-size:11px;line-height:1.5;">The portfolio is decently positioned for a rotational correction. Energy holdings (USO, XLE) are providing ballast and nearing breakout triggers. However, newly entered high-beta positions (TSLA, GME) face elevated risk in a DEFCON 5 environment and require tightly monitored stop-losses.</div></div><div class="two-col" style="margin-bottom:10px;"><div><div class="micro-label">BIGGEST RISK</div><div style="color:#ff8888;font-size:11px;line-height:1.5;">A deeper, broad market correction driven by sticky inflation and a Fed pause on rate cuts, evidenced by 'rate', 'risk', and 'tariff' dominating financial keywords and high-urgency news signals (scores up to 59.34) confirming the halted rate-cut narrative.</div></div><div><div class="micro-label">OPPORTUNITY</div><div style="color:#88ff88;font-size:11px;line-height:1.5;">Energy and defensive sectors showing relative strength. Specifically, XLE is only 1.7% away from a breakout target, and USO is currently exhibiting solid gains amidst the broader market weakness.</div></div></div><div style="margin-bottom:10px;"><div class="micro-label">WATCHLIST</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;"><span class="ticker-tag" style="cursor:pointer;" onclick="showChart('XLE')">XLE</span><span class="ticker-tag" style="cursor:pointer;" onclick="showChart('USO')">USO</span><span class="ticker-tag" style="cursor:pointer;" onclick="showChart('XLU')">XLU</span></div></div><div><div class="micro-label">DEFCON FORECAST</div><div style="color:#888;font-size:11px;line-height:1.5;">DEFCON 5</div></div></div></div>
+  <div class="model-card" style="display:flex;flex-direction:column;max-height:600px;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-shrink:0;"><div class="card-label">𝕏 SECOND OPINION (Grok 4.1)</div><div style="display:flex;gap:8px;align-items:center;"><span style="background:#ff444422;color:#ff4444;border:1px solid #ff4444;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">risk-off</span><span style="color:#00ff88;font-weight:700;font-size:13px;">88%</span></div></div><div class="scroll-wrap" style="flex:1;overflow-y:auto;padding-right:5px;"><div style="color:#ddd;font-size:12px;line-height:1.6;margin-bottom:12px;font-weight:bold;">Markets entered a broad correction phase with sustained DEFCON 5 alerts, driven by Fed officials signaling a halt to rate cuts amid persistent inflation and tariff threats. Neutral news sentiment masks hawkish rhetoric and geopolitical tensions, prompting sector rotation into defensives like energy and staples. AI-driven growth themes persist but are overshadowed by macro risks including elevated credit spreads and low consumer sentiment.</div><div class="themes-row" style="margin-bottom:12px;"><div class="theme-pill">Market Correction</div><div class="theme-pill">Fed Hawkish Shift on Rates</div><div class="theme-pill">AI Growth vs Inflation/Tariff Risks</div><div class="theme-pill">Defensive Sector Rotation</div></div><div style="margin-bottom:10px;"><div class="micro-label">SIGNAL QUALITY</div><div style="color:#aaa;font-size:11px;line-height:1.5;">High quality signals, not noise: top scores 57-59 driven by concentration (62-63) and urgency (80), frequent keywords like rate/risk/tariff/fed align with breaking Fed rhetoric and consistent DEFCON 5 escalation.</div></div><div style="margin-bottom:10px;"><div class="micro-label">PORTFOLIO ASSESSMENT</div><div style="color:#aaa;font-size:11px;line-height:1.5;">Open positions largely green with USO/MSFT leading gains; XLE poised for breakout (1.7% away) aligning with defensive rotation; recent TSLA/GME entries face correction pressure but small size limits downside; tighten stops amid DEFCON 5.</div></div><div class="two-col" style="margin-bottom:10px;"><div><div class="micro-label">BIGGEST RISK</div><div style="color:#ff8888;font-size:11px;line-height:1.5;">Acceleration of market correction, evidenced by sustained DEFCON 5 from 06:33, top news scores 57-59 with high urgency (80) and VIX holding 19-21 amid Fed halt to rate-cut narrative.</div></div><div><div class="micro-label">OPPORTUNITY</div><div style="color:#88ff88;font-size:11px;line-height:1.5;">Energy sector breakout via XLE, sitting 1.7% from target with positive portfolio P&L in XLE/USO and relative strength in defensives (XLE/XLU/XLP) per Gemini consensus.</div></div></div><div style="margin-bottom:10px;"><div class="micro-label">WATCHLIST</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;"><span class="ticker-tag" style="cursor:pointer;" onclick="showChart('XLE')">XLE</span><span class="ticker-tag" style="cursor:pointer;" onclick="showChart('USO')">USO</span><span class="ticker-tag" style="cursor:pointer;" onclick="showChart('MSFT')">MSFT</span></div></div><div><div class="micro-label">DEFCON FORECAST</div><div style="color:#888;font-size:11px;line-height:1.5;">DEFCON 5</div></div></div></div>
 </div>
 
 <!-- ═══ PORTFOLIO POSITIONS ═══ -->
@@ -282,7 +453,7 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
           <th>Symbol</th><th>Shares</th><th>Entry</th><th>Current</th>
           <th>Mkt Value</th><th>Unrlzd P&amp;L</th><th>Return</th><th>DEFCON@Entry</th>
         </tr></thead>
-        <tbody><tr class="trow"><td class="sym">MSFT</td><td>5</td><td>$385.00</td><td>$399.18</td><td>$1,995.92</td><td style="color:#00ff88;">+$70.92</td><td><div style="display:flex;align-items:center;gap:6px;"><div style="width:60px;background:#111;border-radius:3px;height:4px;"><div style="width:11%;background:#00ff88;height:4px;border-radius:3px;"></div></div><span style="color:#00ff88;">+3.68%</span></div></td><td><span style="font-size:11px;color:#888">D2</span></td></tr></tbody>
+        <tbody><tr class="trow"><td class="sym" onclick="showChart('MSFT')">MSFT</td><td>5</td><td>$385.00</td><td>$389.00</td><td>$1,945.00</td><td style="color:#00ff88;">+$20.00</td><td><div style="display:flex;align-items:center;gap:6px;"><div style="width:60px;background:#111;border-radius:3px;height:4px;"><div style="width:3%;background:#00ff88;height:4px;border-radius:3px;"></div></div><span style="color:#00ff88;">+1.04%</span></div></td><td><span style="font-size:11px;color:#888">D2</span></td></tr><tr class="trow"><td class="sym" onclick="showChart('XLE')">XLE</td><td>165</td><td>$54.78</td><td>$55.11</td><td>$9,093.15</td><td style="color:#00ff88;">+$54.45</td><td><div style="display:flex;align-items:center;gap:6px;"><div style="width:60px;background:#111;border-radius:3px;height:4px;"><div style="width:1%;background:#00ff88;height:4px;border-radius:3px;"></div></div><span style="color:#00ff88;">+0.60%</span></div></td><td><span style="font-size:11px;color:#888">D3</span></td></tr><tr class="trow"><td class="sym" onclick="showChart('USO')">USO</td><td>94</td><td>$79.40</td><td>$80.76</td><td>$7,591.44</td><td style="color:#00ff88;">+$127.84</td><td><div style="display:flex;align-items:center;gap:6px;"><div style="width:60px;background:#111;border-radius:3px;height:4px;"><div style="width:5%;background:#00ff88;height:4px;border-radius:3px;"></div></div><span style="color:#00ff88;">+1.71%</span></div></td><td><span style="font-size:11px;color:#888">D3</span></td></tr><tr class="trow"><td class="sym" onclick="showChart('TSLA')">TSLA</td><td>10</td><td>$408.72</td><td>$409.36</td><td>$4,093.60</td><td style="color:#00ff88;">+$6.40</td><td><div style="display:flex;align-items:center;gap:6px;"><div style="width:60px;background:#111;border-radius:3px;height:4px;"><div style="width:0%;background:#00ff88;height:4px;border-radius:3px;"></div></div><span style="color:#00ff88;">+0.16%</span></div></td><td><span style="font-size:11px;color:#888">D5</span></td></tr><tr class="trow"><td class="sym" onclick="showChart('GME')">GME</td><td>10</td><td>$23.84</td><td>$23.77</td><td>$237.70</td><td style="color:#ff4444;">$-0.75</td><td><div style="display:flex;align-items:center;gap:6px;"><div style="width:60px;background:#111;border-radius:3px;height:4px;"><div style="width:0%;background:#ff4444;height:4px;border-radius:3px;"></div></div><span style="color:#ff4444;">-0.31%</span></div></td><td><span style="font-size:11px;color:#888">D5</span></td></tr></tbody>
       </table>
     </div>
   </div>
@@ -297,7 +468,7 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
           <th>Symbol</th><th>Shares</th><th>Entry</th><th>Exit</th>
           <th>P&amp;L</th><th>Return</th><th>Exit Reason</th><th>Close Date</th>
         </tr></thead>
-        <tbody><tr class="trow"><td class="sym">GOOGL</td><td>32</td><td>$155.00</td><td>$305.72</td><td style="color:#00ff88;">+$4,823.04</td><td style="color:#00ff88;">+97.24%</td><td><span style="color:#00ff88;font-size:11px;">&#10003; PROFIT TARGET</span></td><td style="color:#666;font-size:11px;">2026-02-17</td></tr><tr class="trow"><td class="sym">NVDA</td><td>3</td><td>$920.00</td><td>$182.81</td><td style="color:#ff4444;">$-2,211.57</td><td style="color:#ff4444;">-80.13%</td><td><span style="color:#ff4444;font-size:11px;">&#10007; STOP LOSS</span></td><td style="color:#666;font-size:11px;">2026-02-17</td></tr></tbody>
+        <tbody><tr class="trow"><td class="sym" onclick="showChart('XLE')">XLE</td><td>150</td><td>$54.78</td><td>$54.78</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-02-18</td></tr><tr class="trow"><td class="sym" onclick="showChart('NVDA')">NVDA</td><td>3</td><td>$920.00</td><td>$182.81</td><td style="color:#ff4444;">$-2,211.57</td><td style="color:#ff4444;">-80.13%</td><td><span style="color:#ff4444;font-size:11px;">&#10007; STOP LOSS</span></td><td style="color:#666;font-size:11px;">2026-02-17</td></tr><tr class="trow"><td class="sym" onclick="showChart('GOOGL')">GOOGL</td><td>32</td><td>$155.00</td><td>$305.72</td><td style="color:#00ff88;">+$4,823.04</td><td style="color:#00ff88;">+97.24%</td><td><span style="color:#00ff88;font-size:11px;">&#10003; PROFIT TARGET</span></td><td style="color:#666;font-size:11px;">2026-02-17</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -312,9 +483,9 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
     <div class="scroll-wrap">
       <table>
         <thead><tr>
-          <th>Ticker</th><th>Confidence</th><th>Regime</th><th>Entry Conditions</th><th>Status</th><th>Added</th>
+          <th>Ticker</th><th>Source</th><th>Conf</th><th>Regime</th><th>Entry Conditions</th><th>Status</th><th>Added</th>
         </tr></thead>
-        <tbody><tr class="trow"><td class="sym">XLE</td><td><span style="color:#00ff88;font-weight:700;">85%</span></td><td><span style="background:#ffd70022;color:#ffd700;border:1px solid #ffd700;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">transitioning</span></td><td style="color:#aaa;font-size:11px;">Buy signals require VIX closing below 20.00 combined with a stabilization of the 10Y-2Y sp…</td><td><span style="color:#ffd700;font-size:11px;text-transform:uppercase;">pending</span></td><td style="color:#666;font-size:11px;">2026-02-17</td></tr><tr class="trow"><td class="sym">TLT</td><td><span style="color:#00ff88;font-weight:700;">85%</span></td><td><span style="background:#ffd70022;color:#ffd700;border:1px solid #ffd700;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">transitioning</span></td><td style="color:#aaa;font-size:11px;">Buy signals require VIX closing below 20.00 combined with a stabilization of the 10Y-2Y sp…</td><td><span style="color:#ffd700;font-size:11px;text-transform:uppercase;">pending</span></td><td style="color:#666;font-size:11px;">2026-02-17</td></tr><tr class="trow"><td class="sym">MSFT</td><td><span style="color:#00ff88;font-weight:700;">85%</span></td><td><span style="background:#ffd70022;color:#ffd700;border:1px solid #ffd700;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">transitioning</span></td><td style="color:#aaa;font-size:11px;">Buy signals require VIX closing below 20.00 combined with a stabilization of the 10Y-2Y sp…</td><td><span style="color:#ffd700;font-size:11px;text-transform:uppercase;">pending</span></td><td style="color:#666;font-size:11px;">2026-02-17</td></tr></tbody>
+        <tbody><tr class="trow"><td class="sym" onclick="showChart('NVDA')">NVDA</td><td><span style="background:#ff444422;color:#ff4444;border:1px solid #ff444455;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🔄 REBOUND</span></td><td><span style="color:#ffd700;font-weight:700;">50%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">recovery</span></td><td style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;">REBOUND ENTRY — exited via stop-loss at $182.81 (-80.1%, -$2,212). Original entry $920.00. Look for …</td><td><span style="color:#ff4444;font-size:11px;text-transform:uppercase;">invalidated</span></td><td style="color:#666;font-size:11px;">2026-02-17</td></tr><tr class="trow"><td class="sym" onclick="showChart('GOOGL')">GOOGL</td><td><span style="background:#00d4ff22;color:#00d4ff;border:1px solid #00d4ff55;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">♻️  RE-ACCUM</span></td><td><span style="color:#ffd700;font-weight:700;">65%</span></td><td><span style="background:#ffd70022;color:#ffd700;border:1px solid #ffd700;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">transitioning</span></td><td style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;">RE-ACCUMULATION — exited at profit target $305.72 (+97.2%, +$4,823). Look for pullback to $270-$285 …</td><td><span style="color:#ff4444;font-size:11px;text-transform:uppercase;">invalidated</span></td><td style="color:#666;font-size:11px;">2026-02-17</td></tr><tr class="trow"><td class="sym" onclick="showChart('PLTR')">PLTR</td><td><span style="background:#88822;color:#888;border:1px solid #88855;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">GROK HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">87%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;">buy_small</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">researched</span></td><td style="color:#666;font-size:11px;">2026-02-24</td></tr><tr class="trow"><td class="sym" onclick="showChart('XLE')">XLE</td><td><span style="background:#c084fc22;color:#c084fc;border:1px solid #c084fc55;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🧠 BRIEFING</span></td><td><span style="color:#00ff88;font-weight:700;">88%</span></td><td><span style="background:#ff444422;color:#ff4444;border:1px solid #ff4444;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">risk-off</span></td><td style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;">A confirmed breakout in XLE above its conditional target, supported by sustained relative strength i…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">researched</span></td><td style="color:#666;font-size:11px;">2026-02-24</td></tr><tr class="trow"><td class="sym" onclick="showChart('USO')">USO</td><td><span style="background:#c084fc22;color:#c084fc;border:1px solid #c084fc55;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🧠 BRIEFING</span></td><td><span style="color:#00ff88;font-weight:700;">88%</span></td><td><span style="background:#ff444422;color:#ff4444;border:1px solid #ff4444;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">risk-off</span></td><td style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;">A confirmed breakout in XLE above its conditional target, supported by sustained relative strength i…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">researched</span></td><td style="color:#666;font-size:11px;">2026-02-24</td></tr><tr class="trow"><td class="sym" onclick="showChart('XLU')">XLU</td><td><span style="background:#c084fc22;color:#c084fc;border:1px solid #c084fc55;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🧠 BRIEFING</span></td><td><span style="color:#00ff88;font-weight:700;">88%</span></td><td><span style="background:#ff444422;color:#ff4444;border:1px solid #ff4444;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">risk-off</span></td><td style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;">A confirmed breakout in XLE above its conditional target, supported by sustained relative strength i…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">researched</span></td><td style="color:#666;font-size:11px;">2026-02-24</td></tr><tr class="trow"><td class="sym" onclick="showChart('SMCI')">SMCI</td><td><span style="background:#88822;color:#888;border:1px solid #88855;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">GROK HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">82%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;">add_to_watch</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">researched</span></td><td style="color:#666;font-size:11px;">2026-02-24</td></tr><tr class="trow"><td class="sym" onclick="showChart('ASTS')">ASTS</td><td><span style="background:#88822;color:#888;border:1px solid #88855;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">GROK HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">87%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;">buy_small</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">researched</span></td><td style="color:#666;font-size:11px;">2026-02-24</td></tr><tr class="trow"><td class="sym" onclick="showChart('TSLA')">TSLA</td><td><span style="background:#88822;color:#888;border:1px solid #88855;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">GROK HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">87%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;">buy_small</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">analyst_pass</span></td><td style="color:#666;font-size:11px;">2026-02-24</td></tr><tr class="trow"><td class="sym" onclick="showChart('GME')">GME</td><td><span style="background:#88822;color:#888;border:1px solid #88855;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">GROK HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">92%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;">buy_small</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">analyst_pass</span></td><td style="color:#666;font-size:11px;">2026-02-24</td></tr><tr class="trow"><td class="sym" onclick="showChart('MSFT')">MSFT</td><td><span style="background:#c084fc22;color:#c084fc;border:1px solid #c084fc55;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🧠 BRIEFING</span></td><td><span style="color:#00ff88;font-weight:700;">88%</span></td><td><span style="background:#ffd70022;color:#ffd700;border:1px solid #ffd700;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">transitioning</span></td><td style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;">VIX dropping and sustaining below 20 alongside a stabilization in software sector news sentiment, or…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">conditional_set</span></td><td style="color:#666;font-size:11px;">2026-02-24</td></tr><tr class="trow"><td class="sym" onclick="showChart('QQQ')">QQQ</td><td><span style="background:#c084fc22;color:#c084fc;border:1px solid #c084fc55;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🧠 BRIEFING</span></td><td><span style="color:#00ff88;font-weight:700;">88%</span></td><td><span style="background:#ffd70022;color:#ffd700;border:1px solid #ffd700;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">transitioning</span></td><td style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;">VIX dropping and sustaining below 20 alongside a stabilization in software sector news sentiment, or…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">conditional_set</span></td><td style="color:#666;font-size:11px;">2026-02-24</td></tr><tr class="trow"><td class="sym" onclick="showChart('TLT')">TLT</td><td><span style="background:#c084fc22;color:#c084fc;border:1px solid #c084fc55;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🧠 BRIEFING</span></td><td><span style="color:#00ff88;font-weight:700;">88%</span></td><td><span style="background:#ff444422;color:#ff4444;border:1px solid #ff4444;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">risk-off</span></td><td style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;">Maintain a 'WAIT' stance on new tech entries like MSFT until the VIX stabilizes below 20 and the 'ma…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">conditional_set</span></td><td style="color:#666;font-size:11px;">2026-02-23</td></tr><tr class="trow"><td class="sym" onclick="showChart('XLE')">XLE</td><td><span style="background:#c084fc22;color:#c084fc;border:1px solid #c084fc55;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🧠 BRIEFING</span></td><td><span style="color:#00ff88;font-weight:700;">88%</span></td><td><span style="background:#ff444422;color:#ff4444;border:1px solid #ff4444;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">risk-off</span></td><td style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;">Maintain a 'WAIT' stance on new tech entries like MSFT until the VIX stabilizes below 20 and the 'ma…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">conditional_set</span></td><td style="color:#666;font-size:11px;">2026-02-23</td></tr><tr class="trow"><td class="sym" onclick="showChart('MSFT')">MSFT</td><td><span style="background:#c084fc22;color:#c084fc;border:1px solid #c084fc55;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🧠 BRIEFING</span></td><td><span style="color:#00ff88;font-weight:700;">88%</span></td><td><span style="background:#ff444422;color:#ff4444;border:1px solid #ff4444;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">risk-off</span></td><td style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;">Maintain a 'WAIT' stance on new tech entries like MSFT until the VIX stabilizes below 20 and the 'ma…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">conditional_set</span></td><td style="color:#666;font-size:11px;">2026-02-23</td></tr><tr class="trow"><td class="sym" onclick="showChart('LMT')">LMT</td><td><span style="background:#c084fc22;color:#c084fc;border:1px solid #c084fc55;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🧠 BRIEFING</span></td><td><span style="color:#00ff88;font-weight:700;">88%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">neutral</span></td><td style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;">LMT requires a 1.9% move to trigger breakout entry. Broader market entries require news sentiment to…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">conditional_set</span></td><td style="color:#666;font-size:11px;">2026-02-22</td></tr><tr class="trow"><td class="sym" onclick="showChart('XLE')">XLE</td><td><span style="background:#c084fc22;color:#c084fc;border:1px solid #c084fc55;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🧠 BRIEFING</span></td><td><span style="color:#00ff88;font-weight:700;">88%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">neutral</span></td><td style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;">LMT requires a 1.9% move to trigger breakout entry. Broader market entries require news sentiment to…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">conditional_set</span></td><td style="color:#666;font-size:11px;">2026-02-22</td></tr><tr class="trow"><td class="sym" onclick="showChart('USO')">USO</td><td><span style="background:#c084fc22;color:#c084fc;border:1px solid #c084fc55;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🧠 BRIEFING</span></td><td><span style="color:#00ff88;font-weight:700;">88%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">neutral</span></td><td style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;">LMT requires a 1.9% move to trigger breakout entry. Broader market entries require news sentiment to…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">conditional_set</span></td><td style="color:#666;font-size:11px;">2026-02-22</td></tr><tr class="trow"><td class="sym" onclick="showChart('LMT')">LMT</td><td><span style="background:#c084fc22;color:#c084fc;border:1px solid #c084fc55;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🧠 BRIEFING</span></td><td><span style="color:#00ff88;font-weight:700;">88%</span></td><td><span style="background:#ff444422;color:#ff4444;border:1px solid #ff4444;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">risk-off</span></td><td style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;">Trigger entry on SQQQ if volatility spikes further (1.6% to target); entry on LMT if defensive rotat…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">conditional_set</span></td><td style="color:#666;font-size:11px;">2026-02-21</td></tr><tr class="trow"><td class="sym" onclick="showChart('SQQQ')">SQQQ</td><td><span style="background:#c084fc22;color:#c084fc;border:1px solid #c084fc55;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🧠 BRIEFING</span></td><td><span style="color:#00ff88;font-weight:700;">88%</span></td><td><span style="background:#ff444422;color:#ff4444;border:1px solid #ff4444;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">risk-off</span></td><td style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;">Trigger entry on SQQQ if volatility spikes further (1.6% to target); entry on LMT if defensive rotat…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">conditional_set</span></td><td style="color:#666;font-size:11px;">2026-02-21</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -325,7 +496,7 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
 
   <div class="panel">
     <div class="panel-title">News Intelligence &mdash; Recent Signals</div>
-    <div class="news-scroll"><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#888;font-size:10px;">20:00</span><span style="color:#ffd700;font-size:13px;font-weight:700;">58.5</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><span style="color:#ffd700;font-weight:700;font-size:12px;">WAIT</span></div><div style="font-size:11px;color:#666;">101 articles &middot; 3 breaking &middot; Bearish: 19%, Bullish: 29%, Neutral: 52%</div><div style="font-size:11px;color:#888;margin-top:4px;font-style:italic;">The market exhibits conflicting signals, with inflation concerns and AI-driven tech disruption creating volatility, while economic…</div></div><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#888;font-size:10px;">19:44</span><span style="color:#ffd700;font-size:13px;font-weight:700;">54.6</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><span style="color:#ffd700;font-weight:700;font-size:12px;">WAIT</span></div><div style="font-size:11px;color:#666;">102 articles &middot; 2 breaking &middot; Bearish: 19%, Bullish: 29%, Neutral: 52%</div><div style="font-size:11px;color:#888;margin-top:4px;font-style:italic;">The provided signal metrics are contradictory: a 'market_correction' crisis type and high urgency conflict with a net positive sen…</div></div><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#888;font-size:10px;">19:28</span><span style="color:#ffd700;font-size:13px;font-weight:700;">55.9</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><span style="color:#ffd700;font-weight:700;font-size:12px;">WAIT</span></div><div style="font-size:11px;color:#666;">103 articles &middot; 2 breaking &middot; Bearish: 17%, Bullish: 38%, Neutral: 46%</div><div style="font-size:11px;color:#888;margin-top:4px;font-style:italic;">Despite the 'market_correction' crisis type and high urgency metrics, the actual news sentiment leans neutral to cautiously bullis…</div></div><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#888;font-size:10px;">19:12</span><span style="color:#ffd700;font-size:13px;font-weight:700;">58.5</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><span style="color:#ffd700;font-weight:700;font-size:12px;">WAIT</span></div><div style="font-size:11px;color:#666;">54 articles &middot; 2 breaking &middot; Bearish: 26%, Bullish: 20%, Neutral: 54%</div><div style="font-size:11px;color:#888;margin-top:4px;font-style:italic;">The declared 'market_correction' crisis type and some bearish news are counterbalanced by significant neutral and bullish sentimen…</div></div><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#888;font-size:10px;">18:56</span><span style="color:#ffd700;font-size:13px;font-weight:700;">52.8</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><span style="color:#ffd700;font-weight:700;font-size:12px;">WAIT</span></div><div style="font-size:11px;color:#666;">52 articles &middot; 1 breaking &middot; Bearish: 25%, Bullish: 17%, Neutral: 58%</div><div style="font-size:11px;color:#888;margin-top:4px;font-style:italic;">The combination of predominantly neutral sentiment, identified market correction, and low confidence in signal sources suggests si…</div></div><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#888;font-size:10px;">18:39</span><span style="color:#ffd700;font-size:13px;font-weight:700;">52.5</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><span style="color:#ffd700;font-weight:700;font-size:12px;">WAIT</span></div><div style="font-size:11px;color:#666;">52 articles &middot; 1 breaking &middot; Bearish: 23%, Bullish: 17%, Neutral: 60%</div><div style="font-size:11px;color:#888;margin-top:4px;font-style:italic;">The news sentiment is predominantly neutral with a moderate bearish lean, indicating a lack of strong directional conviction despi…</div></div></div>
+    <div class="news-scroll"><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#888;font-size:10px;">23:50 <span onclick="sendCommand('/update')" style="cursor:pointer;margin-left:5px;" title="Rerun Analysis">&#8635;</span></span><span style="color:#ffd700;font-size:13px;font-weight:700;">52.6</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><div><span style="color:#888;font-weight:700;font-size:12px;">—</span></div></div><div style="font-size:11px;color:#666;">105 articles &middot; 2 breaking &middot; Bearish: 17%, Bullish: 41%, Neutral: 42%</div><div style="font-size:11px;color:#888;margin-top:4px;font-style:italic;"></div></div><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#888;font-size:10px;">23:47 <span onclick="sendCommand('/update')" style="cursor:pointer;margin-left:5px;" title="Rerun Analysis">&#8635;</span></span><span style="color:#ffd700;font-size:13px;font-weight:700;">53.0</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><div><span style="color:#888;font-weight:700;font-size:12px;">—</span></div></div><div style="font-size:11px;color:#666;">105 articles &middot; 2 breaking &middot; Bearish: 18%, Bullish: 40%, Neutral: 42%</div><div style="font-size:11px;color:#888;margin-top:4px;font-style:italic;"></div></div><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#888;font-size:10px;">23:30 <span onclick="sendCommand('/update')" style="cursor:pointer;margin-left:5px;" title="Rerun Analysis">&#8635;</span></span><span style="color:#ffd700;font-size:13px;font-weight:700;">51.6</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><div><span style="color:#888;font-weight:700;font-size:12px;">HOLD</span><span style="color:#aaa;font-size:10px;margin-left:6px;">𝕏 <span style="color:#888;font-weight:700;font-size:12px;">MONITOR</span></span></div></div><div style="font-size:11px;color:#666;">106 articles &middot; 2 breaking &middot; Bearish: 15%, Bullish: 37%, Neutral: 48%</div><div style="font-size:11px;color:#888;margin-top:4px;font-style:italic;">The news signal score of 51.6 tripped the threshold primarily due to high-urgency macroeconomic developments, notably Dimon's star…</div></div><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#888;font-size:10px;">23:13 <span onclick="sendCommand('/update')" style="cursor:pointer;margin-left:5px;" title="Rerun Analysis">&#8635;</span></span><span style="color:#ffd700;font-size:13px;font-weight:700;">51.5</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><div><span style="color:#888;font-weight:700;font-size:12px;">—</span></div></div><div style="font-size:11px;color:#666;">104 articles &middot; 2 breaking &middot; Bearish: 14%, Bullish: 38%, Neutral: 48%</div><div style="font-size:11px;color:#888;margin-top:4px;font-style:italic;"></div></div><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#888;font-size:10px;">22:58 <span onclick="sendCommand('/update')" style="cursor:pointer;margin-left:5px;" title="Rerun Analysis">&#8635;</span></span><span style="color:#ffd700;font-size:13px;font-weight:700;">51.4</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><div><span style="color:#888;font-weight:700;font-size:12px;">—</span></div></div><div style="font-size:11px;color:#666;">101 articles &middot; 2 breaking &middot; Bearish: 14%, Bullish: 38%, Neutral: 49%</div><div style="font-size:11px;color:#888;margin-top:4px;font-style:italic;"></div></div><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#888;font-size:10px;">22:42 <span onclick="sendCommand('/update')" style="cursor:pointer;margin-left:5px;" title="Rerun Analysis">&#8635;</span></span><span style="color:#ffd700;font-size:13px;font-weight:700;">52.3</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><div><span style="color:#888;font-weight:700;font-size:12px;">HOLD</span><span style="color:#aaa;font-size:10px;margin-left:6px;">𝕏 <span style="color:#888;font-weight:700;font-size:12px;">HOLD</span></span></div></div><div style="font-size:11px;color:#666;">101 articles &middot; 2 breaking &middot; Bearish: 14%, Bullish: 37%, Neutral: 50%</div><div style="font-size:11px;color:#888;margin-top:4px;font-style:italic;">The automated alert system flagged a potential 'market_correction' based on a 52.3 news score, but the underlying data presents a …</div></div></div>
   </div>
 
   <div class="panel">
@@ -350,92 +521,310 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
 
 </div>
 
+<!-- ═══ GROK HOUND ═══ -->
+<div class="grid-full">
+  <div class="panel" style="border-color:#ff8c0044;">
+    <div class="panel-title">🐕 Grok Hound &mdash; High-Alpha &amp; Momentum Opportunities</div>
+    <div class="scroll-wrap">
+      <table>
+        <thead><tr>
+          <th>Ticker</th><th>Alpha Score</th><th>Alpha Thesis</th><th>Suggestion</th><th>Found</th><th>Action</th>
+        </tr></thead>
+        <tbody><tr class="trow"><td class="sym" onclick="showChart('SOUN')">SOUN</td><td style="color:#00ff88;font-weight:700;">88</td><td style="color:#ddd;font-size:11px;">AI voice tech with exploding retail hype and short squeeze setup post-partnership rumors</td><td><span style="color:#888;font-weight:700;font-size:12px;">BUY_SMALL</span></td><td style="color:#666;font-size:11px;">23:50</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('SOUN')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('SOUN')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('OKLO')">OKLO</td><td style="color:#00ff88;font-weight:700;">88</td><td style="color:#ddd;font-size:11px;">Nuclear SMRs exploding on X as AI data center power crunch catalyst amid energy rotation from oversold utilities.</td><td><span style="color:#888;font-weight:700;font-size:12px;">ADD_TO_WATCH</span></td><td style="color:#666;font-size:11px;">23:31</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('OKLO')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('OKLO')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('RKLB')">RKLB</td><td style="color:#00ff88;font-weight:700;">87</td><td style="color:#ddd;font-size:11px;">Recent Neutron engine test success igniting X frenzy with short squeeze setup</td><td><span style="color:#888;font-weight:700;font-size:12px;">BUY_SMALL</span></td><td style="color:#666;font-size:11px;">23:14</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('RKLB')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('RKLB')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('HIMS')">HIMS</td><td style="color:#00ff88;font-weight:700;">87</td><td style="color:#ddd;font-size:11px;">Explosive retail velocity on GLP-1 weight loss drug expansion, short squeeze potential with 25% SI</td><td><span style="color:#888;font-weight:700;font-size:12px;">BUY_SMALL</span></td><td style="color:#666;font-size:11px;">23:47</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('HIMS')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('HIMS')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('UPST')">UPST</td><td style="color:#00ff88;font-weight:700;">82</td><td style="color:#ddd;font-size:11px;">Fintech rebound on lending cycle shift, heavy short interest with X pile-on</td><td><span style="color:#888;font-weight:700;font-size:12px;">MONITOR</span></td><td style="color:#666;font-size:11px;">23:50</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('UPST')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('UPST')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('AMC')">AMC</td><td style="color:#00ff88;font-weight:700;">78</td><td style="color:#ddd;font-size:11px;">Rotation into beaten-down entertainment with CEO catalysts and short covering potential</td><td><span style="color:#888;font-weight:700;font-size:12px;">ADD_TO_WATCH</span></td><td style="color:#666;font-size:11px;">21:18</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('AMC')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('AMC')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('ARM')">ARM</td><td style="color:#00ff88;font-weight:700;">76</td><td style="color:#ddd;font-size:11px;">Chip design leader in mobile/AI edge with accelerating partnerships</td><td><span style="color:#888;font-weight:700;font-size:12px;">MONITOR</span></td><td style="color:#666;font-size:11px;">21:53</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('ARM')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('ARM')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('CELH')">CELH</td><td style="color:#00ff88;font-weight:700;">76</td><td style="color:#ddd;font-size:11px;">Energy drink rotation play with supply chain catalyst and insider buying flow</td><td><span style="color:#888;font-weight:700;font-size:12px;">ADD_TO_WATCH</span></td><td style="color:#666;font-size:11px;">23:50</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('CELH')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('CELH')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('HOOD')">HOOD</td><td style="color:#00ff88;font-weight:700;">76</td><td style="color:#ddd;font-size:11px;">Retail broker with explosive options volume and crypto adjacency fueling rotation amid meme revival</td><td><span style="color:#888;font-weight:700;font-size:12px;">ADD_TO_WATCH</span></td><td style="color:#666;font-size:11px;">22:09</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('HOOD')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('HOOD')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('IONQ')">IONQ</td><td style="color:#00ff88;font-weight:700;">76</td><td style="color:#ddd;font-size:11px;">Quantum computing catalyst from gov contracts, unusual options flow signaling breakout</td><td><span style="color:#888;font-weight:700;font-size:12px;">ADD_TO_WATCH</span></td><td style="color:#666;font-size:11px;">22:42</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('IONQ')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('IONQ')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
 <!-- ═══ SYSTEM ARCHITECTURE ═══ -->
 <div class="section-head">&#127959;&#65039; System Architecture</div>
 
 <div class="grid-three">
 
   <div class="panel">
-    <div class="panel-title">Research Team</div>
+    <div class="panel-title">&#128269; Research Pipeline</div>
     <div style="display:flex;flex-direction:column;gap:8px;">
       <div class="stat">
         <div class="stat-label">News Engine</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; ACTIVE &mdash; 15-min cycles</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">5-component scoring: sentiment &middot; concentration &middot; urgency &middot; confidence &middot; specificity</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; ACTIVE &mdash; 15-min cycles &middot; dedup-gated Gemini</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">5-component scoring: sentiment &middot; concentration &middot; urgency &middot; confidence &middot; specificity &middot; Flash+Pro only fires on new articles or breaking</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">FRED Macro Tracker</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; ACTIVE &mdash; Score 57/100 &middot; every ~60 min</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">9 indicators: yield curve &middot; fed funds &middot; unemployment &middot; M2 &middot; HY spreads &middot; consumer sentiment &middot; DEFCON modifier</div>
       </div>
       <div class="stat">
         <div class="stat-label">Congressional Tracker</div>
         <div style="color:#ffd700;font-size:11px;">&#9888;&#65039; S3 intermittent &mdash; Capitol Trades fallback</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">House + Senate disclosures &middot; cluster detection (3+ politicians in 30 days)</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">House + Senate disclosures &middot; cluster detection (3+ politicians/30 days) &middot; bipartisan signal weighting</div>
       </div>
       <div class="stat">
-        <div class="stat-label">FRED Macro</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; ACTIVE &mdash; Score 57/100</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">9 indicators: yield curve &middot; fed funds &middot; unemployment &middot; M2 &middot; HY spreads &middot; sentiment</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Acquisition Researcher</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; ACTIVE</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">yfinance &middot; SEC EDGAR &middot; analyst targets &middot; news + congressional integration</div>
+        <div class="stat-label">Acquisition Pipeline</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; ACTIVE &mdash; daily post-briefing</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Researcher (yfinance &middot; SEC EDGAR &middot; analyst targets) &rarr; Analyst (Pro 3 &middot; watch tags) &rarr; Verifier (Flash reverification) &rarr; Conditionals</div>
       </div>
     </div>
   </div>
 
   <div class="panel">
-    <div class="panel-title">Intelligence Team</div>
+    <div class="panel-title">&#129504; Intelligence Layer</div>
     <div style="display:flex;flex-direction:column;gap:8px;">
       <div class="stat">
-        <div class="stat-label">Gemini Fast (Flash)</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; thinkingBudget=0 &mdash; news triage</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Real-time article analysis, action classification every cycle</div>
+        <div class="stat-label">Gemini Flash &mdash; Fast Tier</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; gemini-2.5-flash &middot; thinking=0 &middot; OAuth</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Per-cycle news triage &middot; 🌅 9:30 AM morning briefing &middot; ☀️ 12:00 PM midday briefing &middot; acquisition verifier</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Gemini Balanced (Flash 8k)</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; thinkingBudget=8000 &mdash; daily fast tier</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Daily briefing balanced depth, broader reasoning</div>
+        <div class="stat-label">Gemini Flash &mdash; Balanced Tier</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; gemini-2.5-flash &middot; thinking=8k &middot; OAuth</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Elevated signal analysis &middot; broader reasoning on breaking news &middot; secondary daily review</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Gemini Reasoning (Pro 3)</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; thinkingBudget=-1 &mdash; deep analysis</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Primary daily briefing &middot; acquisition analyst &middot; 16k+ output tokens</div>
+        <div class="stat-label">Gemini Pro 3.1 &mdash; Reasoning Tier</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; gemini-3.1-pro-preview &middot; thinking=-1 &middot; OAuth</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">📋 4:30 PM deep daily briefing &middot; acquisition analyst &middot; pre-purchase gate &middot; 16k output tokens &middot; dynamic thinking budget</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Acquisition Verifier</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; Flash daily reverification</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Confirms / flags / invalidates conditional tracking entries</div>
+        <div class="stat-label">Grok 4.1 &mdash; Parallel Analyst</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; grok-4-1-fast-reasoning &middot; X-Powered</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">𝕏 Daily Second Opinion &middot; Real-time X.com sentiment audit &middot; Contrarian signal detection &middot; Veto participant</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Auth &amp; Token Efficiency</div>
+        <div style="color:#7eb8f7;font-size:11px;">&#128274; OAuth-only &middot; Gemini CLI 0.29.2 &middot; ~2-5% daily quota used</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">No API key &middot; dedup gate skips Flash+Pro on zero new articles &middot; massive headroom for scale</div>
       </div>
     </div>
   </div>
 
   <div class="panel">
-    <div class="panel-title">Broker / Execution</div>
+    <div class="panel-title">&#129302; Broker / Execution</div>
     <div style="display:flex;flex-direction:column;gap:8px;">
       <div class="stat">
         <div class="stat-label">DEFCON System</div>
-        <div style="color:#ff3333;font-size:11px;">&#9679; D5 &mdash; BEARISH</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Signal-driven 1&ndash;5 scale &middot; Macro modifier: +0.0</div>
+        <div style="color:#ff3333;font-size:11px;">&#9679; D5 &mdash; BEARISH &middot; Macro modifier: +0.0</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Signal-driven 1&ndash;5 scale &middot; news + yield + VIX + macro composite &middot; escalation AND de-escalation tracked</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Broker Agent</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; AUTONOMOUS mode</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Buys on DEFCON 1&ndash;2 &middot; profit target + stop loss exits &middot; acq. conditionals</div>
+        <div class="stat-label">Broker Agent &mdash; SEMI_AUTO</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; Buys DEFCON 1&ndash;2 &middot; conditional entries &middot; autonomous exits</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Watch tags: breakout &middot; momentum &middot; mean-reversion &middot; defensive-hedge &middot; macro-hedge &middot; earnings-play &middot; rebound</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Position Sizing</div>
-        <div style="color:#aaa;font-size:11px;">Base $10K &middot; Min $3K &middot; Max $20K</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">1 open &middot; $1,925 deployed &middot; $100,686 available</div>
+        <div class="stat-label">Pre-Purchase Gate</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; Pro 3 veto at trigger time &middot; fail-open</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Live DEFCON + news score + macro score + VIX &middot; vetoed entries stay active and retry next cycle</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Manual Commands</div>
-        <div style="color:#7eb8f7;font-size:11px;">Slack: /buy &middot; /sell &middot; /hold &middot; /briefing</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">IPC file bridge &middot; full override capability</div>
+        <div class="stat-label">Position Sizing &amp; Commands</div>
+        <div style="color:#aaa;font-size:11px;">Base $10K &middot; Min $3K &middot; Max $20K &middot; 5 open &middot; $22,753 deployed</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Slack: /buy &middot; /sell &middot; /hold &middot; /briefing &middot; /status &middot; IPC file bridge &middot; full override</div>
       </div>
     </div>
   </div>
 
 </div>
 
-<div class="footer">HIGHTRADE &middot; PAPER TRADING &middot; NOT FINANCIAL ADVICE &middot; 2026-02-18 12:11:10</div>
+<!-- ═══ DATA LAYER ═══ -->
+<div style="margin-top:16px;">
+  <div class="panel" style="border-color:#2a2a3a;">
+    <div class="panel-title" style="color:#888;">&#128451; Data Layer &mdash; SQLite WAL &middot; 2217 active rows across 6 tables &middot; 5 performance indexes &middot; 3 SQL views</div>
+    <div style="display:flex;gap:24px;flex-wrap:wrap;margin-top:6px;">
+      <div style="color:#555;font-size:10px;">&#128202; signal_monitoring &mdash; 15-min cycle snapshots</div>
+      <div style="color:#555;font-size:10px;">&#128240; news_signals &mdash; scored article batches + Flash JSON</div>
+      <div style="color:#555;font-size:10px;">&#129504; gemini_analysis &mdash; Flash + Pro reasoning records</div>
+      <div style="color:#555;font-size:10px;">&#128200; macro_indicators &mdash; FRED snapshots</div>
+      <div style="color:#555;font-size:10px;">&#128203; daily_briefings &mdash; morning &middot; midday &middot; close synthesis</div>
+      <div style="color:#555;font-size:10px;">&#127919; conditional_tracking &mdash; watch-tagged entry conditionals</div>
+      <div style="color:#555;font-size:10px;">&#128065;&#65039; v_active_positions &middot; v_active_conditionals &middot; v_daily_signal_summary</div>
+    </div>
+  </div>
 </div>
+
+<div class="footer">HIGHTRADE &middot; PAPER TRADING &middot; NOT FINANCIAL ADVICE &middot; 2026-02-24 15:51:58</div>
+</div>
+
+<!-- ═══ CHART MODAL ═══ -->
+<div id="chart-modal" onclick="if(event.target==this)closeChart()">
+    <div class="modal-content">
+        <span class="close-modal" onclick="closeChart()">&times;</span>
+        <div id="modal-header" style="margin-bottom:20px;">
+            <h2 id="modal-ticker" style="color:var(--accent); letter-spacing:2px;">TICKER</h2>
+            <div id="modal-price" style="font-size:24px; font-weight:700;">$0.00</div>
+            <div id="modal-change" style="font-size:14px;">+0.00%</div>
+        </div>
+        <div class="chart-controls">
+            <button class="chart-btn" id="btn-1d" onclick="updateChart('1d')">1D</button>
+            <button class="chart-btn" id="btn-5d" onclick="updateChart('5d')">5D</button>
+            <button class="chart-btn active" id="btn-1mo" onclick="updateChart('1mo')">1M</button>
+            <button class="chart-btn" id="btn-1y" onclick="updateChart('1y')">1Y</button>
+        </div>
+        <div style="height:400px; width:100%;">
+            <canvas id="tickerChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<script>
+let currentTicker = '';
+let priceChart = null;
+
+// --- CHART LOGIC ---
+async function showChart(ticker) {
+    currentTicker = ticker;
+    document.getElementById('chart-modal').style.display = 'block';
+    updateChart('1mo');
+}
+
+function closeChart() {
+    document.getElementById('chart-modal').style.display = 'none';
+}
+
+async function updateChart(period) {
+    document.querySelectorAll('.chart-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('btn-' + period).classList.add('active');
+    
+    try {
+        const resp = await fetch(`/api/history/${currentTicker}?period=${period}`);
+        const data = await resp.json();
+        if (!data.ok) throw new Error(data.message);
+        
+        document.getElementById('modal-ticker').innerText = data.ticker;
+        document.getElementById('modal-price').innerText = '$' + data.current.toLocaleString();
+        const changeEl = document.getElementById('modal-change');
+        changeEl.innerText = (data.change_pct >= 0 ? '+' : '') + data.change_pct + '%';
+        changeEl.style.color = data.change_pct >= 0 ? 'var(--green)' : 'var(--red)';
+        
+        const ctx = document.getElementById('tickerChart').getContext('2d');
+        if (priceChart) priceChart.destroy();
+        const chartColor = data.change_pct >= 0 ? '#00ff88' : '#ff4444';
+        
+        priceChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: data.labels,
+                datasets: [{
+                    data: data.prices,
+                    borderColor: chartColor,
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    tension: 0.1,
+                    fill: true,
+                    backgroundColor: chartColor + '11'
+                }]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { display: false },
+                    y: { grid: { color: '#1e2040' }, ticks: { color: '#64748b' } }
+                },
+                interaction: { intersect: false, mode: 'index' }
+            }
+        });
+    } catch (e) { console.error(e); }
+}
+
+// --- COMMAND LOGIC ---
+async function sendCommand(cmd) {
+    const btn = event?.target;
+    const originalText = btn?.innerText;
+    if (btn) { btn.innerText = 'WAIT...'; btn.disabled = true; }
+    
+    try {
+        const resp = await fetch('/api/command', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: cmd })
+        });
+        const data = await resp.json();
+        alert(data.message || 'Command sent successfully');
+    } catch (e) { alert('Error: ' + e); }
+    finally { if (btn) { btn.innerText = originalText; btn.disabled = false; } }
+}
+
+async function approveTicker(ticker) {
+    if (!confirm('Send ' + ticker + ' to Acquisition Pipeline?')) return;
+    try {
+        const resp = await fetch('/api/approve', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ticker: ticker })
+        });
+        const data = await resp.json();
+        if (data.ok) { alert(data.message); location.reload(); }
+        else alert('Error: ' + data.message);
+    } catch (e) { alert('Error: ' + e); }
+}
+
+async function rejectTicker(ticker) {
+    if (!confirm('Ignore ' + ticker + '?')) return;
+    try {
+        const resp = await fetch('/api/reject', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ticker: ticker })
+        });
+        const data = await resp.json();
+        if (data.ok) location.reload();
+        else alert('Error: ' + data.message);
+    } catch (e) { alert('Error: ' + e); }
+}
+
+// --- CHAT LOGIC ---
+async function sendPrompt() {
+    const promptInput = document.getElementById('custom-prompt');
+    const prompt = promptInput.value;
+    const model = document.getElementById('model-select').value;
+    const output = document.getElementById('ai-response');
+    if (!prompt) return;
+    
+    appendChat('USER', prompt, new Date().toLocaleTimeString());
+    promptInput.value = '';
+    output.innerText = '🤖 Thinking...';
+    
+    try {
+        const resp = await fetch('/api/prompt', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt, model })
+        });
+        const data = await resp.json();
+        if (data.ok) {
+            appendChat('AI (' + model + ')', data.response, new Date().toLocaleTimeString());
+        } else {
+            output.innerText = '❌ Error: ' + data.message;
+        }
+    } catch (e) { output.innerText = '❌ Connection failed'; }
+}
+
+function appendChat(role, text, time) {
+    const log = JSON.parse(localStorage.getItem('hightrade_chat_log') || '[]');
+    log.push({ role, text, time });
+    if (log.length > 20) log.shift();
+    localStorage.setItem('hightrade_chat_log', JSON.stringify(log));
+    renderChat();
+}
+
+function renderChat() {
+    const output = document.getElementById('ai-response');
+    if (!output) return;
+    const log = JSON.parse(localStorage.getItem('hightrade_chat_log') || '[]');
+    if (log.length === 0) return;
+    output.innerHTML = log.map(m => 
+        `<div style="margin-bottom:8px; border-bottom:1px solid #ffffff05; padding-bottom:4px;">
+            <span style="color:var(--dim); font-size:9px;">[${m.time}]</span> 
+            <b style="color:${m.role === 'USER' ? 'var(--accent)' : 'var(--green)'}; font-size:10px;">${m.role}:</b> 
+            <div style="margin-top:2px; color:#ccc; font-size:11px;">${m.text}</div>
+        </div>`
+    ).join('');
+    output.scrollTop = output.scrollHeight;
+}
+
+document.getElementById('custom-prompt')?.addEventListener('keypress', e => { if(e.key==='Enter') sendPrompt(); });
+setTimeout(renderChat, 100);
+</script>
 </body>
 </html>
