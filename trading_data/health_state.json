@@ -1,5 +1,5 @@
 {
-  "last_run_date": "2026-02-23",
+  "last_run_date": "2026-02-24",
   "flagged_gaps": [
     "msft options flow",
     "real-time sector rotation",
@@ -7,7 +7,7 @@
   ],
   "last_result": {
     "status": "ok",
-    "summary": "4/4 APIs healthy | 3 recurring gaps need coding",
+    "summary": "4/4 APIs healthy | 5 model update(s) available",
     "apis_ok": [
       "yfinance",
       "FRED",
@@ -16,12 +16,8 @@
     ],
     "apis_down": [],
     "signal_healthy": true,
-    "signal_message": "Monitoring healthy \u2014 last cycle 1m ago",
-    "recurring_gaps": [
-      "real-time sector rotation (\u00d74)",
-      "vix term structure (\u00d74)",
-      "msft options flow (\u00d72)"
-    ],
+    "signal_message": "Monitoring healthy \u2014 last cycle 3m ago",
+    "recurring_gaps": [],
     "new_gaps": [
       "real-time options flow to gauge institutional hedging depth",
       "specific volume profiles on the msft move",
@@ -33,6 +29,11 @@
       "clearer context for conditional targets when live price is above the target.",
       "no congressional trading data available for this cycle",
       "sunday data implies low liquidity/volume confirmation for generated signals",
+      "vix",
+      "bond market yield changes.",
+      "intraday volume data for impacted legacy tech and private credit proxies to confirm the severity of the sell-off",
+      "detailed options flow data to gauge institutional demand for downside protection",
+      "specific updates on the iran geopolitical situation referenced by gemini flash themes",
       "analyst ratings and price targets are completely missing (mean $0.0)",
       "upcoming economic calendar events (cpi/ppi) not provided",
       "bond market implied volatility (move index) data missing",
@@ -60,14 +61,29 @@
       "implied volatility/options sentiment for upcoming expiration",
       "confirmed date for next earnings release",
       "volume profile analysis at $660-$669 level",
-      "options open interest at $680 strikes"
+      "options open interest at $680 strikes",
+      "next upcoming earnings date to plan around event risk",
+      "options implied volatility and put/call ratio for near-term expirations",
+      "recent insider transaction data over the last 30 days",
+      "underlying crude oil (wti) price trends",
+      "volume data to confirm accumulation near highs",
+      "options market sentiment and implied volatility for xle",
+      "current vix and move index levels",
+      "upcoming cpi/pce release dates",
+      "fed funds futures probability distribution for upcoming meetings"
     ],
-    "new_models": [],
-    "run_date": "2026-02-23",
+    "new_models": [
+      "grok-3-mini",
+      "grok-4-0709",
+      "grok-4-1-fast-non-reasoning",
+      "grok-4-fast-non-reasoning",
+      "grok-4-fast-reasoning"
+    ],
+    "run_date": "2026-02-24",
     "gap_counts": {
-      "real-time sector rotation": 4,
-      "vix term structure": 4,
-      "msft options flow": 2,
+      "real-time sector rotation": 6,
+      "vix term structure": 5,
+      "msft options flow": 3,
       "real-time options flow to gauge institutional hedging depth": 1,
       "specific volume profiles on the msft move": 1,
       "economic calendar events": 1,
@@ -78,13 +94,13 @@
       "clearer context for conditional targets when live price is above the target.": 1,
       "no congressional trading data available for this cycle": 1,
       "sunday data implies low liquidity/volume confirmation for generated signals": 1,
+      "vix": 1,
+      "bond market yield changes.": 1,
+      "intraday volume data for impacted legacy tech and private credit proxies to confirm the severity of the sell-off": 1,
+      "detailed options flow data to gauge institutional demand for downside protection": 1,
+      "specific updates on the iran geopolitical situation referenced by gemini flash themes": 1,
       "analyst ratings and price targets are completely missing (mean $0.0)": 1,
-      "upcoming economic calendar events (cpi/ppi) not provided": 1,
-      "bond market implied volatility (move index) data missing": 1,
-      "volume profile at the $660-$670 level to confirm distribution vs accumulation": 1,
-      "options open interest at $670 strike (gamma potential)": 1,
-      "current vix level to quantify 'risk-off' intensity": 1,
-      "current vix level to confirm specific volatility threshold": 1
+      "upcoming economic calendar events (cpi/ppi) not provided": 1
     }
   }
 }

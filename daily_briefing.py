@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import gemini_client
+import grok_client
 
 logger = logging.getLogger(__name__)
 
@@ -30,38 +31,41 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
 
 # ── Model tiers ────────────────────────────────────────────────────────────────
-# Each tier uses thinkingConfig.thinkingBudget to control depth of reasoning.
-# Thinking tokens are consumed BEFORE output tokens and are NOT billed the same.
-# Budget = -1 means the model decides how much to think (dynamic, best quality).
-# Budget = 0 disables thinking entirely (fastest, cheapest).
-#
 #  Tier        Model                  Thinking  Purpose
 #  ──────────  ─────────────────────  ────────  ──────────────────────────────
 #  fast        gemini-2.5-flash            0    Pattern check, low cost
 #  balanced    gemini-2.5-flash        8,000    Reasons before answering
-#  reasoning   gemini-3-pro-preview       -1    Full chain-of-thought, best signal
+#  reasoning   gemini-3.1-pro-preview     -1    Full chain-of-thought, best signal
+#  grok        grok-4-1-fast-reasoning    Yes   X-powered second opinion
 # ──────────────────────────────────────────────────────────────────────────────
 MODEL_CONFIG = {
     'fast': {
         'model_id':        'gemini-2.5-flash',
-        'thinking_budget': 0,       # no thinking — fast & cheap
+        'thinking_budget': 0,
         'max_output_tokens': 8192,
         'temperature':     0.4,
         'label':           '⚡ Flash 2.5 (Fast)',
     },
     'balanced': {
         'model_id':        'gemini-2.5-flash',
-        'thinking_budget': 8000,    # moderate reasoning before output
+        'thinking_budget': 8000,
         'max_output_tokens': 8192,
-        'temperature':     0.7,     # must be 1.0 when thinking is on per API spec
+        'temperature':     0.7,
         'label':           '🧠 Flash 2.5 (Thinking)',
     },
     'reasoning': {
-        'model_id':        'gemini-3-pro-preview',
-        'thinking_budget': -1,      # dynamic — model decides depth (highest quality)
+        'model_id':        'gemini-3.1-pro-preview',
+        'thinking_budget': -1,
         'max_output_tokens': 16384,
-        'temperature':     1.0,     # required by API when thinking is enabled
-        'label':           '🔬 Gemini 3 Pro (Deep Reason)',
+        'temperature':     1.0,
+        'label':           '🔬 Gemini 3.1 Pro (Reasoning)',
+    },
+    'grok': {
+        'model_id':        'grok-4-1-fast-reasoning',
+        'thinking_budget': 1, # flag for logic
+        'max_output_tokens': 4096,
+        'temperature':     0.4,
+        'label':           '𝕏 Grok-4.1 (X-Powered)',
     },
 }
 
@@ -70,24 +74,28 @@ MODELS = {k: v['model_id'] for k, v in MODEL_CONFIG.items()}
 
 
 def _call_gemini(model_key: str, prompt: str) -> Tuple[Optional[str], int, int]:
-    """
-    Call Gemini via gemini_client (OAuth CLI → REST API fallback).
-    Logs which auth path was used so we can track subscription usage.
-    """
+    """Call Gemini via gemini_client."""
     cli_ok, _ = gemini_client._get_cli_status()
     auth_path = "OAuth/CLI" if cli_ok else "REST/API-key"
     cfg = MODEL_CONFIG[model_key]
 
-    logger.info(f"  📡 {model_key} via {auth_path} ({cfg['model_id']}, thinking={cfg['thinking_budget']})")
+    logger.info(f"  📡 {model_key} via {auth_path} ({cfg['model_id']})")
 
     text, in_tok, out_tok = gemini_client.call(
         prompt=prompt,
         model_key=model_key,
     )
-
-    if text:
-        logger.info(f"  📊 {model_key} tokens: in={in_tok} out={out_tok} | auth={auth_path}")
     return text, in_tok, out_tok
+
+
+def _call_grok(prompt: str) -> Tuple[Optional[str], int, int]:
+    """Call Grok via grok_client."""
+    logger.info(f"  𝕏 Calling Grok-4.1 for daily second opinion...")
+    return grok_client.call(
+        prompt=prompt,
+        model_id=MODEL_CONFIG['grok']['model_id'],
+        temperature=MODEL_CONFIG['grok']['temperature'],
+    )
 
 
 def _gather_daily_context(db_path: str, date_str: str = None) -> Dict:
@@ -458,15 +466,25 @@ def run_daily_briefing(compare_models: bool = False) -> Dict:
     prompt = _build_daily_prompt(ctx)
     logger.info(f"  📝 Prompt built ({len(prompt)} chars)")
 
-    # Production: only the deep reasoning model
+    # Production: Gemini reasoning model + Grok second opinion
     # Compare: all tiers for side-by-side evaluation
-    models_to_run = MODEL_CONFIG if compare_models else {'reasoning': MODEL_CONFIG['reasoning']}
+    if compare_models:
+        models_to_run = MODEL_CONFIG
+    else:
+        models_to_run = {
+            'reasoning': MODEL_CONFIG['reasoning'],
+            'grok':      MODEL_CONFIG['grok']
+        }
+    
     results = {}
 
     for model_key, cfg in models_to_run.items():
-        logger.info(f"  🤖 Running {model_key} ({cfg['model_id']}, thinking={cfg['thinking_budget']})...")
+        logger.info(f"  🤖 Running {model_key} ({cfg['model_id']})...")
         try:
-            text, in_tok, out_tok = _call_gemini(model_key, prompt)
+            if model_key == 'grok':
+                text, in_tok, out_tok = _call_grok(prompt)
+            else:
+                text, in_tok, out_tok = _call_gemini(model_key, prompt)
 
             if not text:
                 logger.warning(f"  ⚠️  {model_key} returned no response")
@@ -732,15 +750,14 @@ def _send_slack_summary(date_str: str, ctx: Dict, results: Dict):
             )
 
         # ── Determine which tiers to show ───────────────────────────────────
-        # In compare mode all keys are present; in production only 'reasoning' exists
-        tier_keys = [k for k in ['fast', 'balanced', 'reasoning'] if k in results]
+        # In production mode, show reasoning and grok
+        tier_keys = [k for k in ['fast', 'balanced', 'reasoning', 'grok'] if k in results]
 
         for model_key in tier_keys:
             result = results.get(model_key, {})
             label  = MODEL_CONFIG.get(model_key, {}).get('label', model_key)
 
             if not result or ('error' in result and len(result) <= 2):
-                # Only print failures when running a comparison test
                 if len(tier_keys) > 1:
                     text += f"\n{label}: ❌ {result.get('error','Failed')}\n"
                 continue
@@ -762,7 +779,7 @@ def _send_slack_summary(date_str: str, ctx: Dict, results: Dict):
 
             text += (
                 f"\n{'─'*50}\n"
-                f"🔬 *Gemini 3 Pro Analysis* | {regime_emoji} {regime.upper()} "
+                f"{'🔬' if model_key != 'grok' else '𝕏'} *{label} Analysis* | {regime_emoji} {regime.upper()} "
                 f"| conf={confidence:.2f} | {in_tok}→{out_tok}tok\n\n"
                 f"📰 *Summary:* {headline}\n\n"
                 f"🔑 *Key Themes:* {' | '.join(themes) if themes else 'N/A'}\n\n"

@@ -19,6 +19,7 @@ Schedule: run_health_check() is the main entry point.
 
 import json
 import logging
+import os
 import sqlite3
 import subprocess
 import time
@@ -39,14 +40,16 @@ GAP_RECURRENCE_THRESHOLD = 2
 # Window for recurring-gap analysis (days)
 GAP_WINDOW_DAYS = 14
 
-# Gemini models we're currently running — health check compares against live list
+# Gemini + Grok models we're currently running
 CURRENT_MODELS = {
     'gemini-2.5-flash',
-    'gemini-3-pro-preview',
+    'gemini-3.1-pro-preview',
+    'grok-3',
+    'grok-4-1-fast-reasoning',
 }
 
 # Known model families to watch for upgrades
-TRACKED_MODEL_PREFIXES = ('gemini-2.5', 'gemini-3', 'gemini-3.1', 'gemini-2.0')
+TRACKED_MODEL_PREFIXES = ('gemini-2.5', 'gemini-3', 'gemini-3.1', 'gemini-2.0', 'grok-3', 'grok-4')
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -267,37 +270,60 @@ def _identify_recurring_gaps(gap_counter: Counter, state: Dict) -> Tuple[List[st
 
 def _check_model_updates() -> List[str]:
     """
-    Query Gemini CLI for available models and compare against CURRENT_MODELS.
+    Query Gemini CLI AND xAI API for available models.
     Returns list of newer model IDs we're not running yet.
-    Fails silently if CLI is unavailable.
     """
     new_models = []
+    
+    # --- Check Gemini (via CLI) ---
     try:
         result = subprocess.run(
-            ['gemini', 'models', 'list'],
+            ['gemini', '--list-models'],  # Fixed flag from prior test
             capture_output=True, text=True, timeout=20
         )
-        if result.returncode != 0:
-            return []
-
         output = result.stdout + result.stderr
-        # Look for lines that contain a model id matching tracked prefixes
-        for line in output.splitlines():
-            line = line.strip()
-            for prefix in TRACKED_MODEL_PREFIXES:
-                if prefix in line.lower():
-                    # Extract model id — typically looks like gemini-3.1-pro-preview
-                    import re
-                    matches = re.findall(r'gemini-[\w.\-]+', line, re.IGNORECASE)
-                    for m in matches:
-                        m_clean = m.lower().strip('.,;:')
-                        if m_clean not in CURRENT_MODELS:
-                            new_models.append(m_clean)
-
-        return list(dict.fromkeys(new_models))  # deduplicate, preserve order
-
+        import re
+        matches = re.findall(r'gemini-[\w.\-]+', output, re.IGNORECASE)
+        for m in matches:
+            m_clean = m.lower().strip('.,;:')
+            if m_clean not in CURRENT_MODELS:
+                for prefix in TRACKED_MODEL_PREFIXES:
+                    if prefix in m_clean:
+                        new_models.append(m_clean)
     except Exception:
-        return []
+        pass
+
+    # --- Check Grok (via xAI API) ---
+    xai_key = os.environ.get("XAI_API_KEY")
+    if not xai_key:
+        # Try loading from .env if running standalone
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(SCRIPT_DIR / ".env")
+            xai_key = os.environ.get("XAI_API_KEY")
+        except ImportError:
+            pass
+
+    if xai_key:
+        try:
+            import requests
+            r = requests.get(
+                "https://api.x.ai/v1/models",
+                headers={"Authorization": f"Bearer {xai_key}"},
+                timeout=15
+            )
+            if r.status_code == 200:
+                data = r.json()
+                for model in data.get('data', []):
+                    mid = model.get('id', '').lower()
+                    if mid and mid not in CURRENT_MODELS:
+                        for prefix in TRACKED_MODEL_PREFIXES:
+                            if prefix in mid:
+                                new_models.append(mid)
+        except Exception:
+            pass
+
+    return list(dict.fromkeys(new_models))  # deduplicate, preserve order
 
 
 # ── Main Health Check ──────────────────────────────────────────────────────────

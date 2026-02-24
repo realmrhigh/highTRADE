@@ -576,6 +576,22 @@ class AlertSystem:
                     sections.append(f"🔁 Recurring Data Gaps (needs code): {', '.join(recurring_gaps)}")
                 text = '\n'.join(sections)
 
+            elif event_type == 'hound_alert':
+                ticker = data.get('ticker', '?')
+                score  = data.get('score', 0)
+                thesis = data.get('thesis', '')
+                risks  = data.get('risks', [])
+                action = data.get('action', 'monitor')
+                
+                score_bar = '🔥' * int(score / 20) + '⚪' * (5 - int(score / 20))
+                text = (
+                    f"🐕 *Grok Hound Alert* — `${ticker}`\n"
+                    f"Meme Potential: {score_bar} ({score}/100)\n"
+                    f"🎯 *Thesis:* {thesis}\n"
+                    f"⚠️ *Risks:* {', '.join(risks[:3])}\n"
+                    f"🛠️ *Suggestion:* {action.upper()}"
+                )
+
             else:
                 text = f"📢 *{event_type}*: {json.dumps(data, indent=2)}"
 

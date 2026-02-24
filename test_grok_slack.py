@@ -75,10 +75,18 @@ def trigger_test_analysis():
         sector_rotation=sector_res, vix_term_structure=vix_res
     )
     
-    logger.info("  𝕏 Running Grok-3 Second Opinion...")
+    logger.info("  𝕏 Running Grok Second Opinion (State Snapshot)...")
+    mock_positions = [
+        {'symbol': 'AAPL', 'shares': 10, 'entry_price': 185.50, 'pnl_pct': 2.5},
+        {'symbol': 'NVDA', 'shares': 5, 'entry_price': 720.00, 'pnl_pct': -1.2}
+    ]
+    
     grok_res = grok.run_analysis(
         test_articles, crisis_type, score,
-        sector_rotation=sector_res, vix_term_structure=vix_res
+        sector_rotation=sector_res,
+        vix_term_structure=vix_res,
+        positions=mock_positions,
+        current_defcon=5
     )
     
     # 5. Format and Send to Slack
@@ -91,7 +99,8 @@ def trigger_test_analysis():
     grok_summary = {
         'action': grok_res.get('second_opinion_action', 'WAIT') if grok_res else 'WAIT',
         'x_sentiment': grok_res.get('x_sentiment_score', 0) if grok_res else 0,
-        'reasoning': grok_res.get('reasoning', '')[:300] if grok_res else 'N/A'
+        'reasoning': grok_res.get('reasoning', '')[:300] if grok_res else 'N/A',
+        'disagreement_flag': grok_res.get('disagreement_flag', False) if grok_res else False
     }
     
     logger.info("  📤 Sending to Slack...")

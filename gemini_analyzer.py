@@ -31,86 +31,62 @@ class GrokAnalyzer:
 
     def __init__(self, model: str = GROK_MODEL):
         self.model = model
-
-    def _parse_json_response(self, text: str) -> dict:
-        """Robustly parse JSON from Grok response, handling markdown wrapping"""
-        if "```json" in text:
-            text = text.split("```json")[1].split("```")[0].strip()
-        elif "```" in text:
-            text = text.split("```")[1].split("```")[0].strip()
-        text = text.strip()
-
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError as e:
-            logger.error(f"  ❌ Grok JSON parse error: {e}")
-            raise ValueError(f"Could not parse JSON from Grok response: {text[:100]}")
+        self.client = grok_client.GrokClient()
 
     def run_analysis(self, articles: List[Dict], crisis_type: str, news_score: float,
                      sector_rotation: Optional[Dict] = None,
-                     vix_term_structure: Optional[Dict] = None) -> Optional[Dict]:
+                     vix_term_structure: Optional[Dict] = None,
+                     positions: Optional[List] = None,
+                     current_defcon: Optional[int] = None) -> Optional[Dict]:
         """
-        Run Grok analysis for X.com sentiment and second opinion on market news.
+        Run Grok analysis for X.com sentiment and second opinion on market state.
         """
         logger.info(f"  𝕏 Running Grok analysis for X.com sentiment ({self.model})...")
 
-        # Format context for Grok
-        summary = "\n".join([f"- {a.get('title')}" for a in articles[:10]])
+        # Format snapshot payload for Grok
+        payload = {
+            "news_signal": {
+                "score": news_score,
+                "type": crisis_type,
+                "articles": [a.get('title') for a in articles[:10]],
+                "sentiment_summary": "bearish" # Simplification for payload
+            },
+            "macro": {
+                "sector_rotation": sector_rotation,
+                "vix_term_structure": vix_term_structure
+            },
+            "system_state": {
+                "defcon": current_defcon,
+                "positions": positions
+            }
+        }
         
-        # Macro Context
-        macro_parts = []
-        if sector_rotation:
-            macro_parts.append(f"Sector Rotation: Top={sector_rotation.get('top_sector_1w')}, Bottom={sector_rotation.get('bottom_sector_1w')}")
-        if vix_term_structure:
-            macro_parts.append(f"VIX Regime: {vix_term_structure.get('regime')} (Ratio: {vix_term_structure.get('vix_vxv_ratio', 0):.2f})")
-        
-        macro_text = "\n".join(macro_parts) if macro_parts else "Standard market conditions."
-        
-        prompt = f"""You are an expert market analyst with deep understanding of social sentiment and X.com trends.
-The market is currently seeing a {crisis_type} signal with a score of {news_score:.1f}/100.
+        result = self.client.second_opinion(payload, focus=f"Market {crisis_type} event and current positions")
 
-MARKET CONTEXT:
-{macro_text}
-
-LATEST NEWS HEADLINES:
-{summary}
-
-TASK:
-1. Search your knowledge/real-time data for current X.com (Twitter) sentiment related to these events.
-2. Provide a "second opinion" to challenge or confirm the mainstream news narrative.
-3. Identify hidden narratives or contrarian views gaining traction on social media.
-
-Respond with ONLY valid JSON:
-{{
-  "x_sentiment_score": <float -1.0 to 1.0, negative to positive sentiment>,
-  "trending_topics": [<string>, <string>, <string>],
-  "hidden_narratives": ["<specific narrative 1>", "<specific narrative 2>"],
-  "second_opinion_action": "<BUY|HOLD|SELL|WAIT>",
-  "reasoning": "<string: 3-4 sentences explaining the X.com sentiment and how it differs from news>",
-  "contrarian_signal": <float 0.0-1.0, how much does social sentiment diverge from news>
-}}"""
-
-        text, in_tok, out_tok = grok_client.call(prompt, model_id=self.model)
-
-        if not text:
-            logger.warning("  ⚠️  Grok returned no response")
+        if not result:
+            logger.warning("  ⚠️  Grok returned no valid JSON response")
             return None
 
-        try:
-            result = self._parse_json_response(text)
-            result['model'] = self.model
-            result['input_tokens'] = in_tok
-            result['output_tokens'] = out_tok
-            result['timestamp'] = datetime.now().isoformat()
-            
-            action = result.get('second_opinion_action', 'WAIT')
-            sentiment = result.get('x_sentiment_score', 0)
-            logger.info(f"  ✅ Grok: action={action}, x_sentiment={sentiment:.2f} ({in_tok}→{out_tok} tokens)")
-            return result
-            
-        except Exception as e:
-            logger.error(f"  ❌ Grok analysis failed: {e}")
-            return None
+        # Map new Grok keys to internal structure
+        # Internal: x_sentiment_score, trending_topics, hidden_narratives, second_opinion_action, reasoning, contrarian_signal
+        # Grok Suggestions: critique (str), x_signals (list[dict]), gaps_recommendations (list[str]), action_suggestion (hold|buy|sell|monitor|add_to_watch), confidence (float 0-1)
+        
+        mapped_result = {
+            "x_sentiment_score": result.get('confidence', 0) * (-1 if 'bearish' in result.get('critique', '').lower() else 1),
+            "trending_topics": [s.get('summary') for s in result.get('x_signals', []) if isinstance(s, dict)],
+            "hidden_narratives": result.get('gaps_recommendations', []),
+            "second_opinion_action": result.get('action_suggestion', 'WAIT').upper(),
+            "reasoning": result.get('critique', ''),
+            "contrarian_signal": 1.0 - result.get('confidence', 0.5),
+            "model": self.model,
+            "input_tokens": result.get('input_tokens', 0),
+            "output_tokens": result.get('output_tokens', 0),
+            "timestamp": datetime.now().isoformat(),
+            "full_critique": result # Store the full original response
+        }
+        
+        logger.info(f"  ✅ Grok: action={mapped_result['second_opinion_action']}, x_sentiment={mapped_result['x_sentiment_score']:.2f} ({mapped_result['input_tokens']}→{mapped_result['output_tokens']} tokens)")
+        return mapped_result
 
     def save_analysis_to_db(self, db_path: str, news_signal_id: int, analysis: Dict) -> Optional[int]:
         """Save Grok analysis to grok_analysis table"""

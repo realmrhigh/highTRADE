@@ -106,17 +106,22 @@ class HighTradeOrchestrator:
         # Initialize AI analyzers
         try:
             from gemini_analyzer import GeminiAnalyzer, GrokAnalyzer
+            from acquisition_hound import GrokHound
             self.gemini = GeminiAnalyzer()
             self.grok = GrokAnalyzer()
+            self.hound = GrokHound(db_path=str(DB_PATH))
             self.gemini_enabled = True
             self.grok_enabled = True
-            logger.info("🤖 AI Analyzers initialized (Gemini Flash/Pro + Grok)")
+            self.hound_enabled = True
+            logger.info("🤖 AI Analyzers initialized (Gemini Flash/Pro + Grok + 🐕 Hound)")
         except Exception as e:
             logger.warning(f"⚠️  AI initialization failed: {e}")
             self.gemini = None
             self.grok = None
+            self.hound = None
             self.gemini_enabled = False
             self.grok_enabled = False
+            self.hound_enabled = False
 
         # Initialize Congressional Trading Tracker
         try:
@@ -387,6 +392,15 @@ class HighTradeOrchestrator:
         logger.info(f"MONITORING CYCLE #{self.monitoring_cycles}")
         logger.info(f"{'='*60}")
 
+        # --- CORE DATA GATHERING (Start of Cycle) ---
+        sector_result = None
+        if self.sector_analyzer:
+            sector_result = self.sector_analyzer.get_rotation_data()
+        
+        vix_result = None
+        if self.vix_analyzer:
+            vix_result = self.vix_analyzer.get_term_structure_data()
+
         try:
             self.monitor.connect()
 
@@ -514,8 +528,19 @@ class HighTradeOrchestrator:
                                         crisis_type=fresh_news_signal['dominant_crisis_type'],
                                         news_score=score,
                                         sector_rotation=sector_result,
-                                        vix_term_structure=vix_result
+                                        vix_term_structure=vix_result,
+                                        positions=open_positions,
+                                        current_defcon=self.previous_defcon
                                     )
+                                    
+                                    # --- VETO / CONTRARIAN FLAG LOGIC ---
+                                    if grok_result and gemini_pro_result:
+                                        gemini_action = gemini_pro_result.get('recommended_action', 'WAIT').upper()
+                                        grok_action = grok_result.get('second_opinion_action', 'WAIT').upper()
+                                        
+                                        if (gemini_action in ('BUY', 'SELL')) and (grok_action != gemini_action):
+                                            logger.warning(f"  🚨 AI DISAGREEMENT: Gemini={gemini_action}, Grok={grok_action}. Flagging for review.")
+                                            grok_result['disagreement_flag'] = True
                                 else:
                                     grok_result = None
                         elif self.gemini_enabled:
@@ -571,7 +596,8 @@ class HighTradeOrchestrator:
                                 grok_summary = {
                                     'action': grok_result.get('second_opinion_action', 'WAIT'),
                                     'x_sentiment': grok_result.get('x_sentiment_score', 0),
-                                    'reasoning': grok_result.get('reasoning', '')[:200]
+                                    'reasoning': grok_result.get('reasoning', '')[:200],
+                                    'disagreement_flag': grok_result.get('disagreement_flag', False)
                                 }
 
                             # Send silent notification to #logs-silent every cycle
@@ -588,6 +614,31 @@ class HighTradeOrchestrator:
                                 'grok': grok_summary,
                                 'timestamp': datetime.now().isoformat()
                             })
+                            
+                            # --- 🐕 GROK HOUND (Every cycle alpha scanner) ---
+                            if self.hound_enabled:
+                                try:
+                                    hound_state = {
+                                        "defcon_level": self.monitor.defcon_level,
+                                        "macro_score": macro_result.get('macro_score', 50) if macro_result else 50,
+                                        "watchlist": [p.get('symbol') for p in self.paper_trading.get_open_positions()],
+                                        "latest_gemini_briefing_summary": gemini_summary.get('reasoning', '') if gemini_summary else ""
+                                    }
+                                    hound_results = self.hound.hunt(hound_state)
+                                    self.hound.save_candidates(hound_results)
+                                    
+                                    # Alert Slack if any high-potential memes found (score > 75)
+                                    for candidate in hound_results.get('candidates', []):
+                                        if candidate.get('meme_score', 0) >= 75:
+                                            self.alerts.send_notify('hound_alert', {
+                                                'ticker': candidate['ticker'],
+                                                'score': candidate['meme_score'],
+                                                'thesis': candidate['why_next_gme'],
+                                                'risks': candidate['risks'],
+                                                'action': candidate['action_suggestion']
+                                            })
+                                except Exception as e:
+                                    logger.warning(f"  🐕 Grok Hound failed: {e}")
                             logger.info(f"  ✅ News notification sent to #logs-silent ({new_count} new, {fresh_news_signal['article_count']} total)")
                     else:
                         logger.info("  📰 No recent news articles found")
@@ -631,24 +682,10 @@ class HighTradeOrchestrator:
             elif self.congressional_enabled:
                 logger.debug(f"  🏛️ Congressional scan: {self._congressional_scan_interval - self._congressional_scan_cycle} cycles until next scan")
 
-            # --- CORE DATA GATHERING CYCLE ---
-            # 1. News/Signals (already runs every cycle)
-            # 2. Macro (every ~60 min)
-            # 3. Congressional (every ~60 min)
-            # 4. NEW: Sector/VIX (every cycle)
-            
-            sector_result = None
-            if self.sector_analyzer:
-                sector_result = self.sector_analyzer.get_rotation_data()
-            
-            vix_result = None
-            if self.vix_analyzer:
-                vix_result = self.vix_analyzer.get_term_structure_data()
-
-            # Pass these into Gemini/Grok prompts later in the cycle...
-
-                self._fred_scan_cycle = 0
-                logger.info("📊 Running FRED macro analysis...")
+            # ── FRED Macro Tracker (every ~60 min) ────────────────────────
+            macro_result = None
+            self._fred_scan_cycle = getattr(self, '_fred_scan_cycle', 0) + 1
+            if self.fred_enabled and self._fred_scan_cycle >= self._fred_scan_interval:
                 try:
                     macro_result = self.fred.run_full_analysis()
                     self.fred.save_to_db(macro_result)

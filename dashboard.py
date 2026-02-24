@@ -80,7 +80,7 @@ def fetch_daily_briefings():
                    portfolio_assessment, watchlist_json, defcon_forecast,
                    model_confidence, created_at
             FROM daily_briefings
-            ORDER BY created_at DESC LIMIT 6
+            ORDER BY created_at DESC LIMIT 12
         """).fetchall()
         return [dict(r) for r in rows]
 
@@ -125,26 +125,31 @@ def fetch_signal_history():
 def fetch_recent_news():
     with _conn() as db:
         rows = db.execute("""
-            SELECT news_signal_id, news_score, dominant_crisis_type as crisis_type,
-                   article_count, breaking_count, sentiment_summary as sentiment,
-                   gemini_flash_json, created_at
-            FROM news_signals ORDER BY created_at DESC LIMIT 6
+            SELECT ns.news_signal_id, ns.news_score, ns.dominant_crisis_type as crisis_type,
+                   ns.article_count, ns.breaking_count, ns.sentiment_summary as sentiment,
+                   ns.gemini_flash_json, ns.created_at,
+                   ga.recommended_action as gemini_pro_action,
+                   ga.reasoning as gemini_pro_reasoning,
+                   ga.confidence_in_signal as gemini_pro_confidence,
+                   gr.second_opinion_action as grok_action,
+                   gr.x_sentiment_score as grok_sentiment,
+                   gr.reasoning as grok_reasoning
+            FROM news_signals ns
+            LEFT JOIN gemini_analysis ga ON ns.news_signal_id = ga.news_signal_id AND ga.trigger_type IN ('elevated', 'breaking')
+            LEFT JOIN grok_analysis gr ON ns.news_signal_id = gr.news_signal_id
+            ORDER BY ns.created_at DESC LIMIT 6
         """).fetchall()
-        results = []
-        for r in rows:
-            d = dict(r)
-            # Parse gemini_flash_json for action/confidence/reasoning
-            try:
-                gf = json.loads(d.get('gemini_flash_json') or '{}')
-                d['gemini_pro_action']     = gf.get('recommended_action', gf.get('action', ''))
-                d['gemini_pro_confidence'] = gf.get('confidence_in_signal', gf.get('confidence', 0))
-                d['gemini_pro_reasoning']  = gf.get('reasoning', '')
-            except Exception:
-                d['gemini_pro_action']     = ''
-                d['gemini_pro_confidence'] = 0
-                d['gemini_pro_reasoning']  = ''
-            results.append(d)
-        return results
+        return [dict(r) for r in rows]
+
+def fetch_sector_vix():
+    """Fetch latest sector and VIX term structure if available in news_signals JSON"""
+    with _conn() as db:
+        row = db.execute("SELECT gemini_flash_json FROM news_signals WHERE gemini_flash_json IS NOT NULL ORDER BY created_at DESC LIMIT 1").fetchone()
+        if not row: return {}
+        # This is a bit of a hack since we don't have a dedicated table yet, 
+        # but the orchestrator stores the results in the signals context.
+        # Actually, let's just return placeholders for now or try to parse the latest signal
+        return {}
 
 def fetch_congressional():
     with _conn() as db:
@@ -162,7 +167,16 @@ def fetch_congressional():
             FROM congressional_trades
             ORDER BY transaction_date DESC LIMIT 15
         """).fetchall()
-        return [dict(r) for r in clusters], [dict(r) for r in trades]
+        return [dict(r) for r in trades], [dict(r) for r in clusters] # swapped order for internal use if needed
+
+def fetch_hound_candidates():
+    with _conn() as db:
+        rows = db.execute("""
+            SELECT ticker, meme_score, why_next_gme, signals, risks, action_suggestion, created_at
+            FROM grok_hound_candidates
+            ORDER BY created_at DESC LIMIT 10
+        """).fetchall()
+        return [dict(r) for r in rows]
 
 
 # ─── Utility Helpers ─────────────────────────────────────────────────────────
@@ -385,13 +399,21 @@ def build_news_items(news):
         sc = '#ff4444' if score >= 70 else '#ffd700' if score >= 45 else '#888'
         ts = (n.get('created_at') or '—')[11:16]
         reasoning = (n.get('gemini_pro_reasoning') or '')[:130]
+        
+        grok_badge = ""
+        if n.get('grok_action'):
+            grok_badge = f'<span style="color:#aaa;font-size:10px;margin-left:6px;">𝕏 {action_badge(n["grok_action"])}</span>'
+            
         items.append(
             '<div class="news-item">'
             '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">'
             f'<span style="color:#888;font-size:10px;">{ts}</span>'
             f'<span style="color:{sc};font-size:13px;font-weight:700;">{score:.1f}</span>'
             f'<span style="color:#aaa;font-size:11px;">{(n.get("crisis_type","")).replace("_"," ").upper()}</span>'
+            '<div>'
             f'{action_badge(n.get("gemini_pro_action"))}'
+            f'{grok_badge}'
+            '</div>'
             '</div>'
             f'<div style="font-size:11px;color:#666;">{n.get("article_count",0)} articles &middot; {n.get("breaking_count",0)} breaking &middot; {(n.get("sentiment") or "")[:40]}</div>'
             f'<div style="font-size:11px;color:#888;margin-top:4px;font-style:italic;">{reasoning}{"…" if len(reasoning)>=130 else ""}</div>'
@@ -438,6 +460,24 @@ def build_cong_trade_rows(trades):
         )
     return ''.join(rows)
 
+def build_hound_rows(candidates):
+    if not candidates:
+        return '<tr><td colspan="5" style="color:#555;text-align:center;padding:16px;">🐕 Hound is still hunting...</td></tr>'
+    rows = []
+    for c in candidates:
+        score = int(c.get('meme_score') or 0)
+        sc = '#00ff88' if score >= 75 else '#ffd700' if score >= 50 else '#888'
+        rows.append(
+            '<tr class="trow">'
+            f'<td class="sym">{c.get("ticker","?")}</td>'
+            f'<td style="color:{sc};font-weight:700;">{score}</td>'
+            f'<td style="color:#ddd;font-size:11px;">{c.get("why_next_gme","—")}</td>'
+            f'<td>{action_badge(c.get("action_suggestion","").upper())}</td>'
+            f'<td style="color:#666;font-size:11px;">{(c.get("created_at") or "—")[11:16]}</td>'
+            '</tr>'
+        )
+    return ''.join(rows)
+
 def build_model_card(b, title, icon):
     if not b:
         return f'<div class="model-card"><div class="card-label">{icon} {title}</div><p style="color:#555;margin-top:8px;">No data yet</p></div>'
@@ -480,7 +520,7 @@ def build_model_card(b, title, icon):
 # ─── Main HTML Assembly ───────────────────────────────────────────────────────
 
 def build_html(status, positions, closed, stats, briefings, macro, watchlist,
-               sig_history, news, cong_clusters, cong_trades):
+               sig_history, news, cong_clusters, cong_trades, hound_candidates):
 
     now_str    = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     last_cycle = status.get('created_at', '—')
@@ -501,6 +541,7 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
     sig_vals  = [r['signal_score'] for r in sig_history if r.get('signal_score') is not None]
 
     latest_b = next((b for b in briefings if b.get('model_key') == 'reasoning'), briefings[0] if briefings else {})
+    latest_grok = next((b for b in briefings if b.get('model_key') == 'grok'), {})
     fast_b   = next((b for b in briefings if b.get('model_key') == 'fast'), {})
     bal_b    = next((b for b in briefings if b.get('model_key') == 'balanced'), {})
 
@@ -564,9 +605,11 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
     closed_rows    = build_closed_rows(closed)
     wl_rows        = build_wl_rows(watchlist)
     news_items     = build_news_items(news)
+    hound_rows     = build_hound_rows(hound_candidates)
     cong_cl_rows   = build_cong_cluster_rows(cong_clusters)
     cong_tr_rows   = build_cong_trade_rows(cong_trades)
-    reasoning_card = build_model_card(latest_b, 'REASONING (Pro 3)', '&#129504;')
+    reasoning_card = build_model_card(latest_b, 'REASONING (Gemini 3.1)', '🔬')
+    grok_card      = build_model_card(latest_grok, 'SECOND OPINION (Grok 4.1)', '𝕏')
     fast_card      = build_model_card(fast_b,   'FAST (Flash)',       '&#9889;')
     balanced_card  = build_model_card(bal_b,    'BALANCED (Flash 8k)','&#9878;&#65039;')
 
@@ -636,6 +679,7 @@ body { background:var(--bg); color:var(--text); font-family:'SF Mono','Fira Code
 .grid-top    { display:grid; grid-template-columns:260px 1fr 260px; gap:16px; margin-bottom:16px; }
 .grid-mid    { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }
 .grid-three  { display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px; margin-bottom:16px; }
+.grid-four   { display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:16px; margin-bottom:16px; }
 .grid-full   { margin-bottom:16px; }
 
 /* Panels */
@@ -875,8 +919,9 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
   </div>
 </div>
 
-<div class="grid-three">
+<div class="grid-four">
   {reasoning_card}
+  {grok_card}
   {fast_card}
   {balanced_card}
 </div>
@@ -961,6 +1006,21 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
 
 </div>
 
+<!-- ═══ GROK HOUND ═══ -->
+<div class="grid-full">
+  <div class="panel" style="border-color:#ff8c0044;">
+    <div class="panel-title">🐕 Grok Hound &mdash; High-Alpha &amp; Meme Opportunities</div>
+    <div class="scroll-wrap">
+      <table>
+        <thead><tr>
+          <th>Ticker</th><th>Meme Score</th><th>Thesis / Momentum</th><th>Suggestion</th><th>Found</th>
+        </tr></thead>
+        <tbody>{hound_rows}</tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
 <!-- ═══ SYSTEM ARCHITECTURE ═══ -->
 <div class="section-head">&#127959;&#65039; System Architecture</div>
 
@@ -1006,9 +1066,14 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
         <div style="color:#666;font-size:10px;margin-top:3px;">Elevated signal analysis &middot; broader reasoning on breaking news &middot; secondary daily review</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Gemini Pro 3 &mdash; Reasoning Tier</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; gemini-3-pro-preview &middot; thinking=-1 &middot; OAuth &middot; 3.1 ready</div>
+        <div class="stat-label">Gemini Pro 3.1 &mdash; Reasoning Tier</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; gemini-3.1-pro-preview &middot; thinking=-1 &middot; OAuth</div>
         <div style="color:#666;font-size:10px;margin-top:3px;">📋 4:30 PM deep daily briefing &middot; acquisition analyst &middot; pre-purchase gate &middot; 16k output tokens &middot; dynamic thinking budget</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Grok 4.1 &mdash; Parallel Analyst</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; grok-4-1-fast-reasoning &middot; X-Powered</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">𝕏 Daily Second Opinion &middot; Real-time X.com sentiment audit &middot; Contrarian signal detection &middot; Veto participant</div>
       </div>
       <div class="stat">
         <div class="stat-label">Auth &amp; Token Efficiency</div>
@@ -1083,9 +1148,10 @@ def generate_dashboard_html():
     watchlist = fetch_acquisition_watchlist()
     sig_hist  = fetch_signal_history()
     news      = fetch_recent_news()
-    cong_cl, cong_tr = fetch_congressional()
+    cong_tr, cong_cl = fetch_congressional()
+    hound_candidates = fetch_hound_candidates()
     return build_html(status, positions, closed, stats, briefings, macro,
-                      watchlist, sig_hist, news, cong_cl, cong_tr)
+                      watchlist, sig_hist, news, cong_cl, cong_tr, hound_candidates)
 
 
 # ─── Flask server ─────────────────────────────────────────────────────────────
