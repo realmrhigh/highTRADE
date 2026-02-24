@@ -477,8 +477,13 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection) -> Opt
             UPDATE stock_research_library SET status = 'analyst_pass'
             WHERE ticker = ? AND status IN ('library_ready','partial')
         """, (ticker,))
+        
+        # Move to 12h hold in acquisition_watchlist
         conn.execute("""
-            UPDATE acquisition_watchlist SET status = 'analyst_pass', notes = ?
+            UPDATE acquisition_watchlist 
+            SET status = 'analyst_pass', 
+                notes = ?,
+                created_at = CURRENT_TIMESTAMP  -- Refresh timestamp for 12h hold check
             WHERE ticker = ? AND status = 'researched'
         """, (reason, ticker))
         conn.commit()

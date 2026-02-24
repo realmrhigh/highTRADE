@@ -76,6 +76,7 @@ KNOWN_COMMANDS = {
     '/broker', '/agent',
     '/mode',
     '/interval', '/freq',
+    '/research', '/scan', '/fetch',
     '/help', '/h', '/?',
 }
 
@@ -95,6 +96,7 @@ ALIAS_MAP = {
     '/broker': '/broker', '/agent': '/broker',
     '/mode': '/mode',
     '/interval': '/interval', '/freq': '/interval',
+    '/research': '/research', '/scan': '/research', '/fetch': '/research',
     '/help': '/help', '/h': '/help', '/?': '/help',
 }
 

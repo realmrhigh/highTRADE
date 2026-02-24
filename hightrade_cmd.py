@@ -116,6 +116,11 @@ COMMANDS = {
         'aliases': ['/daily', '/report'],
         'category': 'info',
     },
+    '/research': {
+        'description': 'Run acquisition researcher now for pending queue',
+        'aliases': ['/scan', '/fetch'],
+        'category': 'control',
+    },
     '/help': {
         'description': 'Show all available commands',
         'aliases': ['/h', '/?'],
@@ -335,6 +340,7 @@ class CommandProcessor:
             '/buy':       self._handle_buy,
             '/sell':      self._handle_sell,
             '/briefing':  self._handle_briefing,
+            '/research':  self._handle_research,
         }
 
         handler = handlers.get(cmd)
@@ -348,6 +354,19 @@ class CommandProcessor:
             return {'ok': False, 'message': f"Unknown command: {cmd}"}
 
     # ── Decision Commands ─────────────────────────────────────
+
+    def _handle_research(self, args: str) -> dict:
+        """Force-run the acquisition research cycle."""
+        logger.info("🔬 /research — forcing acquisition researcher run now...")
+        try:
+            from acquisition_researcher import run_research_cycle
+            tickers = run_research_cycle()
+            return {
+                'ok': True,
+                'message': f'Research cycle complete for: {", ".join(tickers) if tickers else "None pending"}'
+            }
+        except Exception as e:
+            return {'ok': False, 'message': f'Research failed: {e}'}
 
     def _handle_yes(self, args: str) -> dict:
         orch = self.orchestrator

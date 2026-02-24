@@ -6,6 +6,7 @@ Runs autonomously to gather data, analyze it, and send alerts
 """
 
 import sys
+import os
 import logging
 import json
 from pathlib import Path
@@ -160,6 +161,7 @@ class HighTradeOrchestrator:
         self._new_interval = None  # Set by /interval command
         self._daily_briefing_date = None  # Track last briefing date
         self._acquisition_pipeline_date = None  # Track last research+analyst run
+        self._pipeline_runs = set()       # Track intraday checkpoint runs (pre-market, mid-day)
         self._morning_flash_date = None   # Track morning Flash briefing (9:30 AM)
         self._midday_flash_date  = None   # Track midday Flash briefing (12:00 PM)
         self._health_check_date  = None   # Track twice-weekly health check (Mon + Thu)
@@ -393,11 +395,15 @@ class HighTradeOrchestrator:
         logger.info(f"{'='*60}")
 
         # --- CORE DATA GATHERING (Start of Cycle) ---
+        logger.debug(f"DEBUG: Current PATH: {os.environ.get('PATH')}")
         sector_result = None
+        vix_result = None
+        grok_result = None
+        macro_result = None
+        
         if self.sector_analyzer:
             sector_result = self.sector_analyzer.get_rotation_data()
         
-        vix_result = None
         if self.vix_analyzer:
             vix_result = self.vix_analyzer.get_term_structure_data()
 
@@ -618,25 +624,38 @@ class HighTradeOrchestrator:
                             # --- 🐕 GROK HOUND (Every cycle alpha scanner) ---
                             if self.hound_enabled:
                                 try:
+                                    open_pos_tickers = [p.get('symbol') for p in self.paper_trading.get_open_positions()]
                                     hound_state = {
                                         "defcon_level": self.monitor.defcon_level,
                                         "macro_score": macro_result.get('macro_score', 50) if macro_result else 50,
-                                        "watchlist": [p.get('symbol') for p in self.paper_trading.get_open_positions()],
+                                        "watchlist": open_pos_tickers,
                                         "latest_gemini_briefing_summary": gemini_summary.get('reasoning', '') if gemini_summary else ""
                                     }
-                                    hound_results = self.hound.hunt(hound_state)
+                                    # Focus on our current watchlist/positions
+                                    hound_results = self.hound.hunt(hound_state, focus_tickers=open_pos_tickers)
                                     self.hound.save_candidates(hound_results)
                                     
-                                    # Alert Slack if any high-potential memes found (score > 75)
+                                    # Alert Slack ONLY if elite alpha found (score >= 85) and auto-promoted
                                     for candidate in hound_results.get('candidates', []):
-                                        if candidate.get('meme_score', 0) >= 75:
+                                        if candidate.get('alpha_score', 0) >= 85:
                                             self.alerts.send_notify('hound_alert', {
                                                 'ticker': candidate['ticker'],
-                                                'score': candidate['meme_score'],
-                                                'thesis': candidate['why_next_gme'],
+                                                'score': candidate['alpha_score'],
+                                                'thesis': candidate['why_next'],
                                                 'risks': candidate['risks'],
                                                 'action': candidate['action_suggestion']
                                             })
+                                            
+                                    # Trigger automated research + analysis run if new items were approved or added
+                                    try:
+                                        from acquisition_researcher import run_research_cycle
+                                        from acquisition_analyst import run_analyst_cycle
+                                        researched = run_research_cycle()
+                                        if researched:
+                                            run_analyst_cycle()
+                                    except Exception as e:
+                                        logger.warning(f"  🔬 Pipeline auto-trigger failed: {e}")
+                                        
                                 except Exception as e:
                                     logger.warning(f"  🐕 Grok Hound failed: {e}")
                             logger.info(f"  ✅ News notification sent to #logs-silent ({new_count} new, {fresh_news_signal['article_count']} total)")
@@ -928,6 +947,9 @@ Check dashboard for detailed analysis.
 
         # ── Intraday Flash Briefings (morning 9:30 AM, midday 12:00 PM) ───
         self._check_flash_briefings()
+
+        # ── Acquisition Pipeline Checkpoints (pre-market 9:00 AM, mid-day 12:30 PM) ─
+        self._check_acquisition_pipeline()
 
         # ── Daily Briefing (fires once per day at/after 4:30 PM) ──────────
         self._check_daily_briefing()
@@ -1227,6 +1249,45 @@ DATA GAPS: On a final line starting with "GAPS:" list any specific data that was
         self.alerts.send_notify('flash_briefing', payload)
         self.alerts.send_silent_log('flash_briefing', payload)
 
+    def _check_acquisition_pipeline(self, force: bool = False):
+        """
+        Check and trigger the acquisition pipeline at specific checkpoints:
+        1. Pre-market: 9:00 AM (Ready before open)
+        2. Mid-day: 12:30 PM (Mid-day adjustment)
+        3. Close: Handled by _check_daily_briefing
+        """
+        try:
+            now = datetime.now()
+            today = now.strftime('%Y-%m-%d')
+            
+            # Define checkpoints
+            checkpoints = [
+                (9, 0, 'pre_market'),   # 9:00 AM
+                (12, 30, 'mid_day')     # 12:30 PM
+            ]
+            
+            for hour, minute, label in checkpoints:
+                # Check if it's past the checkpoint and we haven't run it today
+                past_time = (now.hour > hour or (now.hour == hour and now.minute >= minute))
+                run_key = f"{label}_{today}"
+                
+                if (force or past_time) and run_key not in self._pipeline_runs:
+                    logger.info(f"🔬 Triggering {label.replace('_', ' ')} acquisition analysis...")
+                    self._pipeline_runs.add(run_key)
+                    
+                    # 1. Verification cycle (Flash) — check existing conditionals
+                    try:
+                        from acquisition_verifier import run_verification_cycle
+                        run_verification_cycle()
+                    except Exception as e:
+                        logger.warning(f"  ⚠️ Pipeline verification failed: {e}")
+                        
+                    # 2. Researcher -> Analyst chain for any pending items (from Hound etc)
+                    self._run_acquisition_pipeline(today, skip_date_check=True)
+                    
+        except Exception as e:
+            logger.warning(f"Pipeline checkpoint check failed: {e}")
+
     def _check_daily_briefing(self, force: bool = False):
         """Fire daily briefing once per day after market close (4:30 PM ET)."""
         try:
@@ -1258,27 +1319,24 @@ DATA GAPS: On a final line starting with "GAPS:" list any specific data that was
                     )
 
             # Trigger acquisition pipeline after briefing (researcher then analyst)
-            # The briefing has already queued new tickers into acquisition_watchlist.
-            # Run these with a 60-second delay to not overlap Gemini calls.
+            # This handles the "at close" requirement.
             self._run_acquisition_pipeline(today)
 
         except Exception as e:
             logger.warning(f"Daily briefing failed: {e}")
 
-    def _run_acquisition_pipeline(self, date_str: str):
+    def _run_acquisition_pipeline(self, date_str: str, skip_date_check: bool = False):
         """
-        Run the acquisition research → analyst pipeline once per day.
-
-        Called automatically after the daily briefing fires.
-        Researcher collects yfinance + SEC + internal data on pending tickers,
-        then Analyst runs Gemini 3 Pro to set conditionals above confidence threshold.
-        The Flash verifier already ran as part of daily_briefing._save_to_db.
+        Run the acquisition research → analyst pipeline.
+        
+        skip_date_check: if True, runs even if it already ran today (for intraday checkpoints).
         """
-        if self._acquisition_pipeline_date == date_str:
-            return  # Already ran today
+        if not skip_date_check and self._acquisition_pipeline_date == date_str:
+            return  # Already ran full daily pipeline
 
-        logger.info("🔬 Starting acquisition pipeline: researcher → analyst...")
-        self._acquisition_pipeline_date = date_str
+        logger.info("🔬 Running acquisition pipeline: researcher → analyst...")
+        if not skip_date_check:
+            self._acquisition_pipeline_date = date_str
 
         import time as _time
 

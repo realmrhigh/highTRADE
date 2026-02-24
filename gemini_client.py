@@ -113,6 +113,7 @@ def _get_cli_status() -> Tuple[bool, str]:
     _cli_path = binary
     _cli_authenticated = True
     logger.debug(f"Gemini CLI authenticated at {binary}")
+    logger.info(f"Using Gemini CLI binary: {binary}") # Elevated log level for visibility
     return True, binary
 
 
@@ -170,11 +171,13 @@ def _call_via_cli(prompt: str, cfg: dict) -> Tuple[Optional[str], int, int]:
             capture_output=True,
             text=True,
             timeout=180,
+            stdin=subprocess.DEVNULL, # prevent hanging on TTY requests
             env={**os.environ, 'GEMINI_API_KEY': ''},  # blank API key forces OAuth
         )
 
         if result.returncode != 0:
-            logger.warning(f"CLI exited {result.returncode}: {result.stderr[:200]}")
+            err_msg = (result.stderr or '').strip()
+            logger.warning(f"CLI exited {result.returncode} | Error: {err_msg[:200]}")
             return None, 0, 0
 
         data = json.loads(result.stdout)

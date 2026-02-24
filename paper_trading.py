@@ -336,6 +336,29 @@ class PaperTradingEngine:
                 ))
                 self.conn.commit()
 
+                # --- NEW: Pipeline Cleanup ---
+                # Once bought, archive from procurement so it doesn't stay in watchlist/hound
+                try:
+                    # Mark as archived in acquisition watchlist
+                    self.cursor.execute("""
+                        UPDATE acquisition_watchlist SET status = 'archived' 
+                        WHERE ticker = ? AND status != 'archived'
+                    """, (asset_symbol,))
+                    
+                    # Mark as triggered in conditional tracking (if not already)
+                    self.cursor.execute("""
+                        UPDATE conditional_tracking SET status = 'triggered' 
+                        WHERE ticker = ? AND status = 'active'
+                    """, (asset_symbol,))
+                    
+                    # Mark as watched in grok hound candidates
+                    self.cursor.execute("""
+                        UPDATE grok_hound_candidates SET status = 'watched' 
+                        WHERE ticker = ? AND status = 'pending'
+                    """, (asset_symbol,))
+                except Exception as e:
+                    logger.warning(f"Pipeline cleanup failed for {asset_symbol}: {e}")
+
                 # Get the trade_id
                 trade_id = self.cursor.lastrowid
                 trade_ids.append(trade_id)
@@ -774,6 +797,15 @@ class PaperTradingEngine:
             ))
             self.conn.commit()
             trade_id = self.cursor.lastrowid
+
+            # --- NEW: Pipeline Cleanup ---
+            try:
+                self.cursor.execute("UPDATE acquisition_watchlist SET status = 'archived' WHERE ticker = ?", (ticker,))
+                self.cursor.execute("UPDATE conditional_tracking SET status = 'triggered' WHERE ticker = ?", (ticker,))
+                self.cursor.execute("UPDATE grok_hound_candidates SET status = 'watched' WHERE ticker = ?", (ticker,))
+                self.conn.commit()
+            except Exception:
+                pass
 
             logger.info(
                 f"✅ Manual buy executed: {shares} × {ticker} @ ${entry_price:.2f} "

@@ -583,10 +583,10 @@ class AlertSystem:
                 risks  = data.get('risks', [])
                 action = data.get('action', 'monitor')
                 
-                score_bar = '🔥' * int(score / 20) + '⚪' * (5 - int(score / 20))
+                score_bar = '🚀' * int(score / 20) + '⚪' * (5 - int(score / 20))
                 text = (
                     f"🐕 *Grok Hound Alert* — `${ticker}`\n"
-                    f"Meme Potential: {score_bar} ({score}/100)\n"
+                    f"Alpha Score: {score_bar} ({score}/100)\n"
                     f"🎯 *Thesis:* {thesis}\n"
                     f"⚠️ *Risks:* {', '.join(risks[:3])}\n"
                     f"🛠️ *Suggestion:* {action.upper()}"

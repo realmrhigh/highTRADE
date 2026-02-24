@@ -12,12 +12,12 @@ from typing import Dict, Optional
 logger = logging.getLogger(__name__)
 
 # VIX: CBOE Volatility Index (Spot)
-# VXV: CBOE 3-Month Volatility Index
-# VXMT: CBOE 6-Month Volatility Index
+# VIX3M: CBOE 3-Month Volatility Index
+# VIX6M: CBOE 6-Month Volatility Index
 VOLATILITY_TICKERS = {
     '^VIX': 'VIX Spot',
-    '^VXV': 'VIX 3-Month',
-    '^VXMT': 'VIX 6-Month'
+    '^VIX3M': 'VIX 3-Month',
+    '^VIX6M': 'VIX 6-Month'
 }
 
 class VIXTermStructure:
@@ -39,8 +39,8 @@ class VIXTermStructure:
 
             # Get latest values
             vix = float(data['^VIX'].iloc[-1])
-            vxv = float(data['^VXV'].iloc[-1])
-            vxmt = float(data['^VXMT'].iloc[-1])
+            vxv = float(data['^VIX3M'].iloc[-1])
+            vxmt = float(data['^VIX6M'].iloc[-1])
 
             # Ratios
             # VIX/VXV > 1 indicates backwardation (near-term fear > long-term fear) - BEARISH

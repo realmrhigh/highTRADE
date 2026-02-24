@@ -172,9 +172,10 @@ def fetch_congressional():
 def fetch_hound_candidates():
     with _conn() as db:
         rows = db.execute("""
-            SELECT ticker, meme_score, why_next_gme, signals, risks, action_suggestion, created_at
+            SELECT ticker, alpha_score as meme_score, why_next as why_next_gme, signals, risks, action_suggestion, created_at
             FROM grok_hound_candidates
-            ORDER BY created_at DESC LIMIT 10
+            WHERE status = 'pending'
+            ORDER BY alpha_score DESC LIMIT 10
         """).fetchall()
         return [dict(r) for r in rows]
 
@@ -314,7 +315,7 @@ def build_open_rows(positions):
         bar_c = '#00ff88' if pnl_d >= 0 else '#ff4444'
         rows.append(
             '<tr class="trow">'
-            f'<td class="sym">{p.get("asset_symbol", "?")}</td>'
+            f'<td class="sym" onclick="showChart(\'{p.get("asset_symbol", "?")}\')">{p.get("asset_symbol", "?")}</td>'
             f'<td>{sh:,}</td>'
             f'<td>${ep:,.2f}</td>'
             f'<td>${cp:,.2f}</td>'
@@ -339,7 +340,7 @@ def build_closed_rows(closed):
         color = pnl_color(pnl_d)
         rows.append(
             '<tr class="trow">'
-            f'<td class="sym">{t.get("asset_symbol", "?")}</td>'
+            f'<td class="sym" onclick="showChart(\'{t.get("asset_symbol", "?")}\')">{t.get("asset_symbol", "?")}</td>'
             f'<td>{int(t.get("shares") or 0):,}</td>'
             f'<td>${float(t.get("entry_price") or 0):,.2f}</td>'
             f'<td>${float(t.get("exit_price") or 0):,.2f}</td>'
@@ -378,7 +379,7 @@ def build_wl_rows(watchlist):
         src    = w.get('source', 'daily_briefing')
         rows.append(
             '<tr class="trow">'
-            f'<td class="sym">{w.get("ticker", "?")}</td>'
+            f'<td class="sym" onclick="showChart(\'{w.get("ticker", "?")}\')">{w.get("ticker", "?")}</td>'
             f'<td>{source_badge(src)}</td>'
             f'<td><span style="color:{conf_c};font-weight:700;">{conf:.0%}</span></td>'
             f'<td>{regime_badge(w.get("market_regime"))}</td>'
@@ -407,7 +408,7 @@ def build_news_items(news):
         items.append(
             '<div class="news-item">'
             '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">'
-            f'<span style="color:#888;font-size:10px;">{ts}</span>'
+            f'<span style="color:#888;font-size:10px;">{ts} <span onclick="sendCommand(\'/update\')" style="cursor:pointer;margin-left:5px;" title="Rerun Analysis">&#8635;</span></span>'
             f'<span style="color:{sc};font-size:13px;font-weight:700;">{score:.1f}</span>'
             f'<span style="color:#aaa;font-size:11px;">{(n.get("crisis_type","")).replace("_"," ").upper()}</span>'
             '<div>'
@@ -462,18 +463,23 @@ def build_cong_trade_rows(trades):
 
 def build_hound_rows(candidates):
     if not candidates:
-        return '<tr><td colspan="5" style="color:#555;text-align:center;padding:16px;">🐕 Hound is still hunting...</td></tr>'
+        return '<tr><td colspan="6" style="color:#555;text-align:center;padding:16px;">🐕 Hound is still hunting...</td></tr>'
     rows = []
     for c in candidates:
         score = int(c.get('meme_score') or 0)
         sc = '#00ff88' if score >= 75 else '#ffd700' if score >= 50 else '#888'
+        ticker = c.get('ticker', '?')
         rows.append(
             '<tr class="trow">'
-            f'<td class="sym">{c.get("ticker","?")}</td>'
+            f'<td class="sym" onclick="showChart(\'{ticker}\')">{ticker}</td>'
             f'<td style="color:{sc};font-weight:700;">{score}</td>'
             f'<td style="color:#ddd;font-size:11px;">{c.get("why_next_gme","—")}</td>'
             f'<td>{action_badge(c.get("action_suggestion","").upper())}</td>'
             f'<td style="color:#666;font-size:11px;">{(c.get("created_at") or "—")[11:16]}</td>'
+            f'<td><div style="display:flex;gap:5px;">'
+            f'<button onclick="approveTicker(\'{ticker}\')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button>'
+            f'<button onclick="rejectTicker(\'{ticker}\')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button>'
+            f'</div></td>'
             '</tr>'
         )
     return ''.join(rows)
@@ -492,27 +498,51 @@ def build_model_card(b, title, icon):
         wl = json.loads(b.get('watchlist_json') or '[]')
     except Exception:
         wl = []
-    ticker_tags = ''.join(f'<span class="ticker-tag">{t}</span>' for t in wl)
+    ticker_tags = ''.join(f'<span class="ticker-tag" style="cursor:pointer;" onclick="showChart(\'{t}\')">{t}</span>' for t in wl)
+    
+    # Extract full text for detailed fields with fallbacks for legacy/varied keys
+    sig_quality = b.get('signal_quality') or b.get('signal_quality_assessment') or '—'
+    port_assessment = b.get('portfolio_assessment') or '—'
+    risk = b.get('biggest_risk') or b.get('biggest_risk_today') or '—'
+    opp = b.get('biggest_opportunity') or b.get('biggest_opportunity_today') or '—'
+    
     return (
-        '<div class="model-card">'
-        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">'
+        '<div class="model-card" style="display:flex;flex-direction:column;max-height:600px;">'
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-shrink:0;">'
         f'<div class="card-label">{icon} {title}</div>'
         '<div style="display:flex;gap:8px;align-items:center;">'
         f'{regime_badge(b.get("market_regime"))}'
         f'<span style="color:{conf_c};font-weight:700;font-size:13px;">{conf:.0%}</span>'
         '</div></div>'
-        f'<div style="color:#ddd;font-size:12px;line-height:1.6;margin-bottom:10px;">{b.get("headline_summary","—")}</div>'
-        f'<div class="themes-row">{theme_pills}</div>'
-        '<div class="two-col" style="margin-top:10px;">'
-        '<div><div class="micro-label">BIGGEST RISK</div>'
-        f'<div style="color:#ff8888;font-size:11px;line-height:1.5;word-wrap:break-word;overflow-wrap:break-word;">{(b.get("biggest_risk") or "—")[:180]}</div></div>'
-        '<div><div class="micro-label">OPPORTUNITY</div>'
-        f'<div style="color:#88ff88;font-size:11px;line-height:1.5;word-wrap:break-word;overflow-wrap:break-word;">{(b.get("biggest_opportunity") or "—")[:180]}</div></div>'
+        
+        '<div class="scroll-wrap" style="flex:1;overflow-y:auto;padding-right:5px;">'
+        f'<div style="color:#ddd;font-size:12px;line-height:1.6;margin-bottom:12px;font-weight:bold;">{b.get("headline_summary","—")}</div>'
+        f'<div class="themes-row" style="margin-bottom:12px;">{theme_pills}</div>'
+        
+        '<div style="margin-bottom:10px;">'
+        '<div class="micro-label">SIGNAL QUALITY</div>'
+        f'<div style="color:#aaa;font-size:11px;line-height:1.5;">{sig_quality}</div>'
         '</div>'
-        '<div style="margin-top:10px;"><div class="micro-label">WATCHLIST</div>'
+        
+        '<div style="margin-bottom:10px;">'
+        '<div class="micro-label">PORTFOLIO ASSESSMENT</div>'
+        f'<div style="color:#aaa;font-size:11px;line-height:1.5;">{port_assessment}</div>'
+        '</div>'
+        
+        '<div class="two-col" style="margin-bottom:10px;">'
+        '<div><div class="micro-label">BIGGEST RISK</div>'
+        f'<div style="color:#ff8888;font-size:11px;line-height:1.5;">{risk}</div></div>'
+        '<div><div class="micro-label">OPPORTUNITY</div>'
+        f'<div style="color:#88ff88;font-size:11px;line-height:1.5;">{opp}</div></div>'
+        '</div>'
+        
+        '<div style="margin-bottom:10px;"><div class="micro-label">WATCHLIST</div>'
         f'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">{ticker_tags}</div></div>'
-        '<div style="margin-top:8px;"><div class="micro-label">DEFCON FORECAST</div>'
-        f'<div style="color:#aaa;font-size:11px;line-height:1.5;word-wrap:break-word;overflow-wrap:break-word;">{(b.get("defcon_forecast") or "—")[:180]}</div></div>'
+        
+        '<div><div class="micro-label">DEFCON FORECAST</div>'
+        f'<div style="color:#888;font-size:11px;line-height:1.5;">{b.get("defcon_forecast", "—")}</div></div>'
+        '</div>'
+        
         '</div>'
     )
 
@@ -540,7 +570,7 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
     news_vals = [r['news_score']   for r in sig_history if r.get('news_score') is not None]
     sig_vals  = [r['signal_score'] for r in sig_history if r.get('signal_score') is not None]
 
-    latest_b = next((b for b in briefings if b.get('model_key') == 'reasoning'), briefings[0] if briefings else {})
+    latest_b = next((b for b in briefings if b.get('model_key') == 'reasoning'), {})
     latest_grok = next((b for b in briefings if b.get('model_key') == 'grok'), {})
     fast_b   = next((b for b in briefings if b.get('model_key') == 'fast'), {})
     bal_b    = next((b for b in briefings if b.get('model_key') == 'balanced'), {})
@@ -610,8 +640,6 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
     cong_tr_rows   = build_cong_trade_rows(cong_trades)
     reasoning_card = build_model_card(latest_b, 'REASONING (Gemini 3.1)', '🔬')
     grok_card      = build_model_card(latest_grok, 'SECOND OPINION (Grok 4.1)', '𝕏')
-    fast_card      = build_model_card(fast_b,   'FAST (Flash)',       '&#9889;')
-    balanced_card  = build_model_card(bal_b,    'BALANCED (Flash 8k)','&#9878;&#65039;')
 
     macro_sig_pills = ''.join(sig_pill(s) for s in macro_sigs)
 
@@ -658,6 +686,7 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>HighTrade Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
 :root {
   --bg:#08090f; --panel:#0d0e1a; --border:#1e2040;
@@ -707,7 +736,8 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
      padding:6px 8px; border-bottom:1px solid var(--border); text-align:left; font-weight:400; }
 .trow td { padding:8px 8px; border-bottom:1px solid #111; font-size:12px; }
 .trow:hover { background:#ffffff05; }
-.sym { font-weight:700; color:var(--accent); font-size:14px; }
+.sym { font-weight:700; color:var(--accent); font-size:14px; cursor:pointer; text-decoration:none; }
+.sym:hover { text-decoration:underline; color:#fff; }
 
 /* Model cards */
 .model-card { background:#0a0b14; border:1px solid var(--border); border-radius:8px; padding:14px; }
@@ -756,6 +786,24 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
 .wr-bar  { background:#111; border-radius:4px; height:6px; overflow:hidden; margin-top:4px; }
 .wr-fill { height:100%; border-radius:4px; background:linear-gradient(90deg,var(--green),#00d4ff); }
 
+/* Chart Modal */
+#chart-modal { 
+    display:none; position:fixed; z-index:1000; left:0; top:0; width:100%; height:100%; 
+    background:rgba(0,0,0,0.85); backdrop-filter:blur(5px);
+}
+.modal-content {
+    background:var(--panel); margin:5% auto; padding:24px; border:1px solid var(--border);
+    width:80%; max-width:900px; border-radius:12px; box-shadow:0 20px 50px rgba(0,0,0,0.5);
+}
+.chart-controls { display:flex; gap:10px; margin-bottom:20px; }
+.chart-btn { 
+    background:#1a1a2e; color:#888; border:1px solid var(--border); padding:6px 12px; 
+    border-radius:4px; cursor:pointer; font-size:11px; font-weight:700;
+}
+.chart-btn.active { background:var(--accent); color:#000; border-color:var(--accent); }
+.close-modal { float:right; cursor:pointer; font-size:24px; color:var(--dim); }
+.close-modal:hover { color:#fff; }
+
 /* Footer */
 .footer { text-align:center; color:#2a2a40; font-size:10px; letter-spacing:2px; padding:24px 0; margin-top:10px; }
 </style>
@@ -766,7 +814,7 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
 <!-- ═══ HEADER ═══ -->
 <div class="header">
   <div>
-    <div class="header-title">&#9889; HIGHTRADE</div>
+    <div class="header-title">&#9889; HIGHTRADE <span style="font-size:10px;vertical-align:middle;opacity:0.5;">v2.4-INTERACTIVE</span></div>
     <div style="font-size:10px;color:#2a3a4a;letter-spacing:3px;margin-top:3px;">AUTONOMOUS TRADING INTELLIGENCE SYSTEM</div>
   </div>
   <div class="header-meta">
@@ -775,6 +823,183 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
     Last cycle: {last_cycle}
   </div>
 </div>
+
+<!-- ═══ COMMAND CENTER ═══ -->
+<div class="grid-full">
+  <div class="panel" style="border-color:var(--accent)44;">
+    <div class="panel-title">📡 Command Center &mdash; AI &amp; Execution Control</div>
+    <div style="display:grid;grid-template-columns:1fr 300px;gap:20px;">
+      
+      <!-- Custom Prompt Box -->
+      <div>
+        <div class="micro-label">CUSTOM AI PROMPT</div>
+        <div style="display:flex;gap:10px;margin-bottom:10px;">
+          <select id="model-select" style="background:#1a1a2e;color:#ddd;border:1px solid var(--border);padding:5px;border-radius:4px;">
+            <option value="reasoning">Gemini 3.1 Pro (Reasoning)</option>
+            <option value="balanced">Gemini 2.5 Flash (Balanced)</option>
+            <option value="fast">Gemini 2.5 Flash (Fast)</option>
+            <option value="grok">Grok 4.1 (X-Powered)</option>
+          </select>
+          <input type="text" id="custom-prompt" placeholder="Ask AI about the market, positions, or specific tickers..." 
+                 style="flex:1;background:#0a0b14;color:var(--text);border:1px solid var(--border);padding:8px;border-radius:4px;">
+          <button onclick="sendPrompt()" style="background:var(--accent);color:#000;border:none;padding:0 20px;border-radius:4px;font-weight:700;cursor:pointer;">SEND</button>
+        </div>
+        <div id="ai-response" style="background:#0a0b14;border:1px solid #111;border-radius:4px;padding:10px;min-height:60px;font-size:12px;color:#aaa;white-space:pre-wrap;">AI response will appear here...</div>
+      </div>
+
+      <!-- Quick Control Buttons -->
+      <div style="border-left:1px solid #111;padding-left:20px;">
+        <div class="micro-label">SYSTEM OVERRIDES</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:5px;">
+          <button onclick="sendCommand('/status')" style="background:#1a1a2e;color:var(--accent);border:1px solid var(--accent)44;padding:8px;border-radius:4px;cursor:pointer;">STATUS</button>
+          <button onclick="sendCommand('/update')" style="background:#1a1a2e;color:var(--green);border:1px solid var(--green)44;padding:8px;border-radius:4px;cursor:pointer;">RUN CYCLE</button>
+          <button onclick="sendCommand('/hold')" style="background:#1a1a2e;color:var(--gold);border:1px solid var(--gold)44;padding:8px;border-radius:4px;cursor:pointer;">HOLD</button>
+          <button onclick="sendCommand('/start')" style="background:#1a1a2e;color:var(--green);border:1px solid var(--green)44;padding:8px;border-radius:4px;cursor:pointer;">START</button>
+          <button onclick="sendCommand('/briefing')" style="background:#1a1a2e;color:#c084fc;border:1px solid #c084fc44;padding:8px;border-radius:4px;cursor:pointer;">DAILY RPT</button>
+          <button onclick="sendCommand('/research')" style="background:#1a1a2e;color:var(--accent);border:1px solid var(--accent)44;padding:8px;border-radius:4px;cursor:pointer;">RESEARCH</button>
+          <button onclick="sendCommand('/estop')" style="background:#1a1a2e;color:var(--red);border:1px solid var(--red)44;padding:8px;border-radius:4px;cursor:pointer;">E-STOP</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+async function sendCommand(cmd) {{
+    const btn = event.target;
+    const originalText = btn.innerText;
+    btn.innerText = 'WAIT...';
+    btn.disabled = true;
+    
+    try {{
+        const resp = await fetch('/api/command', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{ command: cmd }})
+        }});
+        const data = await resp.json();
+        alert(data.message || 'Command sent successfully');
+    }} catch (e) {{
+        alert('Error: ' + e);
+    }} finally {{
+        btn.innerText = originalText;
+        btn.disabled = false;
+    }}
+}}
+
+async function sendPrompt() {{
+    const promptInput = document.getElementById('custom-prompt');
+    const prompt = promptInput.value;
+    const model = document.getElementById('model-select').value;
+    const output = document.getElementById('ai-response');
+    
+    if (!prompt) return;
+    
+    // Append user message to local log
+    const timestamp = new Date().toLocaleTimeString();
+    appendChat('USER', prompt, timestamp);
+    promptInput.value = '';
+    
+    output.innerText = '🤖 Thinking...';
+    output.style.color = 'var(--accent)';
+    
+    try {{
+        const resp = await fetch('/api/prompt', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{ prompt, model }})
+        }});
+        const data = await resp.json();
+        if (data.ok) {{
+            output.innerText = data.response;
+            output.style.color = '#ddd';
+            appendChat('AI (' + model + ')', data.response, new Date().toLocaleTimeString());
+        }} else {{
+            output.innerText = '❌ Error: ' + data.message;
+            output.style.color = 'var(--red)';
+        }}
+    }} catch (e) {{
+        output.innerText = '❌ Failed to connect to server';
+        output.style.color = 'var(--red)';
+    }}
+}}
+
+function appendChat(role, text, time) {{
+    const log = JSON.parse(localStorage.getItem('hightrade_chat_log') || '[]');
+    log.push({{ role, text, time }});
+    // Keep last 20 messages
+    if (log.length > 20) log.shift();
+    localStorage.setItem('hightrade_chat_log', JSON.stringify(log));
+    renderChat();
+}}
+
+function renderChat() {{
+    const output = document.getElementById('ai-response');
+    if (!output) return;
+    const log = JSON.parse(localStorage.getItem('hightrade_chat_log') || '[]');
+    if (log.length === 0) {{
+        output.innerText = 'AI response will appear here...';
+        return;
+    }}
+    
+    output.innerHTML = log.map(m => 
+        `<div style="margin-bottom:8px; border-bottom:1px solid #ffffff05; padding-bottom:4px;">
+            <span style="color:var(--dim); font-size:9px;">[${{m.time}}]</span> 
+            <b style="color:${{m.role === 'USER' ? 'var(--accent)' : 'var(--green)'}}; font-size:10px;">${{m.role}}:</b> 
+            <div style="margin-top:2px; color:#ccc; font-size:11px;">${{m.text}}</div>
+        </div>`
+    ).join('');
+    // Scroll to bottom
+    output.scrollTop = output.scrollHeight;
+}}
+
+// Initialize chat on load
+setTimeout(renderChat, 100);
+
+async function approveTicker(ticker) {{
+    if (!confirm('Send ' + ticker + ' to Acquisition Pipeline for deep analysis?')) return;
+    
+    try {{
+        const resp = await fetch('/api/approve', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{ ticker: ticker }})
+        }});
+        const data = await resp.json();
+        if (data.ok) {{
+            alert(data.message);
+            location.reload();
+        }} else {{
+            alert('Error: ' + data.message);
+        }}
+    }} catch (e) {{
+        alert('Error: ' + e);
+    }}
+}}
+
+async function rejectTicker(ticker) {{
+    if (!confirm('Are you sure you want to ignore ' + ticker + '?')) return;
+    
+    try {{
+        const resp = await fetch('/api/reject', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{ ticker: ticker }})
+        }});
+        const data = await resp.json();
+        if (data.ok) location.reload();
+        else alert('Error: ' + data.message);
+    }} catch (e) {{
+        alert('Error: ' + e);
+    }}
+}}
+
+// Handle Enter key in prompt box
+document.getElementById('custom-prompt')?.addEventListener('keypress', function (e) {{
+    if (e.key === 'Enter') sendPrompt();
+}});
+</script>
 
 <!-- ═══ ROW 1: DEFCON · PORTFOLIO · MACRO ═══ -->
 <div class="grid-top">
@@ -890,40 +1115,12 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
   </div>
 </div>
 
-<!-- ═══ DAILY INTELLIGENCE BRIEFING ═══ -->
-<div class="section-head">&#129504; Daily Intelligence Briefing &mdash; {briefing_date}</div>
+<!-- ═══ DAILY INTELLIGENCE CONSENSUS ═══ -->
+<div class="section-head">&#129504; Daily Intelligence Consensus &mdash; {briefing_date}</div>
 
-<div class="grid-full">
-  <div class="panel" style="border-color:#7eb8f733;">
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:20px;">
-      <div style="flex:1;">
-        <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;">
-          {regime_badge(latest_b.get('market_regime'))}
-          <span style="color:#888;font-size:11px;">Confidence: <span style="color:{latest_conf_c};font-weight:700;">{latest_conf:.0%}</span></span>
-          <span style="color:#888;font-size:11px;">&bull; Gemini Pro 3 Reasoning</span>
-        </div>
-        <div style="color:#ddd;font-size:13px;line-height:1.75;">{latest_b.get('headline_summary','No briefing available. Run /briefing to generate one.')}</div>
-        <div class="themes-row" style="margin-top:10px;">{latest_theme_pills}</div>
-      </div>
-      <div style="min-width:240px;max-width:340px;flex-shrink:0;">
-        <div style="margin-bottom:12px;">
-          <div class="micro-label" style="margin-bottom:4px;">Signal Quality Assessment</div>
-          <div style="color:#aaa;font-size:11px;line-height:1.6;word-wrap:break-word;overflow-wrap:break-word;white-space:normal;">{(latest_b.get('signal_quality') or '—')[:280]}</div>
-        </div>
-        <div>
-          <div class="micro-label" style="margin-bottom:4px;">Portfolio Assessment</div>
-          <div style="color:#aaa;font-size:11px;line-height:1.6;word-wrap:break-word;overflow-wrap:break-word;white-space:normal;">{(latest_b.get('portfolio_assessment') or '—')[:280]}</div>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<div class="grid-four">
+<div class="grid-mid">
   {reasoning_card}
   {grok_card}
-  {fast_card}
-  {balanced_card}
 </div>
 
 <!-- ═══ PORTFOLIO POSITIONS ═══ -->
@@ -1009,11 +1206,11 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
 <!-- ═══ GROK HOUND ═══ -->
 <div class="grid-full">
   <div class="panel" style="border-color:#ff8c0044;">
-    <div class="panel-title">🐕 Grok Hound &mdash; High-Alpha &amp; Meme Opportunities</div>
+    <div class="panel-title">🐕 Grok Hound &mdash; High-Alpha &amp; Momentum Opportunities</div>
     <div class="scroll-wrap">
       <table>
         <thead><tr>
-          <th>Ticker</th><th>Meme Score</th><th>Thesis / Momentum</th><th>Suggestion</th><th>Found</th>
+          <th>Ticker</th><th>Alpha Score</th><th>Alpha Thesis</th><th>Suggestion</th><th>Found</th><th>Action</th>
         </tr></thead>
         <tbody>{hound_rows}</tbody>
       </table>
@@ -1129,6 +1326,188 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
 
 <div class="footer">HIGHTRADE &middot; PAPER TRADING &middot; NOT FINANCIAL ADVICE &middot; {now_str}</div>
 </div>
+
+<!-- ═══ CHART MODAL ═══ -->
+<div id="chart-modal" onclick="if(event.target==this)closeChart()">
+    <div class="modal-content">
+        <span class="close-modal" onclick="closeChart()">&times;</span>
+        <div id="modal-header" style="margin-bottom:20px;">
+            <h2 id="modal-ticker" style="color:var(--accent); letter-spacing:2px;">TICKER</h2>
+            <div id="modal-price" style="font-size:24px; font-weight:700;">$0.00</div>
+            <div id="modal-change" style="font-size:14px;">+0.00%</div>
+        </div>
+        <div class="chart-controls">
+            <button class="chart-btn" id="btn-1d" onclick="updateChart('1d')">1D</button>
+            <button class="chart-btn" id="btn-5d" onclick="updateChart('5d')">5D</button>
+            <button class="chart-btn active" id="btn-1mo" onclick="updateChart('1mo')">1M</button>
+            <button class="chart-btn" id="btn-1y" onclick="updateChart('1y')">1Y</button>
+        </div>
+        <div style="height:400px; width:100%;">
+            <canvas id="tickerChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<script>
+let currentTicker = '';
+let priceChart = null;
+
+// --- CHART LOGIC ---
+async function showChart(ticker) {{
+    currentTicker = ticker;
+    document.getElementById('chart-modal').style.display = 'block';
+    updateChart('1mo');
+}}
+
+function closeChart() {{
+    document.getElementById('chart-modal').style.display = 'none';
+}}
+
+async function updateChart(period) {{
+    document.querySelectorAll('.chart-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('btn-' + period).classList.add('active');
+    
+    try {{
+        const resp = await fetch(`/api/history/${{currentTicker}}?period=${{period}}`);
+        const data = await resp.json();
+        if (!data.ok) throw new Error(data.message);
+        
+        document.getElementById('modal-ticker').innerText = data.ticker;
+        document.getElementById('modal-price').innerText = '$' + data.current.toLocaleString();
+        const changeEl = document.getElementById('modal-change');
+        changeEl.innerText = (data.change_pct >= 0 ? '+' : '') + data.change_pct + '%';
+        changeEl.style.color = data.change_pct >= 0 ? 'var(--green)' : 'var(--red)';
+        
+        const ctx = document.getElementById('tickerChart').getContext('2d');
+        if (priceChart) priceChart.destroy();
+        const chartColor = data.change_pct >= 0 ? '#00ff88' : '#ff4444';
+        
+        priceChart = new Chart(ctx, {{
+            type: 'line',
+            data: {{
+                labels: data.labels,
+                datasets: [{{
+                    data: data.prices,
+                    borderColor: chartColor,
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    tension: 0.1,
+                    fill: true,
+                    backgroundColor: chartColor + '11'
+                }}]
+            }},
+            options: {{
+                responsive: true, maintainAspectRatio: false,
+                plugins: {{ legend: {{ display: false }} }},
+                scales: {{
+                    x: {{ display: false }},
+                    y: {{ grid: {{ color: '#1e2040' }}, ticks: {{ color: '#64748b' }} }}
+                }},
+                interaction: {{ intersect: false, mode: 'index' }}
+            }}
+        }});
+    }} catch (e) {{ console.error(e); }}
+}}
+
+// --- COMMAND LOGIC ---
+async function sendCommand(cmd) {{
+    const btn = event?.target;
+    const originalText = btn?.innerText;
+    if (btn) {{ btn.innerText = 'WAIT...'; btn.disabled = true; }}
+    
+    try {{
+        const resp = await fetch('/api/command', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{ command: cmd }})
+        }});
+        const data = await resp.json();
+        alert(data.message || 'Command sent successfully');
+    }} catch (e) {{ alert('Error: ' + e); }}
+    finally {{ if (btn) {{ btn.innerText = originalText; btn.disabled = false; }} }}
+}}
+
+async function approveTicker(ticker) {{
+    if (!confirm('Send ' + ticker + ' to Acquisition Pipeline?')) return;
+    try {{
+        const resp = await fetch('/api/approve', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{ ticker: ticker }})
+        }});
+        const data = await resp.json();
+        if (data.ok) {{ alert(data.message); location.reload(); }}
+        else alert('Error: ' + data.message);
+    }} catch (e) {{ alert('Error: ' + e); }}
+}}
+
+async function rejectTicker(ticker) {{
+    if (!confirm('Ignore ' + ticker + '?')) return;
+    try {{
+        const resp = await fetch('/api/reject', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{ ticker: ticker }})
+        }});
+        const data = await resp.json();
+        if (data.ok) location.reload();
+        else alert('Error: ' + data.message);
+    }} catch (e) {{ alert('Error: ' + e); }}
+}}
+
+// --- CHAT LOGIC ---
+async function sendPrompt() {{
+    const promptInput = document.getElementById('custom-prompt');
+    const prompt = promptInput.value;
+    const model = document.getElementById('model-select').value;
+    const output = document.getElementById('ai-response');
+    if (!prompt) return;
+    
+    appendChat('USER', prompt, new Date().toLocaleTimeString());
+    promptInput.value = '';
+    output.innerText = '🤖 Thinking...';
+    
+    try {{
+        const resp = await fetch('/api/prompt', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{ prompt, model }})
+        }});
+        const data = await resp.json();
+        if (data.ok) {{
+            appendChat('AI (' + model + ')', data.response, new Date().toLocaleTimeString());
+        }} else {{
+            output.innerText = '❌ Error: ' + data.message;
+        }}
+    }} catch (e) {{ output.innerText = '❌ Connection failed'; }}
+}}
+
+function appendChat(role, text, time) {{
+    const log = JSON.parse(localStorage.getItem('hightrade_chat_log') || '[]');
+    log.push({{ role, text, time }});
+    if (log.length > 20) log.shift();
+    localStorage.setItem('hightrade_chat_log', JSON.stringify(log));
+    renderChat();
+}}
+
+function renderChat() {{
+    const output = document.getElementById('ai-response');
+    if (!output) return;
+    const log = JSON.parse(localStorage.getItem('hightrade_chat_log') || '[]');
+    if (log.length === 0) return;
+    output.innerHTML = log.map(m => 
+        `<div style="margin-bottom:8px; border-bottom:1px solid #ffffff05; padding-bottom:4px;">
+            <span style="color:var(--dim); font-size:9px;">[${{m.time}}]</span> 
+            <b style="color:${{m.role === 'USER' ? 'var(--accent)' : 'var(--green)'}}; font-size:10px;">${{m.role}}:</b> 
+            <div style="margin-top:2px; color:#ccc; font-size:11px;">${{m.text}}</div>
+        </div>`
+    ).join('');
+    output.scrollTop = output.scrollHeight;
+}}
+
+document.getElementById('custom-prompt')?.addEventListener('keypress', e => {{ if(e.key==='Enter') sendPrompt(); }});
+setTimeout(renderChat, 100);
+</script>
 </body>
 </html>"""
 
@@ -1191,6 +1570,133 @@ def run_server(host='0.0.0.0', port=5055):
                 1
             )
         return Response(html, mimetype='text/html')
+
+    @app.route('/api/command', methods=['POST'])
+    def handle_command():
+        try:
+            data = flask_request.get_json()
+            cmd = data.get('command')
+            if not cmd: return {'ok': False, 'message': 'Missing command'}, 400
+            
+            # Send to orchestrator via IPC
+            from hightrade_cmd import send_command
+            resp = send_command(cmd)
+            return resp
+        except Exception as e:
+            return {'ok': False, 'message': str(e)}, 500
+
+    @app.route('/api/approve', methods=['POST'])
+    def handle_approve():
+        try:
+            data = flask_request.get_json()
+            ticker = data.get('ticker')
+            if not ticker: return {'ok': False, 'message': 'Missing ticker'}, 400
+            
+            with _conn() as db:
+                # 1. Fetch the Hound's report
+                row = db.execute("""
+                    SELECT alpha_score, why_next, signals, risks, action_suggestion 
+                    FROM grok_hound_candidates WHERE ticker = ?
+                """, (ticker,)).fetchone()
+                
+                if not row:
+                    return {'ok': False, 'message': 'Candidate data not found'}, 404
+                
+                hound_data = dict(row)
+                
+                # 2. Insert into acquisition_watchlist (Procurement)
+                # status='pending' triggers the next Acquisition Researcher cycle
+                db.execute("""
+                    INSERT OR REPLACE INTO acquisition_watchlist 
+                    (date_added, ticker, source, model_confidence, biggest_risk, 
+                     biggest_opportunity, entry_conditions, notes, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    datetime.now().strftime('%Y-%m-%d'),
+                    ticker,
+                    'grok_hound',
+                    float(hound_data['alpha_score'] or 0) / 100.0,
+                    hound_data['risks'],
+                    hound_data['why_next'],
+                    hound_data['action_suggestion'],
+                    f"Signals: {hound_data['signals']}",
+                    'pending'
+                ))
+                
+                # 3. Mark as watched in hound table so it leaves the queue
+                db.execute("UPDATE grok_hound_candidates SET status = 'watched' WHERE ticker = ?", (ticker,))
+                db.commit()
+                
+            return {'ok': True, 'message': f'Ticker {ticker} sent to Acquisition Pipeline for final analysis'}
+        except Exception as e:
+            return {'ok': False, 'message': str(e)}, 500
+
+    @app.route('/api/reject', methods=['POST'])
+    def handle_reject():
+        try:
+            data = flask_request.get_json()
+            ticker = data.get('ticker')
+            if not ticker: return {'ok': False, 'message': 'Missing ticker'}, 400
+            
+            with _conn() as db:
+                # Flag as ignored so Hound skips it in future
+                db.execute("UPDATE grok_hound_candidates SET status = 'ignored' WHERE ticker = ?", (ticker,))
+                db.commit()
+            return {'ok': True, 'message': f'Ticker {ticker} moved to ignore list'}
+        except Exception as e:
+            return {'ok': False, 'message': str(e)}, 500
+
+    @app.route('/api/prompt', methods=['POST'])
+    def handle_prompt():
+        try:
+            data = flask_request.get_json()
+            prompt = data.get('prompt')
+            model_key = data.get('model', 'fast')
+            if not prompt: return {'ok': False, 'message': 'Missing prompt'}, 400
+            
+            # Call AI
+            if 'grok' in model_key.lower():
+                import grok_client
+                text, in_tok, out_tok = grok_client.call(prompt)
+            else:
+                import gemini_client
+                text, in_tok, out_tok = gemini_client.call(prompt, model_key=model_key)
+                
+            return {
+                'ok': True, 
+                'response': text, 
+                'stats': {'in': in_tok, 'out': out_tok}
+            }
+        except Exception as e:
+            return {'ok': False, 'message': str(e)}, 500
+
+    @app.route('/api/history/<ticker>')
+    def handle_history(ticker):
+        try:
+            import yfinance as yf
+            period = flask_request.args.get('period', '1mo') # 1d, 5d, 1mo, 1y
+            interval = '15m' if period == '1d' else '1h' if period == '5d' else '1d'
+            
+            stock = yf.Ticker(ticker)
+            hist = stock.history(period=period, interval=interval)
+            
+            if hist.empty:
+                return {'ok': False, 'message': 'No data found'}, 404
+                
+            # Format for Chart.js
+            labels = [ts.strftime('%Y-%m-%d %H:%M') for ts in hist.index]
+            prices = [round(float(p), 2) for p in hist['Close']]
+            
+            return {
+                'ok': True,
+                'ticker': ticker,
+                'labels': labels,
+                'prices': prices,
+                'current': prices[-1],
+                'change_pct': round(((prices[-1] - prices[0]) / prices[0]) * 100, 2)
+            }
+        except Exception as e:
+            return {'ok': False, 'message': str(e)}, 500
 
     @app.route('/health')
     def health():
