@@ -1373,6 +1373,83 @@ DATA GAPS: On a final line starting with "GAPS:" list any specific data that was
 
         logger.info("✅ Acquisition pipeline complete")
 
+        # Step 3: Re-queue any analyst_pass items for daily reanalysis
+        try:
+            requeued = self._requeue_analyst_pass_items(date_str)
+            if requeued > 0:
+                logger.info(f"  🔄 Requeued {requeued} analyst_pass tickers for reanalysis tomorrow")
+        except Exception as e:
+            logger.error(f"  ❌ analyst_pass requeue failed: {e}")
+
+    def _requeue_analyst_pass_items(self, today: str) -> int:
+        """
+        After each daily pipeline run, re-queue tickers that previously got analyst_pass
+        so they're re-evaluated with fresh data. After 3 failed re-evaluations, archive them.
+
+        Returns the number of tickers re-queued.
+        """
+        import sqlite3 as _sq
+        requeued = archived = 0
+
+        try:
+            conn = _sq.connect(str(DB_PATH))
+            conn.row_factory = _sq.Row
+
+            # Find tickers with analyst_pass that have no row already queued for today
+            candidates = conn.execute("""
+                SELECT ticker, source, market_regime, biggest_risk, biggest_opportunity,
+                       COUNT(*) AS pass_count
+                FROM acquisition_watchlist
+                WHERE status = 'analyst_pass'
+                  AND date_added < ?
+                GROUP BY ticker
+                HAVING NOT EXISTS (
+                    SELECT 1 FROM acquisition_watchlist a2
+                    WHERE a2.ticker = acquisition_watchlist.ticker
+                      AND a2.date_added = ?
+                )
+            """, (today, today)).fetchall()
+
+            for row in candidates:
+                if row['pass_count'] >= 3:
+                    # Archive after 3 failed re-evaluations — stop cycling
+                    conn.execute("""
+                        UPDATE acquisition_watchlist SET status = 'archived'
+                        WHERE ticker = ? AND status = 'analyst_pass'
+                    """, (row['ticker'],))
+                    logger.info(
+                        f"  📦 {row['ticker']} archived after {row['pass_count']} analyst_pass cycles"
+                    )
+                    archived += 1
+                else:
+                    attempt = row['pass_count'] + 1
+                    conn.execute("""
+                        INSERT OR IGNORE INTO acquisition_watchlist
+                          (date_added, ticker, source, market_regime, model_confidence,
+                           entry_conditions, biggest_risk, biggest_opportunity, status, notes)
+                        VALUES (?, ?, ?, ?, 0.5,
+                                'Reanalysis #' || ? || ' — conditions may have changed',
+                                ?, ?, 'pending', 'reanalysis')
+                    """, (
+                        today, row['ticker'], row['source'], row['market_regime'],
+                        attempt, row['biggest_risk'], row['biggest_opportunity']
+                    ))
+                    logger.info(
+                        f"  🔁 {row['ticker']} requeued (attempt #{attempt}) for fresh analyst pass"
+                    )
+                    requeued += 1
+
+            conn.commit()
+            conn.close()
+
+        except Exception as e:
+            logger.error(f"_requeue_analyst_pass_items error: {e}")
+
+        if archived:
+            logger.info(f"  📦 Archived {archived} stale analyst_pass tickers (≥3 attempts)")
+
+        return requeued
+
     def update_dashboard(self):
         """Generate updated dashboard"""
         try:

@@ -454,11 +454,22 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection) -> Opt
             if gaps:
                 logger.info(f"  🔍 Data gaps ({ticker}): {' | '.join(gaps)}")
 
-            # Update acquisition_watchlist status
+            # Build rich thesis text and write back to watchlist thesis column
+            thesis      = result.get('thesis_summary', '') or ''
+            price_tgt   = result.get('entry_price_target')
+            stop        = result.get('stop_loss')
+            conds       = result.get('entry_conditions', []) or []
+            cond_str    = ' | '.join(conds[:2]) if conds else ''
+            thesis_text = thesis
+            if price_tgt: thesis_text += f" ◆ Entry: ${price_tgt:.2f}"
+            if stop:      thesis_text += f" / Stop: ${stop:.2f}"
+            if cond_str:  thesis_text += f" ◆ {cond_str}"
+
             conn.execute("""
-                UPDATE acquisition_watchlist SET status = 'conditional_set'
-                WHERE ticker = ? AND status = 'researched'
-            """, (ticker,))
+                UPDATE acquisition_watchlist
+                SET status = 'conditional_set', entry_conditions = ?
+                WHERE ticker = ? AND status IN ('researched', 'pending')
+            """, (thesis_text[:500], ticker))
             conn.commit()
 
         except Exception as e:
@@ -478,14 +489,26 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection) -> Opt
             WHERE ticker = ? AND status IN ('library_ready','partial')
         """, (ticker,))
         
-        # Move to 12h hold in acquisition_watchlist
+        # Build descriptive pass text for the thesis column
+        thesis      = result.get('thesis_summary', '') or '' if result else ''
+        gaps        = (result.get('data_gaps', []) or []) if result else []
+        risks       = (result.get('key_risks', []) or []) if result else []
+        re_entry    = '; '.join(str(g) for g in gaps[:2]) if gaps else 'insufficient data / low confidence'
+        risk_str    = ', '.join(str(r) for r in risks[:2]) if risks else ''
+        pass_text   = f"PASS ({confidence:.0%} conf)"
+        if thesis:    pass_text += f" — {thesis}"
+        pass_text  += f" ◆ Re-entry if: {re_entry}"
+        if risk_str:  pass_text += f" ◆ Risks: {risk_str}"
+
+        # Move to analyst_pass — write reasoning to thesis column, keep numeric ratio in notes
         conn.execute("""
-            UPDATE acquisition_watchlist 
-            SET status = 'analyst_pass', 
+            UPDATE acquisition_watchlist
+            SET status = 'analyst_pass',
+                entry_conditions = ?,
                 notes = ?,
-                created_at = CURRENT_TIMESTAMP  -- Refresh timestamp for 12h hold check
-            WHERE ticker = ? AND status = 'researched'
-        """, (reason, ticker))
+                created_at = CURRENT_TIMESTAMP
+            WHERE ticker = ? AND status IN ('researched', 'pending')
+        """, (pass_text[:500], reason, ticker))
         conn.commit()
 
     # Always update library status to 'analysed' (unless already set to analyst_pass/error above)

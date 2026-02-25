@@ -358,6 +358,8 @@ def source_badge(source):
         'profit_target_reaccumulation':('#00d4ff', '♻️  RE-ACCUM'),
         'daily_briefing':              ('#c084fc', '🧠 BRIEFING'),
         'manual':                      ('#ffd700', '✋ MANUAL'),
+        'grok_hound':                  ('#ff8c00', '🦮 HOUND'),
+        'grok_hound_auto':             ('#ff8c00', '🦮 HOUND'),
     }
     color, label = cfg.get(source, ('#888', source.upper().replace('_', ' ')))
     return (
@@ -375,16 +377,19 @@ def build_wl_rows(watchlist):
         conf_c = '#00ff88' if conf >= 0.7 else '#ffd700' if conf >= 0.5 else '#ff8c00'
         stat   = w.get('status', 'pending')
         stat_c = {'pending': '#ffd700', 'active': '#00ff88', 'invalidated': '#ff4444'}.get(stat, '#888')
-        cond   = (w.get('entry_conditions') or '—')[:100]
+        raw_cond = w.get('entry_conditions') or '—'
+        cond   = raw_cond[:250]
         src    = w.get('source', 'daily_briefing')
+        # Color-code thesis cell by status: analyst_pass=dimmer, conditional_set=brighter
+        cond_c = '#888' if stat == 'analyst_pass' else '#aaa'
         rows.append(
             '<tr class="trow">'
             f'<td class="sym" onclick="showChart(\'{w.get("ticker", "?")}\')">{w.get("ticker", "?")}</td>'
             f'<td>{source_badge(src)}</td>'
             f'<td><span style="color:{conf_c};font-weight:700;">{conf:.0%}</span></td>'
             f'<td>{regime_badge(w.get("market_regime"))}</td>'
-            f'<td style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;">'
-            f'{cond}{"…" if len(w.get("entry_conditions",""))>100 else ""}</td>'
+            f'<td style="color:{cond_c};font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;">'
+            f'{cond}{"…" if len(raw_cond)>250 else ""}</td>'
             f'<td><span style="color:{stat_c};font-size:11px;text-transform:uppercase;">{stat}</span></td>'
             f'<td style="color:#666;font-size:11px;">{w.get("date_added", "—")}</td>'
             '</tr>'
@@ -1165,7 +1170,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
     <div class="scroll-wrap">
       <table>
         <thead><tr>
-          <th>Ticker</th><th>Source</th><th>Conf</th><th>Regime</th><th>Entry Conditions</th><th>Status</th><th>Added</th>
+          <th>Ticker</th><th>Source</th><th>Conf</th><th>Regime</th><th>Thesis</th><th>Status</th><th>Added</th>
         </tr></thead>
         <tbody>{wl_rows}</tbody>
       </table>
@@ -1606,9 +1611,19 @@ def run_server(host='0.0.0.0', port=5055):
                 
                 # 2. Insert into acquisition_watchlist (Procurement)
                 # status='pending' triggers the next Acquisition Researcher cycle
+                # Build a rich signals note for context
+                signals_raw = hound_data['signals'] or ''
+                try:
+                    sig_list = json.loads(signals_raw) if signals_raw.startswith('[') else []
+                    signals_note = '; '.join(sig_list[:3]) if sig_list else signals_raw
+                except Exception:
+                    signals_note = signals_raw
+                action = (hound_data['action_suggestion'] or '').upper().replace('_', ' ')
+                notes_text = f"[{action}] {signals_note}" if signals_note else f"[{action}]"
+
                 db.execute("""
-                    INSERT OR REPLACE INTO acquisition_watchlist 
-                    (date_added, ticker, source, model_confidence, biggest_risk, 
+                    INSERT OR REPLACE INTO acquisition_watchlist
+                    (date_added, ticker, source, model_confidence, biggest_risk,
                      biggest_opportunity, entry_conditions, notes, status)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
@@ -1618,8 +1633,8 @@ def run_server(host='0.0.0.0', port=5055):
                     float(hound_data['alpha_score'] or 0) / 100.0,
                     hound_data['risks'],
                     hound_data['why_next'],
-                    hound_data['action_suggestion'],
-                    f"Signals: {hound_data['signals']}",
+                    hound_data['why_next'],   # thesis as entry_conditions (was: action_suggestion)
+                    notes_text,               # [ACTION] + signals summary
                     'pending'
                 ))
                 
