@@ -635,9 +635,9 @@ class HighTradeOrchestrator:
                                     hound_results = self.hound.hunt(hound_state, focus_tickers=open_pos_tickers)
                                     self.hound.save_candidates(hound_results)
                                     
-                                    # Alert Slack ONLY if elite alpha found (score >= 85) and auto-promoted
+                                    # Alert Slack ONLY if elite alpha found (score >= 90) and auto-promoted
                                     for candidate in hound_results.get('candidates', []):
-                                        if candidate.get('alpha_score', 0) >= 85:
+                                        if candidate.get('alpha_score', 0) >= 90:
                                             self.alerts.send_notify('hound_alert', {
                                                 'ticker': candidate['ticker'],
                                                 'score': candidate['alpha_score'],
