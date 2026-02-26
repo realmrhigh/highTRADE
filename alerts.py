@@ -503,6 +503,31 @@ class AlertSystem:
             # Silent failure for logging - don't disrupt main flow
             return False
 
+    def send_acquisition_alert(self, message: str) -> bool:
+        """Send acquisition conditional notification to #logs-silent (no push notification).
+
+        Bypasses the log_events filter in send_silent_log — acquisition alerts
+        always go to the silent channel regardless of the config list.
+        """
+        logging_config = self.config.get('channels', {}).get('slack_logging', {})
+        if not logging_config.get('enabled', False):
+            return False
+
+        webhook_url = logging_config.get('webhook_url')
+        if not webhook_url or 'PLACEHOLDER' in webhook_url:
+            return False
+
+        try:
+            payload = {
+                'text': message,
+                'username': 'HighTrade Acquisitions',
+                'icon_emoji': ':dart:'
+            }
+            response = requests.post(webhook_url, json=payload, timeout=5)
+            return response.status_code == 200
+        except Exception:
+            return False
+
     def send_notify(self, event_type: str, data: dict) -> bool:
         """Send a notification to #all-hightrade (primary webhook — triggers push notifications).
 

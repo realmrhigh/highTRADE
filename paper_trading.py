@@ -7,6 +7,7 @@ Implements semi-automatic paper trading with intelligent asset selection based o
 import sqlite3
 import json
 import logging
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
@@ -23,6 +24,93 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Alpaca broker shim — wraps paper (or live) API, gracefully degrades if unconfigured
+# ---------------------------------------------------------------------------
+
+class AlpacaBroker:
+    """Thin wrapper around Alpaca REST API for order execution.
+
+    Reads credentials from env vars (loaded by the orchestrator via dotenv).
+    All methods return a result dict with 'ok' and either 'order' or 'error'.
+    Failures are logged but never raise — callers always continue with DB state.
+    """
+
+    def __init__(self):
+        self.api_key    = os.getenv('ALPACA_API_KEY', '')
+        self.secret_key = os.getenv('ALPACA_SECRET_KEY', '')
+        self.base_url   = os.getenv('ALPACA_BASE_URL', 'https://paper-api.alpaca.markets').rstrip('/')
+        self._configured = bool(self.api_key and self.secret_key)
+        if self._configured:
+            logger.info(f"AlpacaBroker ready ({self.base_url})")
+        else:
+            logger.warning("AlpacaBroker: ALPACA_API_KEY / ALPACA_SECRET_KEY not set — orders will be DB-only")
+
+    @property
+    def is_configured(self) -> bool:
+        return self._configured
+
+    def _headers(self) -> dict:
+        return {
+            'APCA-API-KEY-ID':     self.api_key,
+            'APCA-API-SECRET-KEY': self.secret_key,
+            'Content-Type':        'application/json',
+        }
+
+    def place_order(self, symbol: str, qty: int, side: str) -> dict:
+        """Place a market order.  side = 'buy' | 'sell'.
+        Returns {'ok': True, 'order': {...}} or {'ok': False, 'error': str}."""
+        if not self._configured:
+            return {'ok': False, 'error': 'Alpaca not configured'}
+        if qty <= 0:
+            return {'ok': False, 'error': f'Invalid qty {qty}'}
+
+        try:
+            import requests as _req
+            payload = {
+                'symbol':        symbol.upper(),
+                'qty':           str(qty),
+                'side':          side,
+                'type':          'market',
+                'time_in_force': 'day',
+            }
+            r = _req.post(
+                f'{self.base_url}/v2/orders',
+                headers=self._headers(),
+                json=payload,
+                timeout=10,
+            )
+            if r.ok:
+                order = r.json()
+                logger.info(
+                    f"Alpaca {side.upper()} {qty}×{symbol} → "
+                    f"id={order.get('id','?')[:8]}… status={order.get('status','?')}"
+                )
+                return {'ok': True, 'order': order}
+            else:
+                err = r.json().get('message', r.text)
+                logger.warning(f"Alpaca order failed for {symbol}: {err}")
+                return {'ok': False, 'error': err}
+        except Exception as e:
+            logger.warning(f"Alpaca order exception for {symbol}: {e}")
+            return {'ok': False, 'error': str(e)}
+
+    def get_position(self, symbol: str) -> Optional[dict]:
+        """Return Alpaca position dict for symbol, or None if not held / error."""
+        if not self._configured:
+            return None
+        try:
+            import requests as _req
+            r = _req.get(
+                f'{self.base_url}/v2/positions/{symbol.upper()}',
+                headers=self._headers(),
+                timeout=10,
+            )
+            return r.json() if r.ok else None
+        except Exception:
+            return None
 
 
 class CrisisAssetIntelligence:
@@ -149,6 +237,7 @@ class PaperTradingEngine:
         self.last_vix = 20.0
         self.pending_trade_alerts = []
         self.pending_trade_exits = []
+        self.alpaca = AlpacaBroker()
 
         # Initialize enhanced exit strategy manager
         if EXIT_STRATEGIES_AVAILABLE:
@@ -364,6 +453,9 @@ class PaperTradingEngine:
                 trade_ids.append(trade_id)
                 logger.info(f"✅ Trade executed: {asset_symbol} - {shares} shares @ ${entry_price:.2f} (Trade ID: {trade_id})")
 
+                # Mirror to Alpaca (non-blocking — DB is source of truth)
+                self.alpaca.place_order(asset_symbol, shares, 'buy')
+
             self.conn.commit()
             return trade_ids
 
@@ -530,6 +622,9 @@ class PaperTradingEngine:
                 trade_id
             ))
             self.conn.commit()
+
+            # Mirror to Alpaca (non-blocking)
+            self.alpaca.place_order(trade['asset_symbol'], trade['shares'], 'sell')
 
             logger.info(f"✅ Position closed: {trade['asset_symbol']} "
                        f"{profit_loss_percent:+.2f}% (${profit_loss_dollars:+,.0f})")
@@ -807,6 +902,9 @@ class PaperTradingEngine:
             except Exception:
                 pass
 
+            # Mirror to Alpaca (non-blocking)
+            self.alpaca.place_order(ticker, shares, 'buy')
+
             logger.info(
                 f"✅ Manual buy executed: {shares} × {ticker} @ ${entry_price:.2f} "
                 f"= ${position_size:,.2f} (trade_id={trade_id})"
@@ -903,6 +1001,9 @@ class PaperTradingEngine:
                 actual_trade_id
             ))
             self.conn.commit()
+
+            # Mirror to Alpaca (non-blocking)
+            self.alpaca.place_order(ticker, shares, 'sell')
 
             direction = '📈' if pnl_dollars >= 0 else '📉'
             logger.info(

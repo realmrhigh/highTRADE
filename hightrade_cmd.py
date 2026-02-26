@@ -121,6 +121,11 @@ COMMANDS = {
         'aliases': ['/scan', '/fetch'],
         'category': 'control',
     },
+    '/hunt': {
+        'description': 'Run Grok Hound now — scan X for high-alpha momentum candidates',
+        'aliases': ['/hound', '/sniff'],
+        'category': 'control',
+    },
     '/help': {
         'description': 'Show all available commands',
         'aliases': ['/h', '/?'],
@@ -164,6 +169,10 @@ def send_command(raw_input: str) -> dict:
         'timestamp': datetime.now().isoformat(),
         'raw': raw_input.strip(),
     }
+
+    # Clear any stale response before writing command so _wait_for_response
+    # never picks up a previous command's result
+    RESPONSE_FILE.unlink(missing_ok=True)
 
     # Write command atomically
     tmp_file = CMD_FILE.with_suffix('.tmp')
@@ -341,6 +350,7 @@ class CommandProcessor:
             '/sell':      self._handle_sell,
             '/briefing':  self._handle_briefing,
             '/research':  self._handle_research,
+            '/hunt':      self._handle_hunt,
         }
 
         handler = handlers.get(cmd)
@@ -367,6 +377,38 @@ class CommandProcessor:
             }
         except Exception as e:
             return {'ok': False, 'message': f'Research failed: {e}'}
+
+    def _handle_hunt(self, args: str) -> dict:
+        """Force-run the Grok Hound now — scan X for high-alpha candidates."""
+        logger.info("🐕 /hunt — forcing Grok Hound run now...")
+        try:
+            from acquisition_hound import GrokHound
+            from fred_macro import FREDMacroTracker
+            from pathlib import Path
+            DB_PATH = Path(__file__).parent / 'trading_data' / 'trading_history.db'
+
+            # Get current system state for context
+            orch = self.orchestrator
+            state = {
+                'defcon_level': getattr(orch, '_last_defcon', 3),
+                'macro_score':  getattr(orch, '_last_macro_score', 50),
+            }
+
+            hound = GrokHound(db_path=str(DB_PATH))
+            result = hound.hunt(state)
+            candidates = result.get('candidates', [])
+            promoted = hound.save_candidates(result)
+
+            names = [c.get('ticker', '?') for c in candidates]
+            mood  = result.get('hound_mood', 'neutral')
+            msg   = (
+                f"🐕 Hound ({mood}): found {len(candidates)} candidates"
+                + (f" → {', '.join(names)}" if names else '')
+                + (f" | auto-promoted: {', '.join(promoted)}" if promoted else '')
+            )
+            return {'ok': True, 'message': msg}
+        except Exception as e:
+            return {'ok': False, 'message': f'Hunt failed: {e}'}
 
     def _handle_yes(self, args: str) -> dict:
         orch = self.orchestrator

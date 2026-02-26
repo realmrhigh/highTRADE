@@ -1080,8 +1080,8 @@ class AutonomousBroker:
                 f"📋 Entry conditions met:\n{cond_text}\n\n"
                 f"💡 Thesis: {thesis}"
             )
-            # Send directly to #hightrade — bypasses DEFCON threshold gating
-            self.notification_engine.alerts.send_slack(message, defcon_level=3)
+            # Route to #logs-silent — acquisition pipeline noise, not a trade signal
+            self.notification_engine.alerts.send_acquisition_alert(message)
         except Exception as e:
             logger.warning(f"Acquisition notification failed: {e}")
 

@@ -179,6 +179,15 @@ def fetch_hound_candidates():
         """).fetchall()
         return [dict(r) for r in rows]
 
+def fetch_hound_last_run():
+    """Return ISO timestamp of most recent hound run, or None."""
+    with _conn() as db:
+        row = db.execute("""
+            SELECT created_at FROM grok_hound_candidates
+            ORDER BY created_at DESC LIMIT 1
+        """).fetchone()
+        return row[0] if row else None
+
 
 # ─── Utility Helpers ─────────────────────────────────────────────────────────
 
@@ -480,7 +489,7 @@ def build_hound_rows(candidates):
             f'<td style="color:{sc};font-weight:700;">{score}</td>'
             f'<td style="color:#ddd;font-size:11px;">{c.get("why_next_gme","—")}</td>'
             f'<td>{action_badge(c.get("action_suggestion","").upper())}</td>'
-            f'<td style="color:#666;font-size:11px;">{(c.get("created_at") or "—")[11:16]}</td>'
+            f'<td style="color:#666;font-size:11px;">{(c.get("created_at") or "—")[5:10].replace("-", "/")}</td>'
             f'<td><div style="display:flex;gap:5px;">'
             f'<button onclick="approveTicker(\'{ticker}\')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button>'
             f'<button onclick="rejectTicker(\'{ticker}\')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button>'
@@ -555,10 +564,23 @@ def build_model_card(b, title, icon):
 # ─── Main HTML Assembly ───────────────────────────────────────────────────────
 
 def build_html(status, positions, closed, stats, briefings, macro, watchlist,
-               sig_history, news, cong_clusters, cong_trades, hound_candidates):
+               sig_history, news, cong_clusters, cong_trades, hound_candidates, hound_last_run=None):
 
     now_str    = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     last_cycle = status.get('created_at', '—')
+
+    # Hound last-run display
+    if hound_last_run:
+        try:
+            from datetime import timezone
+            lr = datetime.fromisoformat(str(hound_last_run).replace('Z', ''))
+            delta = datetime.now() - lr
+            mins = int(delta.total_seconds() // 60)
+            hound_last_str = f"{lr.strftime('%m/%d %H:%M')} ({mins}m ago)" if mins < 120 else lr.strftime('%m/%d %H:%M')
+        except Exception:
+            hound_last_str = str(hound_last_run)[:16]
+    else:
+        hound_last_str = 'No runs yet'
 
     total_capital = 100_000.0
     realized      = float(stats.get('realized_pnl') or 0)
@@ -817,15 +839,16 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
 <div class="page">
 """ + f"""
 <!-- ═══ HEADER ═══ -->
-<div class="header">
-  <div>
-    <div class="header-title">&#9889; HIGHTRADE <span style="font-size:10px;vertical-align:middle;opacity:0.5;">v2.4-INTERACTIVE</span></div>
-    <div style="font-size:10px;color:#2a3a4a;letter-spacing:3px;margin-top:3px;">AUTONOMOUS TRADING INTELLIGENCE SYSTEM</div>
-  </div>
+<div style="border-radius:10px 10px 0 0;overflow:hidden;line-height:0;margin-bottom:0;">
+  <img src="/header-image" style="width:100%;height:auto;display:block;" alt="HighTrade"/>
+</div>
+<div class="header" style="border-radius:0 0 10px 10px;margin-bottom:20px;padding:8px 24px;border-top:none;">
+  <div></div>
   <div class="header-meta">
-    <span class="live-dot"></span>LIVE<br/>
-    Generated: {now_str}<br/>
-    Last cycle: {last_cycle}
+    <span class="live-dot"></span>LIVE &nbsp;&middot;&nbsp;
+    Generated: {now_str} &nbsp;&middot;&nbsp;
+    Last cycle: {last_cycle}<br/>
+    <span style="opacity:0.35;font-size:9px;letter-spacing:2px;">v2.4-INTERACTIVE</span>
   </div>
 </div>
 
@@ -862,6 +885,7 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
           <button onclick="sendCommand('/start')" style="background:#1a1a2e;color:var(--green);border:1px solid var(--green)44;padding:8px;border-radius:4px;cursor:pointer;">START</button>
           <button onclick="sendCommand('/briefing')" style="background:#1a1a2e;color:#c084fc;border:1px solid #c084fc44;padding:8px;border-radius:4px;cursor:pointer;">DAILY RPT</button>
           <button onclick="sendCommand('/research')" style="background:#1a1a2e;color:var(--accent);border:1px solid var(--accent)44;padding:8px;border-radius:4px;cursor:pointer;">RESEARCH</button>
+          <button onclick="sendCommand('/hunt')" style="background:#1a1a2e;color:#ff8c00;border:1px solid #ff8c0044;padding:8px;border-radius:4px;cursor:pointer;">🦮 HUNT</button>
           <button onclick="sendCommand('/estop')" style="background:#1a1a2e;color:var(--red);border:1px solid var(--red)44;padding:8px;border-radius:4px;cursor:pointer;">E-STOP</button>
         </div>
       </div>
@@ -871,12 +895,28 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
 </div>
 
 <script>
+function showToast(msg, ok) {{
+    let t = document.getElementById('cmd-toast');
+    if (!t) {{
+        t = document.createElement('div');
+        t.id = 'cmd-toast';
+        t.style.cssText = 'position:fixed;bottom:24px;right:24px;padding:10px 18px;border-radius:6px;font-size:12px;font-family:monospace;z-index:9999;max-width:420px;word-wrap:break-word;transition:opacity .4s;pointer-events:none;';
+        document.body.appendChild(t);
+    }}
+    t.style.background = ok ? '#0d1f14' : '#1f0d0d';
+    t.style.border = '1px solid ' + (ok ? '#00ff8855' : '#ff444455');
+    t.style.color = ok ? '#00ff88' : '#ff4444';
+    t.style.opacity = '1';
+    t.innerText = msg;
+    clearTimeout(t._hide);
+    t._hide = setTimeout(() => {{ t.style.opacity = '0'; }}, 6000);
+}}
+
 async function sendCommand(cmd) {{
-    const btn = event.target;
-    const originalText = btn.innerText;
-    btn.innerText = 'WAIT...';
-    btn.disabled = true;
-    
+    const btn = event?.target;
+    const originalText = btn?.innerText;
+    if (btn) {{ btn.innerText = 'WAIT...'; btn.disabled = true; }}
+
     try {{
         const resp = await fetch('/api/command', {{
             method: 'POST',
@@ -884,12 +924,26 @@ async function sendCommand(cmd) {{
             body: JSON.stringify({{ command: cmd }})
         }});
         const data = await resp.json();
-        alert(data.message || 'Command sent successfully');
+        const ok  = data.ok !== false;
+        const msg = data.message || data.error || 'Done';
+
+        // STATUS: show structured data in AI response pane
+        if (cmd === '/status' && data.data) {{
+            const d = data.data;
+            const lines = Object.entries(d).map(([k,v]) => k.padEnd(18) + v).join('\\n');
+            const output = document.getElementById('ai-response');
+            if (output) {{
+                output.style.color = 'var(--accent)';
+                output.innerText = '[ SYSTEM STATUS ]\\n' + lines;
+            }}
+            showToast('STATUS loaded', true);
+        }} else {{
+            showToast((ok ? '✅ ' : '❌ ') + msg, ok);
+        }}
     }} catch (e) {{
-        alert('Error: ' + e);
+        showToast('❌ ' + e, false);
     }} finally {{
-        btn.innerText = originalText;
-        btn.disabled = false;
+        if (btn) {{ btn.innerText = originalText; btn.disabled = false; }}
     }}
 }}
 
@@ -1278,6 +1332,12 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
         <div style="color:#666;font-size:10px;margin-top:3px;">𝕏 Daily Second Opinion &middot; Real-time X.com sentiment audit &middot; Contrarian signal detection &middot; Veto participant</div>
       </div>
       <div class="stat">
+        <div class="stat-label">🦮 Grok Hound &mdash; Alpha Scanner</div>
+        <div style="color:#ff8c00;font-size:11px;">&#9679; grok-4-1-fast-reasoning &middot; X.com momentum feed &middot; hourly cycles</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">5-signal scoring (sentiment &middot; concentration &middot; urgency &middot; confidence &middot; specificity) &middot; auto-promotes &ge;75 alpha &middot; feeds researcher pipeline</div>
+        <div style="color:#555;font-size:10px;margin-top:2px;">Last run: {hound_last_str}</div>
+      </div>
+      <div class="stat">
         <div class="stat-label">Auth &amp; Token Efficiency</div>
         <div style="color:#7eb8f7;font-size:11px;">&#128274; OAuth-only &middot; Gemini CLI 0.29.2 &middot; ~2-5% daily quota used</div>
         <div style="color:#666;font-size:10px;margin-top:3px;">No API key &middot; dedup gate skips Flash+Pro on zero new articles &middot; massive headroom for scale</div>
@@ -1414,52 +1474,6 @@ async function updateChart(period) {{
     }} catch (e) {{ console.error(e); }}
 }}
 
-// --- COMMAND LOGIC ---
-async function sendCommand(cmd) {{
-    const btn = event?.target;
-    const originalText = btn?.innerText;
-    if (btn) {{ btn.innerText = 'WAIT...'; btn.disabled = true; }}
-    
-    try {{
-        const resp = await fetch('/api/command', {{
-            method: 'POST',
-            headers: {{ 'Content-Type': 'application/json' }},
-            body: JSON.stringify({{ command: cmd }})
-        }});
-        const data = await resp.json();
-        alert(data.message || 'Command sent successfully');
-    }} catch (e) {{ alert('Error: ' + e); }}
-    finally {{ if (btn) {{ btn.innerText = originalText; btn.disabled = false; }} }}
-}}
-
-async function approveTicker(ticker) {{
-    if (!confirm('Send ' + ticker + ' to Acquisition Pipeline?')) return;
-    try {{
-        const resp = await fetch('/api/approve', {{
-            method: 'POST',
-            headers: {{ 'Content-Type': 'application/json' }},
-            body: JSON.stringify({{ ticker: ticker }})
-        }});
-        const data = await resp.json();
-        if (data.ok) {{ alert(data.message); location.reload(); }}
-        else alert('Error: ' + data.message);
-    }} catch (e) {{ alert('Error: ' + e); }}
-}}
-
-async function rejectTicker(ticker) {{
-    if (!confirm('Ignore ' + ticker + '?')) return;
-    try {{
-        const resp = await fetch('/api/reject', {{
-            method: 'POST',
-            headers: {{ 'Content-Type': 'application/json' }},
-            body: JSON.stringify({{ ticker: ticker }})
-        }});
-        const data = await resp.json();
-        if (data.ok) location.reload();
-        else alert('Error: ' + data.message);
-    }} catch (e) {{ alert('Error: ' + e); }}
-}}
-
 // --- CHAT LOGIC ---
 async function sendPrompt() {{
     const promptInput = document.getElementById('custom-prompt');
@@ -1487,31 +1501,6 @@ async function sendPrompt() {{
     }} catch (e) {{ output.innerText = '❌ Connection failed'; }}
 }}
 
-function appendChat(role, text, time) {{
-    const log = JSON.parse(localStorage.getItem('hightrade_chat_log') || '[]');
-    log.push({{ role, text, time }});
-    if (log.length > 20) log.shift();
-    localStorage.setItem('hightrade_chat_log', JSON.stringify(log));
-    renderChat();
-}}
-
-function renderChat() {{
-    const output = document.getElementById('ai-response');
-    if (!output) return;
-    const log = JSON.parse(localStorage.getItem('hightrade_chat_log') || '[]');
-    if (log.length === 0) return;
-    output.innerHTML = log.map(m => 
-        `<div style="margin-bottom:8px; border-bottom:1px solid #ffffff05; padding-bottom:4px;">
-            <span style="color:var(--dim); font-size:9px;">[${{m.time}}]</span> 
-            <b style="color:${{m.role === 'USER' ? 'var(--accent)' : 'var(--green)'}}; font-size:10px;">${{m.role}}:</b> 
-            <div style="margin-top:2px; color:#ccc; font-size:11px;">${{m.text}}</div>
-        </div>`
-    ).join('');
-    output.scrollTop = output.scrollHeight;
-}}
-
-document.getElementById('custom-prompt')?.addEventListener('keypress', e => {{ if(e.key==='Enter') sendPrompt(); }});
-setTimeout(renderChat, 100);
 </script>
 </body>
 </html>"""
@@ -1534,8 +1523,9 @@ def generate_dashboard_html():
     news      = fetch_recent_news()
     cong_tr, cong_cl = fetch_congressional()
     hound_candidates = fetch_hound_candidates()
+    hound_last_run   = fetch_hound_last_run()
     return build_html(status, positions, closed, stats, briefings, macro,
-                      watchlist, sig_hist, news, cong_cl, cong_tr, hound_candidates)
+                      watchlist, sig_hist, news, cong_cl, cong_tr, hound_candidates, hound_last_run)
 
 
 # ─── Flask server ─────────────────────────────────────────────────────────────
@@ -1558,6 +1548,12 @@ def run_server(host='0.0.0.0', port=5055):
         s.close()
     except Exception:
         local_ip = 'localhost'
+
+    @app.route('/header-image')
+    def header_image():
+        from flask import send_file as _send_file
+        img_path = SCRIPT_DIR / 'highTRADE.jpeg'
+        return _send_file(img_path, mimetype='image/jpeg', max_age=3600)
 
     @app.route('/')
     def dashboard():

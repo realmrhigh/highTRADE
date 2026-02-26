@@ -192,8 +192,8 @@ class GrokHound:
             ))
 
             # --- AUTO-PROMOTION LOGIC ---
-            # If Alpha is high (>= 85), send straight to research pipeline
-            if score >= 85:
+            # If Alpha is high (>= 75), send straight to research pipeline
+            if score >= 75:
                 # Check if already in watchlist
                 cursor.execute("SELECT 1 FROM acquisition_watchlist WHERE ticker = ? AND status != 'archived'", (ticker,))
                 if not cursor.fetchone():

@@ -114,6 +114,8 @@ class HighTradeOrchestrator:
             self.gemini_enabled = True
             self.grok_enabled = True
             self.hound_enabled = True
+            self._hound_scan_cycle = 0
+            self._hound_scan_interval = 4   # Every ~60 min (4 × 15-min cycles)
             logger.info("🤖 AI Analyzers initialized (Gemini Flash/Pro + Grok + 🐕 Hound)")
         except Exception as e:
             logger.warning(f"⚠️  AI initialization failed: {e}")
@@ -621,43 +623,6 @@ class HighTradeOrchestrator:
                                 'timestamp': datetime.now().isoformat()
                             })
                             
-                            # --- 🐕 GROK HOUND (Every cycle alpha scanner) ---
-                            if self.hound_enabled:
-                                try:
-                                    open_pos_tickers = [p.get('symbol') for p in self.paper_trading.get_open_positions()]
-                                    hound_state = {
-                                        "defcon_level": self.monitor.defcon_level,
-                                        "macro_score": macro_result.get('macro_score', 50) if macro_result else 50,
-                                        "watchlist": open_pos_tickers,
-                                        "latest_gemini_briefing_summary": gemini_summary.get('reasoning', '') if gemini_summary else ""
-                                    }
-                                    # Focus on our current watchlist/positions
-                                    hound_results = self.hound.hunt(hound_state, focus_tickers=open_pos_tickers)
-                                    self.hound.save_candidates(hound_results)
-                                    
-                                    # Alert Slack ONLY if elite alpha found (score >= 90) and auto-promoted
-                                    for candidate in hound_results.get('candidates', []):
-                                        if candidate.get('alpha_score', 0) >= 90:
-                                            self.alerts.send_notify('hound_alert', {
-                                                'ticker': candidate['ticker'],
-                                                'score': candidate['alpha_score'],
-                                                'thesis': candidate['why_next'],
-                                                'risks': candidate['risks'],
-                                                'action': candidate['action_suggestion']
-                                            })
-                                            
-                                    # Trigger automated research + analysis run if new items were approved or added
-                                    try:
-                                        from acquisition_researcher import run_research_cycle
-                                        from acquisition_analyst import run_analyst_cycle
-                                        researched = run_research_cycle()
-                                        if researched:
-                                            run_analyst_cycle()
-                                    except Exception as e:
-                                        logger.warning(f"  🔬 Pipeline auto-trigger failed: {e}")
-                                        
-                                except Exception as e:
-                                    logger.warning(f"  🐕 Grok Hound failed: {e}")
                             logger.info(f"  ✅ News notification sent to #logs-silent ({new_count} new, {fresh_news_signal['article_count']} total)")
                     else:
                         logger.info("  📰 No recent news articles found")
@@ -740,6 +705,51 @@ class HighTradeOrchestrator:
                         }
                 except Exception:
                     pass
+
+            # ── Grok Hound (every ~60 min) ────────────────────────────────
+            self._hound_scan_cycle = getattr(self, '_hound_scan_cycle', 0) + 1
+            if self.hound_enabled and self._hound_scan_cycle >= self._hound_scan_interval:
+                self._hound_scan_cycle = 0
+                logger.info("🐕 Running Grok Hound hourly alpha scan...")
+                try:
+                    open_pos_tickers = [p.get('asset_symbol') for p in self.paper_trading.get_open_positions()]
+                    hound_state = {
+                        "defcon_level": self.monitor.defcon_level,
+                        "macro_score": macro_result.get('macro_score', 50) if macro_result else 50,
+                        "watchlist": open_pos_tickers,
+                        "latest_gemini_briefing_summary": ""
+                    }
+                    hound_results = self.hound.hunt(hound_state, focus_tickers=open_pos_tickers)
+                    self.hound.save_candidates(hound_results)
+
+                    # Alert Slack ONLY for elite alpha (score >= 75)
+                    for candidate in hound_results.get('candidates', []):
+                        if candidate.get('alpha_score', 0) >= 75:
+                            self.alerts.send_notify('hound_alert', {
+                                'ticker': candidate['ticker'],
+                                'score': candidate['alpha_score'],
+                                'thesis': candidate['why_next'],
+                                'risks': candidate['risks'],
+                                'action': candidate['action_suggestion']
+                            })
+
+                    # Trigger pipeline — researcher picks up new pending items,
+                    # analyst ALWAYS runs to catch any library_ready items waiting
+                    try:
+                        from acquisition_researcher import run_research_cycle
+                        from acquisition_analyst import run_analyst_cycle
+                        researched = run_research_cycle()
+                        run_analyst_cycle()   # always — don't gate on researched
+                    except Exception as e:
+                        logger.warning(f"  🔬 Pipeline auto-trigger failed: {e}")
+
+                    n_found = len(hound_results.get('candidates', []))
+                    logger.info(f"  🐕 Hound complete — {n_found} candidates, next run in ~{self._hound_scan_interval * 15} min")
+                except Exception as e:
+                    logger.warning(f"  🐕 Grok Hound failed: {e}")
+            else:
+                remaining = self._hound_scan_interval - self._hound_scan_cycle
+                logger.debug(f"  🐕 Hound: {remaining} cycle(s) until next run")
 
             # Calculate and record
             logger.info("📈 Calculating signal scores...")
@@ -1340,34 +1350,39 @@ DATA GAPS: On a final line starting with "GAPS:" list any specific data that was
 
         import time as _time
 
-        # Step 1: Researcher — gather all data
+        # Step 1: Researcher — pick up any pending items
+        researched = []
         try:
             from acquisition_researcher import run_research_cycle
             researched = run_research_cycle()
-            logger.info(f"  📚 Researcher: {len(researched)} tickers ready → {researched}")
+            if researched:
+                logger.info(f"  📚 Researcher: {len(researched)} new tickers → {researched}")
+            else:
+                logger.info("  📚 Researcher: no new pending items")
         except Exception as e:
             logger.error(f"  ❌ Acquisition researcher failed: {e}")
-            return
+            # Continue — analyst may still have library_ready items from a prior run
 
-        if not researched:
-            logger.info("  📭 No tickers to analyze")
-            return
+        # Brief pause if researcher just did work (don't slam Gemini)
+        if researched:
+            _time.sleep(10)
 
-        # Brief pause so we don't slam Gemini back-to-back with Pro calls
-        _time.sleep(10)
-
-        # Step 2: Analyst — set conditionals via Gemini 3 Pro
+        # Step 2: Analyst — ALWAYS run to catch any library_ready items waiting
+        # (items from prior research runs, hound auto-promotes, manual adds, etc.)
         try:
             from acquisition_analyst import run_analyst_cycle
             results = run_analyst_cycle()
-            promoted = [
-                r.get('_ticker') for r in results
-                if r.get('should_enter') and r.get('research_confidence', 0) >= 0.7
-            ]
-            logger.info(
-                f"  🧠 Analyst: {len(results)} analyzed, "
-                f"{len(promoted)} promoted to broker → {promoted}"
-            )
+            if results:
+                promoted = [
+                    r.get('_ticker') for r in results
+                    if r.get('should_enter') and r.get('research_confidence', 0) >= 0.7
+                ]
+                logger.info(
+                    f"  🧠 Analyst: {len(results)} analyzed, "
+                    f"{len(promoted)} conditionals set → {promoted}"
+                )
+            else:
+                logger.info("  🧠 Analyst: no library_ready items to analyze")
         except Exception as e:
             logger.error(f"  ❌ Acquisition analyst failed: {e}")
 
