@@ -198,9 +198,10 @@ class GrokHound:
                 cursor.execute("SELECT 1 FROM acquisition_watchlist WHERE ticker = ? AND status != 'archived'", (ticker,))
                 if not cursor.fetchone():
                     logger.info(f"  🚀 AUTO-PROMOTING {ticker} (Alpha: {score}) to Acquisition Watchlist")
+                    action = (c.get('action_suggestion') or '').upper().replace('_', ' ')
                     cursor.execute("""
-                        INSERT OR REPLACE INTO acquisition_watchlist 
-                        (date_added, ticker, source, model_confidence, biggest_risk, 
+                        INSERT OR REPLACE INTO acquisition_watchlist
+                        (date_added, ticker, source, model_confidence, biggest_risk,
                          biggest_opportunity, entry_conditions, notes, status)
                         VALUES (?, ?, 'grok_hound_auto', ?, ?, ?, ?, ?, 'pending')
                     """, (
@@ -209,9 +210,8 @@ class GrokHound:
                         float(score) / 100.0,
                         json.dumps(c.get('risks', [])),
                         c.get('why_next', ''),
-                        c.get('action_suggestion', ''),
-                        f"Auto-promoted via Grok Hound (Alpha {score})",
-                        'pending'
+                        c.get('why_next', ''),          # thesis as entry_conditions
+                        f"[{action}] Auto-promoted (Alpha {score})",
                     ))
                     # Mark as watched in hound table
                     cursor.execute("UPDATE grok_hound_candidates SET status = 'watched' WHERE ticker = ?", (ticker,))
