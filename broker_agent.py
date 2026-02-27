@@ -197,7 +197,7 @@ class BrokerDecisionEngine:
         try:
             self.paper_trading.cursor.execute('''
             SELECT trade_id, asset_symbol, entry_price, position_size_dollars,
-                   defcon_at_entry, shares, entry_date
+                   defcon_at_entry, shares, entry_date, stop_loss, take_profit_1
             FROM trade_records
             WHERE status = 'open'
             ''')
@@ -216,8 +216,16 @@ class BrokerDecisionEngine:
             profit_loss_pct = (current_price - entry_price) / entry_price
             profit_loss_dollars = profit_loss_pct * trade['position_size_dollars']
 
+            # Per-position exit levels (from analyst); fall back to global constants if not set
+            tp1_price  = trade.get('take_profit_1')
+            stop_price = trade.get('stop_loss')
+            tp_threshold = ((tp1_price - entry_price) / entry_price) if tp1_price else self.paper_trading.PROFIT_TARGET
+            sl_threshold = ((stop_price - entry_price) / entry_price) if stop_price else self.paper_trading.STOP_LOSS
+            tp_src  = f"${tp1_price:.2f}" if tp1_price else f"{self.paper_trading.PROFIT_TARGET*100:.0f}% (default)"
+            sl_src  = f"${stop_price:.2f}" if stop_price else f"{abs(self.paper_trading.STOP_LOSS*100):.0f}% (default)"
+
             # Decision 1: Hit profit target?
-            if profit_loss_pct >= self.paper_trading.PROFIT_TARGET:
+            if profit_loss_pct >= tp_threshold:
                 decision = {
                     'trade_id': trade['trade_id'],
                     'asset_symbol': trade['asset_symbol'],
@@ -226,14 +234,14 @@ class BrokerDecisionEngine:
                     'current_price': current_price,
                     'profit_loss_pct': profit_loss_pct,
                     'profit_loss_dollars': profit_loss_dollars,
-                    'reason': f"Hit profit target: +{profit_loss_pct*100:.2f}%",
+                    'reason': f"Hit profit target ({tp_src}): +{profit_loss_pct*100:.2f}%",
                     'confidence': 100
                 }
                 exit_decisions.append(decision)
-                logger.info(f"📈 EXIT: {trade['asset_symbol']} - Profit target hit! +{profit_loss_pct*100:.2f}%")
+                logger.info(f"📈 EXIT: {trade['asset_symbol']} - Profit target hit ({tp_src})! +{profit_loss_pct*100:.2f}%")
 
             # Decision 2: Hit stop loss?
-            elif profit_loss_pct <= self.paper_trading.STOP_LOSS:
+            elif profit_loss_pct <= sl_threshold:
                 decision = {
                     'trade_id': trade['trade_id'],
                     'asset_symbol': trade['asset_symbol'],
@@ -242,11 +250,11 @@ class BrokerDecisionEngine:
                     'current_price': current_price,
                     'profit_loss_pct': profit_loss_pct,
                     'profit_loss_dollars': profit_loss_dollars,
-                    'reason': f"Stop loss triggered: {profit_loss_pct*100:.2f}%",
+                    'reason': f"Stop loss triggered ({sl_src}): {profit_loss_pct*100:.2f}%",
                     'confidence': 100
                 }
                 exit_decisions.append(decision)
-                logger.warning(f"🛑 EXIT: {trade['asset_symbol']} - Stop loss! {profit_loss_pct*100:.2f}%")
+                logger.warning(f"🛑 EXIT: {trade['asset_symbol']} - Stop loss ({sl_src})! {profit_loss_pct*100:.2f}%")
 
             # Decision 3: Should we take early profit?
             elif self._should_take_early_profit(profit_loss_pct, trade):
@@ -966,22 +974,47 @@ class AutonomousBroker:
             position_size = decision['position_size']
             entry_price   = decision['current_price']
 
-            # GUARD: Skip if we already have an open position in this ticker
+            # GUARD: Skip buy — but use fresh analyst levels to update the open position's exit strategy
             if ticker in open_tickers:
-                logger.warning(f"  🚫 {ticker} SKIPPED — already have open position (preventing duplicate)")
-                # Revert status back to active so it doesn't get lost
-                import sqlite3
+                stop_new = decision.get('stop_loss')
+                tp1_new  = decision.get('take_profit_1')
+                tp2_new  = decision.get('take_profit_2')
+                import sqlite3 as _sq3
                 try:
-                    db_path = Path(__file__).parent / 'trading_data' / 'trading_history.db'
-                    conn = sqlite3.connect(str(db_path))
-                    conn.execute(
+                    _db = Path(__file__).parent / 'trading_data' / 'trading_history.db'
+                    _conn = _sq3.connect(str(_db))
+                    _conn.row_factory = _sq3.Row
+                    row = _conn.execute(
+                        "SELECT trade_id, stop_loss, take_profit_1 FROM trade_records WHERE asset_symbol=? AND status='open' LIMIT 1",
+                        (ticker,)
+                    ).fetchone()
+                    if row and (stop_new or tp1_new):
+                        _tid, stop_old, tp1_old = row['trade_id'], row['stop_loss'], row['take_profit_1']
+                        _conn.execute(
+                            "UPDATE trade_records SET stop_loss=?, take_profit_1=?, take_profit_2=? WHERE trade_id=?",
+                            (stop_new, tp1_new, tp2_new, _tid)
+                        )
+                        logger.info(
+                            f"  🔄 {ticker} exit levels updated (re-analysis) — "
+                            f"stop: {stop_old}→{stop_new}, TP1: {tp1_old}→{tp1_new}"
+                        )
+                        self.alerts.send_notify('exit_update', {
+                            'ticker': ticker, 'trade_id': _tid,
+                            'stop_old': stop_old, 'stop_new': stop_new,
+                            'tp1_old': tp1_old,  'tp1_new': tp1_new,
+                            'tp2_new': tp2_new,
+                            'thesis': decision.get('thesis', ''),
+                        })
+                    else:
+                        logger.warning(f"  🚫 {ticker} SKIPPED — already have open position (no updated levels to apply)")
+                    # Revert conditional to active so it can re-trigger on next price check
+                    _conn.execute(
                         "UPDATE conditional_tracking SET status='active', updated_at=? WHERE id=?",
                         (datetime.now().isoformat(), decision['conditional_id'])
                     )
-                    conn.commit()
-                    conn.close()
-                except Exception:
-                    pass
+                    _conn.commit(); _conn.close()
+                except Exception as _e:
+                    logger.warning(f"  ⚠️  Exit level update failed for {ticker}: {_e}")
                 continue
 
             if not self.auto_execute:
@@ -1039,6 +1072,23 @@ class AutonomousBroker:
                     self.decision_engine.record_decision(decision, executed=True, result="ACQUISITION_ENTERED")
                     self._notify_acquisition_triggered(decision, executed=True)
                     logger.info(f"  ✅ {ticker} acquisition entry executed (trade_ids={trade_ids})")
+                    # Write analyst-derived exit levels to the new trade record
+                    stop = decision.get('stop_loss')
+                    tp1  = decision.get('take_profit_1')
+                    tp2  = decision.get('take_profit_2')
+                    if stop or tp1:
+                        try:
+                            _db = Path(__file__).parent / 'trading_data' / 'trading_history.db'
+                            _conn = sqlite3.connect(str(_db))
+                            for tid in trade_ids:
+                                _conn.execute(
+                                    "UPDATE trade_records SET stop_loss=?, take_profit_1=?, take_profit_2=? WHERE trade_id=?",
+                                    (stop, tp1, tp2, tid)
+                                )
+                            _conn.commit(); _conn.close()
+                            logger.info(f"  📌 {ticker} exit levels stored — stop=${stop}, TP1=${tp1}, TP2=${tp2}")
+                        except Exception as _e:
+                            logger.warning(f"  ⚠️  Could not write exit levels for {ticker}: {_e}")
                 else:
                     logger.warning(f"  ⚠️  {ticker} entry returned no trade IDs")
             except Exception as e:

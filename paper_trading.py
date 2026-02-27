@@ -258,6 +258,13 @@ class PaperTradingEngine:
         self.conn = sqlite3.connect(str(self.db_path))
         self.cursor = self.conn.cursor()
         self.cursor.row_factory = sqlite3.Row
+        # Idempotent migration: add per-position exit level columns if they don't exist yet
+        for col_def in ('stop_loss REAL', 'take_profit_1 REAL', 'take_profit_2 REAL'):
+            try:
+                self.cursor.execute(f"ALTER TABLE trade_records ADD COLUMN {col_def}")
+                self.conn.commit()
+            except Exception:
+                pass  # Column already exists — SQLite raises OperationalError on duplicate ADD COLUMN
 
     def disconnect(self):
         """Disconnect from database"""

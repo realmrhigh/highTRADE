@@ -150,10 +150,13 @@ def call(
         if result[0] is not None:
             return result
         # Quota exhausted on Pro/Reasoning? Auto-downgrade to balanced rather than silently failing.
+        # Matches both "TerminalQuotaError" (hard daily limit) and "No capacity available" (429 throttle).
         _pro_model = MODEL_CONFIG['reasoning']['model_id']
-        if (cfg['model_id'] == _pro_model
-                and ('TerminalQuotaError' in _last_cli_error
-                     or 'exhausted your capacity' in _last_cli_error)):
+        _is_quota_err = ('TerminalQuotaError' in _last_cli_error
+                         or 'exhausted your capacity' in _last_cli_error
+                         or 'No capacity available' in _last_cli_error
+                         or ('"code": 429' in _last_cli_error or "'code': 429" in _last_cli_error))
+        if cfg['model_id'] == _pro_model and _is_quota_err:
             logger.warning("⚠️  Reasoning quota exhausted — auto-downgrading to balanced tier")
             cfg = dict(MODEL_CONFIG['balanced'])
             result = _call_via_cli(prompt, cfg)

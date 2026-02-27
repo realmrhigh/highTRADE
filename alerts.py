@@ -501,6 +501,25 @@ class AlertSystem:
                     f"{status_line}"
                 )
 
+            elif event_type == 'exit_update':
+                ticker   = data.get('ticker', '?')
+                stop_old = data.get('stop_old')
+                stop_new = data.get('stop_new')
+                tp1_old  = data.get('tp1_old')
+                tp1_new  = data.get('tp1_new')
+                tp2_new  = data.get('tp2_new')
+                thesis   = (data.get('thesis') or '')[:120]
+                def _fmt_lvl(old, new, label):
+                    old_str = f"${old:.2f}" if old else "—"
+                    new_str = f"*${new:.2f}*" if new else "—"
+                    return f"  {label}: {old_str} → {new_str}"
+                lines = [f"🔄 *{ticker} exit levels updated* (fresh re-analysis)"]
+                if stop_new: lines.append(_fmt_lvl(stop_old, stop_new, "Stop "))
+                if tp1_new:  lines.append(_fmt_lvl(tp1_old,  tp1_new,  "TP1  "))
+                if tp2_new:  lines.append(f"  TP2 : *${tp2_new:.2f}*")
+                if thesis:   lines.append(f"_{thesis}_")
+                text = "\n".join(lines)
+
             else:
                 text = f"{event_type}: {json.dumps(data, indent=2)}"
 

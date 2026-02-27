@@ -1058,12 +1058,12 @@ Check dashboard for detailed analysis.
             if not past_window or already_ran:
                 continue
 
-            setattr(self, attr, today)
             logger.info(f"📊 {emoji} Flash briefing firing ({tgt_hour:02d}:{tgt_min:02d})...")
             try:
                 self._run_flash_briefing(label, emoji)
+                setattr(self, attr, today)   # only stamp date on success — enables retry next cycle on failure
             except Exception as e:
-                logger.warning(f"{emoji} Flash briefing failed: {e}")
+                logger.warning(f"{emoji} Flash briefing failed — will retry next cycle: {e}")
 
     def _run_flash_briefing(self, label: str, emoji: str):
         """Build a concise Flash prompt from live state and send summary to #logs-silent."""
@@ -1229,8 +1229,7 @@ DATA GAPS: On a final line starting with "GAPS:" list any specific data that was
         text, in_tok, out_tok = gemini_call(prompt, model_key=model_key_to_use)
 
         if not text:
-            logger.warning(f"{emoji} Flash briefing: no response from Gemini")
-            return
+            raise RuntimeError(f"Gemini returned no response for {label} flash")
 
         # ── Parse GAPS: line from end of response ────────────────────────
         gaps_list = []
