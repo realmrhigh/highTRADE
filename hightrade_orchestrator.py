@@ -177,6 +177,7 @@ class HighTradeOrchestrator:
         self._health_check_date  = None   # Track twice-weekly health check (Mon + Thu)
         self._verifier_cycle    = 0       # Counts cycles toward next conditional verification run
         self._verifier_interval = 4       # Normal: every ~60 min (4 × 15-min cycles); DEFCON 1-2: every cycle
+        self._last_flash_forecast = None  # DEFCON forecast from latest flash briefing (1-5 or None)
 
         # Slash command processor
         self.cmd_processor = CommandProcessor(self)
@@ -764,7 +765,11 @@ class HighTradeOrchestrator:
             # Calculate and record
             logger.info("📈 Calculating signal scores...")
             signal_scores = self.monitor.calculate_signal_scores(yield_data, vix_data, market_data)
-            current_defcon, signal_score = self.monitor.calculate_defcon_level(signal_scores, market_data, news_signal)
+            current_defcon, signal_score = self.monitor.calculate_defcon_level(
+                signal_scores, market_data, news_signal,
+                flash_forecast=getattr(self, '_last_flash_forecast', None),
+                macro_modifier=macro_result.get('defcon_modifier') if macro_result else None,
+            )
 
             logger.info(f"  📊 Bond Yield Spike Score: {signal_scores.get('bond_yield_spike', 0):.1f}")
             logger.info(f"  📊 VIX Spike Score: {signal_scores.get('vix_spike', 0):.1f}")
@@ -1198,7 +1203,10 @@ OUTPUT FORMAT (plain text, no JSON):
 4. Active conditionals — which are closest to triggering? Any that could fill today?
 5. Your thesis for the session: what would need to happen for a buy signal or a hold?
 6-7. Key risk levels and one specific thing to monitor through the first hour.
-DATA GAPS: On a final line starting with "GAPS:" list any specific data that was missing — e.g. "GAPS: pre-market volume data, overnight futures move, earnings releases today". If nothing is missing write "GAPS: none"."""
+DATA GAPS: On the second-to-last line starting with "GAPS:" list any specific data that was missing — e.g. "GAPS: pre-market volume data, overnight futures move, earnings releases today". If nothing is missing write "GAPS: none".
+STRUCTURED TAIL: On the final line output a single JSON object (no markdown fences, no line breaks):
+{{"defcon_forecast":<1-5>,"watch":[{{"ticker":"SYMBOL","urgency":"high|medium|low","reason":"one sentence"}}]}}
+Only include tickers that appear in the ACTIVE CONDITIONALS section above. If none are notable, output: {{"defcon_forecast":<1-5>,"watch":[]}}"""
             model_key_to_use = 'balanced'   # thinking=8000 — worth the extra reasoning at open
 
         else:  # midday
@@ -1222,7 +1230,10 @@ OUTPUT FORMAT (plain text, no JSON):
 3. Which conditionals moved significantly since open? Any that got close or crossed targets?
 4. Any midday catalysts (Fed speakers, economic data, earnings) affecting our sectors?
 5. Afternoon watch: what are the key levels and setups heading into the close?
-DATA GAPS: On a final line starting with "GAPS:" list any specific data that was missing. If nothing is missing write "GAPS: none"."""
+DATA GAPS: On the second-to-last line starting with "GAPS:" list any specific data that was missing. If nothing is missing write "GAPS: none".
+STRUCTURED TAIL: On the final line output a single JSON object (no markdown fences, no line breaks):
+{{"defcon_forecast":<1-5>,"watch":[{{"ticker":"SYMBOL","urgency":"high|medium|low","reason":"one sentence"}}]}}
+Only include tickers that appear in the ACTIVE CONDITIONALS section above. If none are notable, output: {{"defcon_forecast":<1-5>,"watch":[]}}"""
             model_key_to_use = 'fast'       # quick midday check — no reasoning overhead needed
 
         from gemini_client import call as gemini_call
@@ -1242,6 +1253,28 @@ DATA GAPS: On a final line starting with "GAPS:" list any specific data that was
                     gaps_list = [g.strip() for g in gaps_raw.split(',') if g.strip()]
                 # Remove GAPS line from display summary
                 summary_text = '\n'.join(lines[:i] + lines[i+1:]).strip()
+                break
+
+        # ── Parse STRUCTURED TAIL (last non-empty line, single JSON object) ──
+        defcon_forecast = None
+        watch_list = []
+        tail_lines = summary_text.strip().splitlines()
+        # Walk from the end looking for the JSON tail line
+        for _j, _tl in enumerate(reversed(tail_lines)):
+            _stripped = _tl.strip()
+            if _stripped.startswith('{') and _stripped.endswith('}'):
+                try:
+                    tail_obj = json.loads(_stripped)
+                    _fc = tail_obj.get('defcon_forecast')
+                    if isinstance(_fc, (int, float)) and 1 <= int(_fc) <= 5:
+                        defcon_forecast = int(_fc)
+                    watch_list = tail_obj.get('watch', [])
+                    # Remove the JSON tail from display text
+                    _idx = len(tail_lines) - 1 - _j
+                    summary_text = '\n'.join(tail_lines[:_idx]).strip()
+                    logger.info(f"  📊 Flash forecast: DEFCON {defcon_forecast}, watching {len(watch_list)} tickers")
+                except Exception:
+                    pass
                 break
 
         logger.info(f"  {emoji} Flash ({in_tok}→{out_tok} tok): {summary_text[:120]}...")
@@ -1300,7 +1333,9 @@ DATA GAPS: On a final line starting with "GAPS:" list any specific data that was
                 out_tok,
                 json.dumps({'label': label, 'defcon': defcon,
                             'macro_score': macro_score, 'summary': summary_text,
-                            'gaps': gaps_list}),
+                            'gaps': gaps_list,
+                            'defcon_forecast': defcon_forecast,
+                            'watch': watch_list}),
                 json.dumps(gaps_list) if gaps_list else None,
             ))
             conn.commit()
@@ -1322,6 +1357,75 @@ DATA GAPS: On a final line starting with "GAPS:" list any specific data that was
         }
         self.alerts.send_notify('flash_briefing', payload)
         self.alerts.send_silent_log('flash_briefing', payload)
+
+        # Store latest flash DEFCON forecast for use by next monitoring cycle
+        self._last_flash_forecast = defcon_forecast
+        if defcon_forecast:
+            logger.info(f"  🧭 Flash DEFCON forecast stored: {defcon_forecast}/5")
+
+        # Update per-ticker attention scores from flash watch list
+        self._update_attention_scores(watch_list)
+
+    def _update_attention_scores(self, watch_list: list):
+        """Decay all active conditional attention scores -5/cycle, apply flash bumps + price proximity."""
+        import sqlite3 as _sq
+        urgency_bump = {'high': 25, 'medium': 15, 'low': 8}
+        now = datetime.now().isoformat()
+        try:
+            conn = _sq.connect(str(DB_PATH))
+
+            # 1. Decay all active conditionals by 5 (floor 0)
+            conn.execute("""
+                UPDATE conditional_tracking
+                SET attention_score      = MAX(0, COALESCE(attention_score, 0) - 5),
+                    attention_updated_at = ?
+                WHERE status = 'active'
+            """, (now,))
+
+            # 2. Flash mention bumps
+            for item in (watch_list or []):
+                ticker = (item.get('ticker') or '').upper().strip()
+                bump   = urgency_bump.get(str(item.get('urgency', 'low')).lower(), 8)
+                if ticker:
+                    conn.execute("""
+                        UPDATE conditional_tracking
+                        SET attention_score      = MIN(100, COALESCE(attention_score, 0) + ?),
+                            attention_updated_at = ?
+                        WHERE ticker = ? AND status = 'active'
+                    """, (bump, now, ticker))
+                    logger.info(f"  📍 Attention bump: {ticker} +{bump} (urgency={item.get('urgency','low')})")
+
+            # 3. Price proximity bump (+15 if within 2% of entry target)
+            rows = conn.execute("""
+                SELECT id, ticker, entry_price_target
+                FROM conditional_tracking
+                WHERE status = 'active' AND entry_price_target IS NOT NULL
+            """).fetchall()
+            conn.commit()
+
+            prox_bumped = []
+            for row_id, ticker, target in rows:
+                try:
+                    import yfinance as _yf
+                    price = _yf.Ticker(ticker).fast_info.get('lastPrice') or \
+                            _yf.Ticker(ticker).fast_info.get('regularMarketPrice')
+                    if price and target and abs(float(price) - float(target)) / float(target) <= 0.02:
+                        conn.execute("""
+                            UPDATE conditional_tracking
+                            SET attention_score      = MIN(100, COALESCE(attention_score, 0) + 15),
+                                attention_updated_at = ?
+                            WHERE id = ?
+                        """, (now, row_id))
+                        prox_bumped.append(ticker)
+                except Exception:
+                    pass
+
+            conn.commit()
+            conn.close()
+            if prox_bumped:
+                logger.info(f"  📍 Proximity bump (+15) applied to: {', '.join(prox_bumped)}")
+        except Exception as e:
+            logger.warning(f"  ⚠️  _update_attention_scores failed: {e}")
 
     def _check_acquisition_pipeline(self, force: bool = False):
         """

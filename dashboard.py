@@ -193,6 +193,23 @@ def fetch_hound_last_run():
         """).fetchone()
         return row[0] if row else None
 
+def fetch_active_conditionals():
+    """Fetch active entry conditionals ordered by attention score descending."""
+    with _conn() as db:
+        try:
+            rows = db.execute("""
+                SELECT ticker, entry_price_target, stop_loss, take_profit_1,
+                       research_confidence, watch_tag, thesis_summary,
+                       attention_score, verification_count, date_created
+                FROM conditional_tracking
+                WHERE status = 'active'
+                ORDER BY COALESCE(attention_score, 0) DESC, research_confidence DESC
+                LIMIT 30
+            """).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
 
 # ─── Utility Helpers ─────────────────────────────────────────────────────────
 
@@ -410,6 +427,47 @@ def build_wl_rows(watchlist):
         )
     return ''.join(rows)
 
+def _attention_badge(score):
+    """Return emoji badge for attention score (None/0-39=cold, 40-74=warm, 75+=hot)."""
+    if score is None or float(score) < 40:
+        return '⬜'
+    elif float(score) < 75:
+        return '🟡'
+    else:
+        return '🔥'
+
+def build_conditional_rows(conditionals):
+    if not conditionals:
+        return '<tr><td colspan="8" style="color:#555;text-align:center;padding:20px;">No active conditionals</td></tr>'
+    rows = []
+    for c in conditionals:
+        score    = c.get('attention_score')
+        badge    = _attention_badge(score)
+        score_str = f"{score:.0f}" if score is not None else '—'
+        conf     = float(c.get('research_confidence') or 0)
+        conf_c   = '#00ff88' if conf >= 0.75 else '#ffd700' if conf >= 0.5 else '#888'
+        target   = c.get('entry_price_target')
+        stop     = c.get('stop_loss')
+        tp1      = c.get('take_profit_1')
+        ticker   = c.get('ticker', '?')
+        tag      = (c.get('watch_tag') or 'untagged').replace('-', ' ').title()
+        thesis   = (c.get('thesis_summary') or '—')[:160]
+        verif    = int(c.get('verification_count') or 0)
+        rows.append(
+            '<tr class="trow">'
+            f'<td class="sym" onclick="showChart(\'{ticker}\')">{badge} {ticker}</td>'
+            f'<td style="color:#aaa;font-size:11px;text-align:center;">{score_str}</td>'
+            f'<td><span style="color:{conf_c};font-weight:700;">{conf:.0%}</span></td>'
+            f'<td style="color:#00d4ff;font-size:11px;">{f"${target:.2f}" if target else "—"}</td>'
+            f'<td style="color:#ff8c00;font-size:11px;">{f"${stop:.2f}" if stop else "—"}</td>'
+            f'<td style="color:#7fff00;font-size:11px;">{f"${tp1:.2f}" if tp1 else "—"}</td>'
+            f'<td style="color:#888;font-size:10px;">{tag}</td>'
+            f'<td style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;">'
+            f'{thesis}{"…" if len(c.get("thesis_summary") or "") > 160 else ""}</td>'
+            '</tr>'
+        )
+    return ''.join(rows)
+
 def build_news_items(news):
     if not news:
         return '<div style="color:#555;text-align:center;padding:20px;">No news signals</div>'
@@ -611,7 +669,8 @@ def build_model_card(b, title, icon):
 # ─── Main HTML Assembly ───────────────────────────────────────────────────────
 
 def build_html(status, positions, closed, stats, briefings, macro, watchlist,
-               sig_history, news, cong_clusters, cong_trades, hound_candidates, hound_last_run=None):
+               sig_history, news, cong_clusters, cong_trades, hound_candidates, hound_last_run=None,
+               conditionals=None):
 
     now_str    = _et_now().strftime('%Y-%m-%d %H:%M:%S ET')
     last_cycle = status.get('created_at', '—')
@@ -713,6 +772,7 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
     open_rows      = build_open_rows(positions)
     closed_rows    = build_closed_rows(closed)
     wl_rows        = build_wl_rows(watchlist)
+    cond_rows      = build_conditional_rows(conditionals or [])
     news_items     = build_news_items(news)
     hound_rows     = build_hound_rows(hound_candidates)
     cong_cl_rows   = build_cong_cluster_rows(cong_clusters)
@@ -1323,6 +1383,21 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
   </div>
 </div>
 
+<!-- ═══ ACTIVE CONDITIONALS ═══ -->
+<div class="grid-full">
+  <div class="panel">
+    <div class="panel-title">Active Conditionals &mdash; Entry Queue &nbsp;<span style="font-size:10px;color:#666;font-weight:400;">🔥 hot (&ge;75) &nbsp; 🟡 warm (&ge;40) &nbsp; ⬜ cold</span></div>
+    <div class="scroll-wrap">
+      <table>
+        <thead><tr>
+          <th>Ticker</th><th>Attention</th><th>Conf</th><th>Target</th><th>Stop</th><th>TP1</th><th>Tag</th><th>Thesis</th>
+        </tr></thead>
+        <tbody>{cond_rows}</tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
 <!-- ═══ NEWS · CONGRESSIONAL ═══ -->
 <div class="grid-mid">
 
@@ -1615,8 +1690,10 @@ def generate_dashboard_html():
     cong_tr, cong_cl = fetch_congressional()
     hound_candidates = fetch_hound_candidates()
     hound_last_run   = fetch_hound_last_run()
+    conditionals     = fetch_active_conditionals()
     return build_html(status, positions, closed, stats, briefings, macro,
-                      watchlist, sig_hist, news, cong_cl, cong_tr, hound_candidates, hound_last_run)
+                      watchlist, sig_hist, news, cong_cl, cong_tr, hound_candidates, hound_last_run,
+                      conditionals=conditionals)
 
 
 # ─── Flask server ─────────────────────────────────────────────────────────────

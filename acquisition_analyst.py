@@ -305,7 +305,8 @@ def _ensure_conditional_table(conn: sqlite3.Connection):
     conn.commit()
 
     # Migrate: add watch_tag columns if they don't exist yet (SQLite has no IF NOT EXISTS for columns)
-    for col, coltype in [('watch_tag', 'TEXT'), ('watch_tag_rationale', 'TEXT')]:
+    for col, coltype in [('watch_tag', 'TEXT'), ('watch_tag_rationale', 'TEXT'),
+                         ('attention_score', 'REAL'), ('attention_updated_at', 'TEXT')]:
         try:
             conn.execute(f"ALTER TABLE conditional_tracking ADD COLUMN {col} {coltype}")
             conn.commit()

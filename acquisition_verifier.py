@@ -179,7 +179,7 @@ def run_verification_cycle() -> Dict:
                    verification_count, time_horizon_days
             FROM conditional_tracking
             WHERE status = 'active'
-            ORDER BY research_confidence DESC
+            ORDER BY COALESCE(attention_score, 0) DESC, research_confidence DESC
         """)
         actives = [dict(r) for r in cursor.fetchall()]
     except Exception as e:

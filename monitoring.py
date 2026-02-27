@@ -153,7 +153,8 @@ class SignalMonitor:
         self.signal_scores = scores
         return scores
 
-    def calculate_defcon_level(self, signal_scores, market_data, news_signal=None):
+    def calculate_defcon_level(self, signal_scores, market_data, news_signal=None,
+                               flash_forecast=None, macro_modifier=None):
         """Determine DEFCON level based on signal clustering, news override, and Claude analysis"""
         composite_score = sum(signal_scores.values()) / len(signal_scores) if signal_scores else 0
 
@@ -170,6 +171,38 @@ class SignalMonitor:
             base_defcon = 4  # ELEVATED
         else:
             base_defcon = 5  # PEACETIME
+
+        # ── Soft nudges from macro environment and flash DEFCON forecast ────────
+        # Each source contributes at most ±1. Combined nudge is clamped to ±1.
+        # DEFCON scale: 1=most bullish (buy/execute) → 5=most defensive (hold cash)
+        _nudge = 0
+        if macro_modifier is not None:
+            # macro_modifier: negative = bullish conditions (lower DEFCON),
+            #                 positive = stressed conditions (raise DEFCON)
+            # Use threshold comparison — not round() — to avoid banker's rounding on -0.5
+            if macro_modifier <= -0.5:
+                _nudge -= 1   # macro says conditions are favorable
+            elif macro_modifier >= 0.5:
+                _nudge += 1   # macro says conditions are stressed
+        if flash_forecast is not None:
+            try:
+                _ff = int(flash_forecast)
+                if 1 <= _ff <= 5:
+                    if _ff < base_defcon:
+                        _nudge -= 1   # flash analysis more bullish than quant signals
+                    elif _ff > base_defcon:
+                        _nudge += 1   # flash analysis more bearish than quant signals
+            except (TypeError, ValueError):
+                pass
+        _nudge = max(-1, min(1, _nudge))   # clamp combined nudge to ±1
+        base_defcon = max(1, min(5, base_defcon + _nudge))
+        if _nudge != 0:
+            import logging as _logging
+            _logging.getLogger(__name__).info(
+                f"  💡 Soft nudge applied: {'+' if _nudge > 0 else ''}{_nudge} "
+                f"(macro_modifier={macro_modifier}, flash_forecast={flash_forecast})"
+                f" → base DEFCON {base_defcon}"
+            )
 
         # Check for Claude analysis feedback (if available)
         if news_signal and news_signal.get('news_signal_id'):
