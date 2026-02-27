@@ -11,7 +11,15 @@ import logging
 import json
 from pathlib import Path
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import time
+
+# All market-schedule decisions use Eastern Time regardless of server location
+_ET = ZoneInfo('America/New_York')
+
+def _et_now() -> datetime:
+    """Current datetime in US/Eastern — used for all trading-schedule comparisons."""
+    return datetime.now(_ET)
 from monitoring import SignalMonitor
 from alerts import AlertSystem
 from dashboard import generate_dashboard_html
@@ -167,6 +175,8 @@ class HighTradeOrchestrator:
         self._morning_flash_date = None   # Track morning Flash briefing (9:30 AM)
         self._midday_flash_date  = None   # Track midday Flash briefing (12:00 PM)
         self._health_check_date  = None   # Track twice-weekly health check (Mon + Thu)
+        self._verifier_cycle    = 0       # Counts cycles toward next conditional verification run
+        self._verifier_interval = 4       # Normal: every ~60 min (4 × 15-min cycles); DEFCON 1-2: every cycle
 
         # Slash command processor
         self.cmd_processor = CommandProcessor(self)
@@ -958,6 +968,34 @@ Check dashboard for detailed analysis.
         # ── Intraday Flash Briefings (morning 9:30 AM, midday 12:00 PM) ───
         self._check_flash_briefings()
 
+        # ── Conditional Verifier (hourly normal · every cycle at DEFCON 1-2) ────────
+        self._verifier_cycle += 1
+        _v_interval = 1 if self.previous_defcon <= 2 else self._verifier_interval
+        if self._verifier_cycle >= _v_interval:
+            self._verifier_cycle = 0
+            _v_mode = 'HIGH-ALERT (15 min)' if self.previous_defcon <= 2 else 'hourly'
+            logger.info(f"🔍 Conditional verifier firing [{_v_mode}] — DEFCON {self.previous_defcon}/5")
+            try:
+                from acquisition_verifier import run_verification_cycle
+                summary     = run_verification_cycle()
+                confirmed   = summary.get('confirmed',   0)
+                flagged     = summary.get('flagged',     0)
+                invalidated = summary.get('invalidated', 0)
+                logger.info(f"  ✅ Verifier: confirmed={confirmed}, flagged={flagged}, invalidated={invalidated}")
+                _v_payload = {
+                    'confirmed':   confirmed,
+                    'flagged':     flagged,
+                    'invalidated': invalidated,
+                    'defcon':      self.previous_defcon,
+                    'mode':        _v_mode,
+                }
+                if flagged or invalidated:
+                    # Push notify — thesis changed or conditional dropped
+                    self.alerts.send_notify('verifier_alert', _v_payload)
+                self.alerts.send_silent_log('verifier_alert', _v_payload)
+            except Exception as e:
+                logger.warning(f"  ⚠️ Conditional verifier failed: {e}")
+
         # ── Acquisition Pipeline Checkpoints (pre-market 9:00 AM, mid-day 12:30 PM) ─
         self._check_acquisition_pipeline()
 
@@ -974,8 +1012,8 @@ Check dashboard for detailed analysis.
         Checks APIs, monitoring recency, recurring data gaps, and new Gemini models.
         Results sent to #all-hightrade via send_notify().
         """
-        now = datetime.now()
-        # Only run on Monday (0) or Thursday (3)
+        now = _et_now()
+        # Only run on Monday (0) or Thursday (3) — ET calendar day
         if now.weekday() not in (0, 3):
             return
         today = now.strftime('%Y-%m-%d')
@@ -1004,7 +1042,7 @@ Check dashboard for detailed analysis.
         (model_key = 'morning_flash' / 'midday_flash') so the 4:30 PM Pro synthesis
         has structured intraday context. Summary also sent to #logs-silent.
         """
-        now   = datetime.now()
+        now   = _et_now()                      # Eastern Time for market schedule
         today = now.strftime('%Y-%m-%d')
         hour  = now.hour
         minute = now.minute
@@ -1032,7 +1070,7 @@ Check dashboard for detailed analysis.
         import sqlite3 as _sq
 
         # ── Gather context ────────────────────────────────────────────────
-        now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
+        now_str = _et_now().strftime('%Y-%m-%d %H:%M ET')
 
         # Latest news signal from DB
         try:
@@ -1137,9 +1175,10 @@ Check dashboard for detailed analysis.
         macro_score = self._get_latest_macro_score()
         defcon = self.previous_defcon
 
-        # ── Build prompt ─────────────────────────────────────────────────
-        prompt = f"""You are HighTrade's intraday market analyst. Today is {now_str}.
-Provide a BRIEF {label} market check-in — 4 to 6 sentences max. Be direct and actionable.
+        # ── Build time-of-day specific prompt ───────────────────────────
+        if label == 'morning':
+            prompt = f"""You are HighTrade's pre-market analyst. Today is {now_str} — market opens in minutes or just opened.
+Provide a START-OF-DAY market setup brief — 5 to 7 sentences. Be direct and actionable.
 
 CURRENT STATE:
   DEFCON: {defcon}/5
@@ -1152,16 +1191,42 @@ OPEN POSITIONS (live prices + unrealized P&L):
 ACTIVE CONDITIONALS (live price vs entry target):
 {cond_ctx}
 
-OUTPUT FORMAT (plain text, no JSON needed):
-1. One sentence on overall market tone right now.
-2. Any immediate risks or catalysts to watch.
-3. Open positions — are they behaving as expected given entry vs current price and P&L?
-4. Which conditionals are closest to triggering (within ~1-2% of target)?
-5. One actionable takeaway for the next few hours.
-DATA GAPS: On a final line starting with "GAPS:" list any specific data that was missing or would have sharpened this analysis — e.g. "GAPS: real-time sector rotation, VIX term structure, MSFT options flow". If nothing is missing write "GAPS: none"."""
+OUTPUT FORMAT (plain text, no JSON):
+1. Overall market regime and tone at open — what is the macro backdrop setting up today?
+2. Any overnight developments, gap conditions, or pre-market catalysts to be aware of?
+3. Open positions — initial P&L at open. Any immediate stop or target levels to watch today?
+4. Active conditionals — which are closest to triggering? Any that could fill today?
+5. Your thesis for the session: what would need to happen for a buy signal or a hold?
+6-7. Key risk levels and one specific thing to monitor through the first hour.
+DATA GAPS: On a final line starting with "GAPS:" list any specific data that was missing — e.g. "GAPS: pre-market volume data, overnight futures move, earnings releases today". If nothing is missing write "GAPS: none"."""
+            model_key_to_use = 'balanced'   # thinking=8000 — worth the extra reasoning at open
+
+        else:  # midday
+            prompt = f"""You are HighTrade's midday analyst. Today is {now_str} — midday check-in.
+Provide a MID-DAY status update — 4 to 6 sentences. Focus on what has CHANGED since open.
+
+CURRENT STATE:
+  DEFCON: {defcon}/5
+  Macro Score: {macro_score:.0f}/100
+  News: {news_ctx}
+
+OPEN POSITIONS (live prices + unrealized P&L):
+{pos_ctx}
+
+ACTIVE CONDITIONALS (live price vs entry target):
+{cond_ctx}
+
+OUTPUT FORMAT (plain text, no JSON):
+1. How is the market tracking vs the morning setup? Any regime shift?
+2. Open positions — P&L update, momentum direction, any thesis changes?
+3. Which conditionals moved significantly since open? Any that got close or crossed targets?
+4. Any midday catalysts (Fed speakers, economic data, earnings) affecting our sectors?
+5. Afternoon watch: what are the key levels and setups heading into the close?
+DATA GAPS: On a final line starting with "GAPS:" list any specific data that was missing. If nothing is missing write "GAPS: none"."""
+            model_key_to_use = 'fast'       # quick midday check — no reasoning overhead needed
 
         from gemini_client import call as gemini_call
-        text, in_tok, out_tok = gemini_call(prompt, model_key='fast')
+        text, in_tok, out_tok = gemini_call(prompt, model_key=model_key_to_use)
 
         if not text:
             logger.warning(f"{emoji} Flash briefing: no response from Gemini")
@@ -1185,7 +1250,7 @@ DATA GAPS: On a final line starting with "GAPS:" list any specific data that was
             logger.info(f"  🔍 Flash data gaps: {' | '.join(gaps_list)}")
 
         # ── Write to daily_briefings DB so Pro end-of-day has structured intraday context ──
-        date_str = datetime.now().strftime('%Y-%m-%d')
+        date_str = _et_now().strftime('%Y-%m-%d')   # ET date — market date, not server date
         model_key_db = f"{label.lower().replace(' ', '_')}_flash"  # e.g. 'morning_flash', 'midday_flash'
         try:
             import sqlite3 as _sq
@@ -1267,13 +1332,13 @@ DATA GAPS: On a final line starting with "GAPS:" list any specific data that was
         3. Close: Handled by _check_daily_briefing
         """
         try:
-            now = datetime.now()
+            now = _et_now()                    # Eastern Time for market schedule
             today = now.strftime('%Y-%m-%d')
-            
-            # Define checkpoints
+
+            # Define checkpoints (all ET)
             checkpoints = [
-                (9, 0, 'pre_market'),   # 9:00 AM
-                (12, 30, 'mid_day')     # 12:30 PM
+                (9, 0, 'pre_market'),   # 9:00 AM ET
+                (12, 30, 'mid_day')     # 12:30 PM ET
             ]
             
             for hour, minute, label in checkpoints:
@@ -1285,14 +1350,8 @@ DATA GAPS: On a final line starting with "GAPS:" list any specific data that was
                     logger.info(f"🔬 Triggering {label.replace('_', ' ')} acquisition analysis...")
                     self._pipeline_runs.add(run_key)
                     
-                    # 1. Verification cycle (Flash) — check existing conditionals
-                    try:
-                        from acquisition_verifier import run_verification_cycle
-                        run_verification_cycle()
-                    except Exception as e:
-                        logger.warning(f"  ⚠️ Pipeline verification failed: {e}")
-                        
-                    # 2. Researcher -> Analyst chain for any pending items (from Hound etc)
+                    # Researcher -> Analyst chain for any pending items (from Hound etc)
+                    # Note: verifier runs independently on its own cycle — no duplicate call here
                     self._run_acquisition_pipeline(today, skip_date_check=True)
                     
         except Exception as e:
@@ -1301,9 +1360,9 @@ DATA GAPS: On a final line starting with "GAPS:" list any specific data that was
     def _check_daily_briefing(self, force: bool = False):
         """Fire daily briefing once per day after market close (4:30 PM ET)."""
         try:
-            now = datetime.now()
+            now = _et_now()                    # Eastern Time — market close is 4 PM ET
             today = now.strftime('%Y-%m-%d')
-            market_close_hour = 16  # 4 PM — briefing triggers at 4:30
+            market_close_hour = 16  # 4 PM ET — briefing triggers at 4:30 ET
             market_close_minute = 30
 
             # Only fire after 4:30 PM and only once per date

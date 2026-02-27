@@ -486,6 +486,21 @@ class AlertSystem:
                     f"_({in_tok}→{out_tok} tokens)_"
                 )
 
+            elif event_type == 'verifier_alert':
+                confirmed   = data.get('confirmed',   0)
+                flagged     = data.get('flagged',     0)
+                invalidated = data.get('invalidated', 0)
+                defcon      = data.get('defcon',      '?')
+                mode        = data.get('mode',        'hourly')
+                status_line = f"✅ {confirmed} confirmed"
+                if flagged:     status_line += f" · 🚩 {flagged} flagged"
+                if invalidated: status_line += f" · ❌ {invalidated} invalidated"
+                emoji = '⚠️' if (flagged or invalidated) else '🔍'
+                text = (
+                    f"{emoji} *Verifier [{mode}]* — DEFCON {defcon}/5\n"
+                    f"{status_line}"
+                )
+
             else:
                 text = f"{event_type}: {json.dumps(data, indent=2)}"
 
@@ -583,6 +598,21 @@ class AlertSystem:
                     f"🔭 DEFCON Outlook: {defcon_fc}"
                     f"{gaps_line}\n"
                     f"_({in_tok}→{out_tok} tokens)_"
+                )
+
+            elif event_type == 'verifier_alert':
+                confirmed   = data.get('confirmed',   0)
+                flagged     = data.get('flagged',     0)
+                invalidated = data.get('invalidated', 0)
+                defcon      = data.get('defcon',      '?')
+                mode        = data.get('mode',        'hourly')
+                status_line = f"✅ {confirmed} confirmed"
+                if flagged:     status_line += f" · 🚩 {flagged} flagged"
+                if invalidated: status_line += f" · ❌ {invalidated} invalidated"
+                emoji = '⚠️' if (flagged or invalidated) else '🔍'
+                text = (
+                    f"{emoji} *Verifier [{mode}]* — DEFCON {defcon}/5\n"
+                    f"{status_line}"
                 )
 
             elif event_type == 'health_report':

@@ -11,7 +11,12 @@ import sys
 import os
 import webbrowser
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
+
+_ET = ZoneInfo('America/New_York')
+def _et_now() -> datetime:
+    return datetime.now(_ET)
 
 SCRIPT_DIR = Path(__file__).parent
 DB_PATH    = SCRIPT_DIR / "trading_data" / "trading_history.db"
@@ -498,6 +503,48 @@ def build_hound_rows(candidates):
         )
     return ''.join(rows)
 
+def build_flash_card(b, label, time_str, emoji, border_color='#00d4ff33'):
+    """Compact card for morning/midday flash briefings (plain-text summary, no JSON)."""
+    if not b:
+        fired = False
+        return (
+            f'<div class="model-card" style="border-color:{border_color};opacity:0.45;">'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">'
+            f'<div class="card-label" style="font-size:11px;">{emoji} {label}</div>'
+            f'<div style="color:#555;font-size:10px;">{time_str}</div></div>'
+            f'<div style="color:#444;font-size:11px;font-style:italic;">Not yet fired</div>'
+            f'</div>'
+        )
+
+    summary    = b.get('headline_summary') or '—'
+    macro_line = b.get('macro_alignment') or ''
+    ts         = (b.get('created_at') or '')[:16].replace('T', ' ')
+
+    # Parse gaps from full_response_json
+    gaps = []
+    try:
+        import json as _j
+        fr = _j.loads(b.get('full_response_json') or '{}')
+        gaps = fr.get('gaps', [])
+    except Exception:
+        pass
+    gaps_html = (
+        f'<div style="color:#666;font-size:10px;margin-top:6px;">🔍 Gaps: {", ".join(gaps[:3])}</div>'
+        if gaps else ''
+    )
+
+    return (
+        f'<div class="model-card" style="border-color:{border_color};display:flex;flex-direction:column;">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-shrink:0;">'
+        f'<div class="card-label" style="font-size:11px;">{emoji} {label}</div>'
+        f'<div style="color:#888;font-size:10px;">{time_str} · {ts}</div></div>'
+        f'<div style="color:#999;font-size:10px;margin-bottom:6px;">{macro_line}</div>'
+        f'<div style="color:#ccc;font-size:11px;line-height:1.6;flex:1;">{summary}</div>'
+        f'{gaps_html}'
+        f'</div>'
+    )
+
+
 def build_model_card(b, title, icon):
     if not b:
         return f'<div class="model-card"><div class="card-label">{icon} {title}</div><p style="color:#555;margin-top:8px;">No data yet</p></div>'
@@ -566,7 +613,7 @@ def build_model_card(b, title, icon):
 def build_html(status, positions, closed, stats, briefings, macro, watchlist,
                sig_history, news, cong_clusters, cong_trades, hound_candidates, hound_last_run=None):
 
-    now_str    = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    now_str    = _et_now().strftime('%Y-%m-%d %H:%M:%S ET')
     last_cycle = status.get('created_at', '—')
 
     # Hound last-run display
@@ -601,6 +648,11 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
     latest_grok = next((b for b in briefings if b.get('model_key') == 'grok'), {})
     fast_b   = next((b for b in briefings if b.get('model_key') == 'fast'), {})
     bal_b    = next((b for b in briefings if b.get('model_key') == 'balanced'), {})
+
+    # Today's intraday flash briefings (shown in schedule section) — ET date matches how they're stored
+    _today_str = _et_now().strftime('%Y-%m-%d')
+    morning_b = next((b for b in briefings if b.get('model_key') == 'morning_flash' and b.get('date') == _today_str), {})
+    midday_b  = next((b for b in briefings if b.get('model_key') == 'midday_flash'  and b.get('date') == _today_str), {})
 
     macro_sigs = []
     try:
@@ -667,6 +719,35 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
     cong_tr_rows   = build_cong_trade_rows(cong_trades)
     reasoning_card = build_model_card(latest_b, 'REASONING (Gemini 3.1)', '🔬')
     grok_card      = build_model_card(latest_grok, 'SECOND OPINION (Grok 4.1)', '𝕏')
+
+    # Daily schedule intraday cards
+    morning_card = build_flash_card(morning_b, 'MARKET OPEN', '9:30 AM', '🌅', '#00d4ff33')
+    midday_card  = build_flash_card(midday_b,  'MID-DAY',     '12:00 PM', '☀️', '#ffd70033')
+    # Close card — compact version of the reasoning brief if available
+    close_date_str = latest_b.get('date', '—')
+    close_fired = bool(latest_b and latest_b.get('date') == _today_str)
+    if close_fired:
+        _close_summary = (latest_b.get('headline_summary') or '')[:280]
+        _close_regime  = latest_b.get('market_regime', 'unknown')
+        _close_conf    = float(latest_b.get('model_confidence') or 0)
+        close_card = (
+            f'<div class="model-card" style="border-color:#c084fc33;display:flex;flex-direction:column;">'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-shrink:0;">'
+            f'<div class="card-label" style="font-size:11px;">📋 CLOSE DEEP DIVE</div>'
+            f'<div style="color:#888;font-size:10px;">4:30 PM · {(latest_b.get("created_at") or "")[:16].replace("T"," ")}</div></div>'
+            f'<div style="color:#999;font-size:10px;margin-bottom:6px;">{regime_badge(_close_regime)} conf={_close_conf:.0%}</div>'
+            f'<div style="color:#ccc;font-size:11px;line-height:1.6;flex:1;">{_close_summary}{"..." if len(latest_b.get("headline_summary","")) > 280 else ""}</div>'
+            f'</div>'
+        )
+    else:
+        close_card = (
+            '<div class="model-card" style="border-color:#c084fc33;opacity:0.45;">'
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">'
+            '<div class="card-label" style="font-size:11px;">📋 CLOSE DEEP DIVE</div>'
+            '<div style="color:#555;font-size:10px;">4:30 PM</div></div>'
+            '<div style="color:#444;font-size:11px;font-style:italic;">Not yet fired — triggers after market close</div>'
+            '</div>'
+        )
 
     macro_sig_pills = ''.join(sig_pill(s) for s in macro_sigs)
 
@@ -1175,7 +1256,17 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
 </div>
 
 <!-- ═══ DAILY INTELLIGENCE CONSENSUS ═══ -->
-<div class="section-head">&#129504; Daily Intelligence Consensus &mdash; {briefing_date}</div>
+<!-- ═══ DAILY ANALYSIS SCHEDULE ═══ -->
+<div class="section-head">&#128197; Daily Analysis Schedule &mdash; {_today_str}</div>
+
+<div class="grid-three" style="margin-bottom:0;">
+  {morning_card}
+  {midday_card}
+  {close_card}
+</div>
+
+<!-- ═══ CLOSE DEEP DIVE — FULL ANALYSIS ═══ -->
+<div class="section-head" style="margin-top:18px;">&#129504; Close Deep Dive &mdash; {close_date_str}</div>
 
 <div class="grid-mid">
   {reasoning_card}
@@ -1302,8 +1393,8 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
       </div>
       <div class="stat">
         <div class="stat-label">Acquisition Pipeline</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; ACTIVE &mdash; daily post-briefing</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Researcher (yfinance &middot; SEC EDGAR &middot; analyst targets) &rarr; Analyst (Pro 3 &middot; watch tags) &rarr; Verifier (Flash reverification) &rarr; Conditionals</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; ACTIVE &mdash; hourly verifier &middot; DEFCON 1-2: every 15 min</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Researcher &rarr; Analyst (Pro 3) &rarr; Verifier (Flash · hourly / 15-min at DEFCON 1-2) &rarr; Conditionals &middot; deep checks: 9 AM · 12:30 PM · 4:30 PM</div>
       </div>
     </div>
   </div>

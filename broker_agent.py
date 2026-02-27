@@ -8,8 +8,13 @@ import sqlite3
 import json
 import logging
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+_ET = ZoneInfo('America/New_York')
+def _et_now() -> datetime:
+    return datetime.now(_ET)
 from paper_trading import PaperTradingEngine, CrisisAssetIntelligence
 from alerts import AlertSystem
 from quick_money_research import QuickMoneyResearch
@@ -811,7 +816,7 @@ class AutonomousBroker:
         self.broker_mode = broker_mode
         self.max_daily_trades = max_daily_trades
         self.trades_executed_today = 0
-        self.last_reset = datetime.now().date()
+        self.last_reset = _et_now().date()     # ET date — resets on ET calendar day
 
     def process_market_conditions(self, defcon_level: int, signal_score: float,
                                  crisis_description: str, market_data: Dict) -> bool:
@@ -820,10 +825,10 @@ class AutonomousBroker:
 
         Returns True if a trade was executed
         """
-        # Reset daily counter
-        if datetime.now().date() > self.last_reset:
+        # Reset daily counter on ET calendar day rollover
+        if _et_now().date() > self.last_reset:
             self.trades_executed_today = 0
-            self.last_reset = datetime.now().date()
+            self.last_reset = _et_now().date()
 
         # Check if we can make more trades today
         if self.trades_executed_today >= self.max_daily_trades:

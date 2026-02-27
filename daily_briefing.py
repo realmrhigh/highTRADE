@@ -19,8 +19,13 @@ import logging
 import sqlite3
 import requests
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+_ET = ZoneInfo('America/New_York')
+def _et_now() -> datetime:
+    return datetime.now(_ET)
 
 import gemini_client
 import grok_client
@@ -104,7 +109,7 @@ def _gather_daily_context(db_path: str, date_str: str = None) -> Dict:
     Returns a rich context dict ready to feed to the LLM.
     """
     if not date_str:
-        date_str = datetime.now().strftime('%Y-%m-%d')
+        date_str = _et_now().strftime('%Y-%m-%d')   # ET — market date
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -452,7 +457,7 @@ def run_daily_briefing(compare_models: bool = False) -> Dict:
 
     Returns dict keyed by model_key with parsed briefing results.
     """
-    date_str = datetime.now().strftime('%Y-%m-%d')
+    date_str = _et_now().strftime('%Y-%m-%d')   # ET — market date
     mode_label = "COMPARE (all tiers)" if compare_models else "PRODUCTION (reasoning only)"
     logger.info(f"📋 Daily Briefing [{mode_label}]: gathering data for {date_str}...")
 
