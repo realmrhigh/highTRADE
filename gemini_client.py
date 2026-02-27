@@ -76,6 +76,7 @@ MODEL_CONFIG = {
 # ── CLI availability check (cached after first call) ──────────────────────────
 _cli_path: Optional[str] = None
 _cli_authenticated: Optional[bool] = None
+_last_cli_error: str = ''        # populated on CLI failure; inspected in call() for quota detection
 
 def _get_cli_status() -> Tuple[bool, str]:
     """
@@ -148,7 +149,17 @@ def call(
         result = _call_via_cli(prompt, cfg)
         if result[0] is not None:
             return result
-        # CLI call failed (expired token, rate limit, etc.) — fall through to API
+        # Quota exhausted on Pro/Reasoning? Auto-downgrade to balanced rather than silently failing.
+        _pro_model = MODEL_CONFIG['reasoning']['model_id']
+        if (cfg['model_id'] == _pro_model
+                and ('TerminalQuotaError' in _last_cli_error
+                     or 'exhausted your capacity' in _last_cli_error)):
+            logger.warning("⚠️  Reasoning quota exhausted — auto-downgrading to balanced tier")
+            cfg = dict(MODEL_CONFIG['balanced'])
+            result = _call_via_cli(prompt, cfg)
+            if result[0] is not None:
+                return result
+        # CLI call failed for another reason — fall through to REST API
         logger.warning("CLI call failed, falling back to REST API")
 
     return _call_via_api(prompt, cfg)
@@ -176,7 +187,9 @@ def _call_via_cli(prompt: str, cfg: dict) -> Tuple[Optional[str], int, int]:
         )
 
         if result.returncode != 0:
+            global _last_cli_error
             err_msg = (result.stderr or '').strip()
+            _last_cli_error = err_msg
             logger.warning(f"CLI exited {result.returncode} | Error: {err_msg[:200]}")
             return None, 0, 0
 

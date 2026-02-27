@@ -385,7 +385,7 @@ Provide a comprehensive trading risk analysis. Respond with ONLY valid JSON:
         # Pro gets full reasoning budget via gemini_client
         text, input_tokens, output_tokens = gemini_client.call(
             prompt=prompt,
-            model_key='pro',
+            model_key='balanced',
         )
 
         if not text:

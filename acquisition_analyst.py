@@ -547,7 +547,7 @@ def run_analyst_cycle() -> List[Dict]:
             FROM stock_research_library
             WHERE status IN ('library_ready', 'partial')
             ORDER BY created_at DESC
-            LIMIT 10
+            LIMIT 5
         """)
         ready = [dict(r) for r in cursor.fetchall()]
     except Exception as e:

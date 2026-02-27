@@ -524,7 +524,7 @@ class BrokerDecisionEngine:
         )
 
         try:
-            text, in_tok, out_tok = gemini_client.call(prompt=prompt, model_key='reasoning')
+            text, in_tok, out_tok = gemini_client.call(prompt=prompt, model_key='balanced')
             logger.info(f"  🔍 Pre-purchase gate [{ticker}]: {in_tok}→{out_tok} tok")
 
             # Parse JSON
