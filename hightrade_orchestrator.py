@@ -1180,6 +1180,81 @@ Check dashboard for detailed analysis.
         macro_score = self._get_latest_macro_score()
         defcon = self.previous_defcon
 
+        # ── Market snapshot — index ETFs, futures, VIX, earnings ─────────
+        try:
+            import yfinance as _yf2
+            from datetime import date as _date
+
+            _mkt_syms = [
+                ('SPY',  'SPY (S&P 500)'),
+                ('QQQ',  'QQQ (Nasdaq)'),
+                ('IWM',  'IWM (Russell)'),
+                ('ES=F', 'ES=F (S&P Fut)'),
+                ('NQ=F', 'NQ=F (NQ Fut)'),
+                ('^VIX', 'VIX'),
+            ]
+            mkt_lines = []
+            for _sym, _lbl in _mkt_syms:
+                try:
+                    _fi    = _yf2.Ticker(_sym).fast_info
+                    _price = _fi.get('regularMarketPrice') or _fi.get('lastPrice')
+                    _prev  = _fi.get('regularMarketPreviousClose') or _fi.get('previousClose')
+                    _pre   = _fi.get('preMarketPrice')
+                    if _price and _prev and _prev != 0:
+                        _chg = (_price - _prev) / _prev * 100
+                        _line = f"  {_lbl}: ${_price:.2f} ({'+' if _chg >= 0 else ''}{_chg:.2f}%)"
+                    elif _price:
+                        _line = f"  {_lbl}: ${_price:.2f}"
+                    else:
+                        _line = f"  {_lbl}: unavailable"
+                    # Pre-market price if meaningfully different
+                    if _pre and _prev and _price and abs(_pre - _price) > 0.02:
+                        _pre_chg = (_pre - _prev) / _prev * 100
+                        _line += f"  [pre-mkt ${_pre:.2f} {'+' if _pre_chg >= 0 else ''}{_pre_chg:.2f}%]"
+                    mkt_lines.append(_line)
+                except Exception:
+                    mkt_lines.append(f"  {_lbl}: unavailable")
+
+            # Earnings within ±1 day for any held or watched ticker
+            _watch_syms = set()
+            try:
+                for _p in open_positions:
+                    _watch_syms.add(_p['asset_symbol'])
+            except Exception:
+                pass
+            try:
+                for _r in cond_rows:
+                    _watch_syms.add(_r[0])
+            except Exception:
+                pass
+
+            _today = _date.today()
+            _earnings_flags = []
+            for _sym in sorted(_watch_syms):
+                try:
+                    _cal = _yf2.Ticker(_sym).calendar
+                    if _cal is None:
+                        continue
+                    _dates = (_cal.get('Earnings Date', [])
+                              if isinstance(_cal, dict) else list(_cal.get('Earnings Date', [])))
+                    for _d in _dates:
+                        try:
+                            _dd = _d.date() if hasattr(_d, 'date') else _date.fromisoformat(str(_d)[:10])
+                            _delta = (_dd - _today).days
+                            if -1 <= _delta <= 1:
+                                _tag = 'TODAY' if _delta == 0 else ('+1d' if _delta == 1 else 'YESTERDAY')
+                                _earnings_flags.append(f"{_sym} ({_tag})")
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            _earnings_str = ', '.join(_earnings_flags) if _earnings_flags else 'none for watched/held tickers'
+            mkt_lines.append(f"  Earnings ±1d: {_earnings_str}")
+            market_ctx = '\n'.join(mkt_lines)
+        except Exception as _me:
+            market_ctx = f"  Market snapshot unavailable ({_me})"
+
         # ── Build time-of-day specific prompt ───────────────────────────
         if label == 'morning':
             prompt = f"""You are HighTrade's pre-market analyst. Today is {now_str} — market opens in minutes or just opened.
@@ -1189,6 +1264,9 @@ CURRENT STATE:
   DEFCON: {defcon}/5
   Macro Score: {macro_score:.0f}/100
   News: {news_ctx}
+
+MARKET SNAPSHOT (live):
+{market_ctx}
 
 OPEN POSITIONS (live prices + unrealized P&L):
 {pos_ctx}
@@ -1217,6 +1295,9 @@ CURRENT STATE:
   DEFCON: {defcon}/5
   Macro Score: {macro_score:.0f}/100
   News: {news_ctx}
+
+MARKET SNAPSHOT (live):
+{market_ctx}
 
 OPEN POSITIONS (live prices + unrealized P&L):
 {pos_ctx}
@@ -1744,7 +1825,7 @@ Only include tickers that appear in the ACTIVE CONDITIONALS section above. If no
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT macro_score FROM macro_indicators
-                ORDER BY timestamp DESC LIMIT 1
+                ORDER BY created_at DESC LIMIT 1
             """)
             row = cursor.fetchone()
             conn.close()
