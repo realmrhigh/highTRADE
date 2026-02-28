@@ -21,8 +21,10 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 import subprocess
 import requests
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -53,7 +55,7 @@ MODEL_CONFIG = {
         'temperature':     1.0,
     },
     'reasoning': {
-        'model_id':        'gemini-3.1-pro-preview',
+        'model_id':        'gemini-2.5-pro',   # stable (1000+ RPD) — was gemini-3.1-pro-preview (25-50 RPD)
         'thinking_budget': -1,
         'max_output_tokens': 16384,
         'temperature':     1.0,
@@ -66,12 +68,99 @@ MODEL_CONFIG = {
         'temperature':     0.4,
     },
     'pro': {
-        'model_id':        'gemini-3.1-pro-preview',
+        'model_id':        'gemini-2.5-pro',
         'thinking_budget': -1,
         'max_output_tokens': 16384,
         'temperature':     1.0,
     },
 }
+
+# ── Quota tracking ─────────────────────────────────────────────────────────────
+_DB_PATH = Path(__file__).parent / 'trading_data' / 'trading_history.db'
+
+# Rolling-24h soft limits (conservative vs. actual RPD — auto-downgrade kicks in before hard limit)
+QUOTA_SOFT_LIMITS = {
+    'gemini-2.5-pro':    800,   # stable: ~1000 RPD actual
+    'gemini-2.5-flash':  700,   # stable: ~1000 RPD actual
+}
+QUOTA_WARN_PCT  = 0.75   # warn at 75% of soft limit
+QUOTA_BLOCK_PCT = 0.95   # downgrade at 95% of soft limit
+
+def _ensure_call_log(conn: sqlite3.Connection):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS gemini_call_log (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            model_id     TEXT NOT NULL,
+            model_key    TEXT NOT NULL,
+            caller       TEXT DEFAULT 'unknown',
+            tokens_in    INTEGER DEFAULT 0,
+            tokens_out   INTEGER DEFAULT 0,
+            downgraded   INTEGER DEFAULT 0,
+            created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_gcl_model_time ON gemini_call_log(model_id, created_at)")
+    conn.commit()
+
+def _log_call(model_id: str, model_key: str, caller: str,
+              tokens_in: int, tokens_out: int, downgraded: bool = False):
+    """Write one row to gemini_call_log. Silent on any error — never break a caller."""
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+        _ensure_call_log(conn)
+        conn.execute(
+            "INSERT INTO gemini_call_log (model_id, model_key, caller, tokens_in, tokens_out, downgraded) "
+            "VALUES (?,?,?,?,?,?)",
+            (model_id, model_key, caller, tokens_in, tokens_out, int(downgraded))
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass  # quota logging must never crash a caller
+
+def get_rolling_usage(hours: int = 24) -> dict:
+    """
+    Return call counts and token totals per model_id for the last N hours.
+    Example: {'gemini-2.5-pro': {'calls': 12, 'tokens_in': 84000, 'tokens_out': 9600},
+              'gemini-2.5-flash': {'calls': 45, ...}}
+    """
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+        conn.row_factory = sqlite3.Row
+        _ensure_call_log(conn)
+        rows = conn.execute("""
+            SELECT model_id,
+                   COUNT(*)        AS calls,
+                   SUM(tokens_in)  AS tokens_in,
+                   SUM(tokens_out) AS tokens_out
+            FROM gemini_call_log
+            WHERE created_at >= datetime('now', ?)
+            GROUP BY model_id
+        """, (f'-{hours} hours',)).fetchall()
+        conn.close()
+        return {r['model_id']: dict(r) for r in rows}
+    except Exception:
+        return {}
+
+def check_quota(model_key: str) -> str:
+    """
+    Check rolling-24h usage against soft limits for the given model_key.
+    Returns: 'ok' | 'warn' | 'block'
+    'block' means the caller should downgrade to a cheaper tier.
+    """
+    model_id = MODEL_CONFIG.get(model_key, {}).get('model_id', '')
+    limit = QUOTA_SOFT_LIMITS.get(model_id)
+    if not limit:
+        return 'ok'
+    usage = get_rolling_usage(24)
+    calls = usage.get(model_id, {}).get('calls', 0)
+    ratio = calls / limit
+    if ratio >= QUOTA_BLOCK_PCT:
+        return 'block'
+    if ratio >= QUOTA_WARN_PCT:
+        return 'warn'
+    return 'ok'
+
 
 # ── CLI availability check (cached after first call) ──────────────────────────
 _cli_path: Optional[str] = None
@@ -127,6 +216,7 @@ def call(
     temperature: Optional[float] = None,
     thinking_budget: Optional[int] = None,
     max_output_tokens: Optional[int] = None,
+    caller: str = 'unknown',           # tag for quota tracking (e.g. 'analyst', 'broker_gate')
 ) -> Tuple[Optional[str], int, int]:
     """
     Call Gemini with automatic OAuth → API key fallback.
@@ -143,11 +233,13 @@ def call(
     if max_output_tokens is not None:
         cfg['max_output_tokens'] = max_output_tokens
 
+    downgraded = False
     cli_ok, cli_info = _get_cli_status()
 
     if cli_ok:
         result = _call_via_cli(prompt, cfg)
         if result[0] is not None:
+            _log_call(cfg['model_id'], model_key, caller, result[1], result[2])
             return result
         # Quota exhausted on Pro/Reasoning? Auto-downgrade to balanced rather than silently failing.
         # Matches both "TerminalQuotaError" (hard daily limit) and "No capacity available" (429 throttle).
@@ -159,13 +251,18 @@ def call(
         if cfg['model_id'] == _pro_model and _is_quota_err:
             logger.warning("⚠️  Reasoning quota exhausted — auto-downgrading to balanced tier")
             cfg = dict(MODEL_CONFIG['balanced'])
+            downgraded = True
             result = _call_via_cli(prompt, cfg)
             if result[0] is not None:
+                _log_call(cfg['model_id'], model_key, caller, result[1], result[2], downgraded=True)
                 return result
         # CLI call failed for another reason — fall through to REST API
         logger.warning("CLI call failed, falling back to REST API")
 
-    return _call_via_api(prompt, cfg)
+    result = _call_via_api(prompt, cfg)
+    if result[0] is not None:
+        _log_call(cfg['model_id'], model_key, caller, result[1], result[2], downgraded)
+    return result
 
 
 # ── CLI path ───────────────────────────────────────────────────────────────────

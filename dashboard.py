@@ -107,6 +107,7 @@ def fetch_acquisition_watchlist():
                    entry_conditions, biggest_risk, biggest_opportunity,
                    status, notes, date_added, created_at
             FROM acquisition_watchlist
+            WHERE status NOT IN ('archived', 'invalidated')
             ORDER BY
                 CASE source
                     WHEN 'stop_loss_rebound'            THEN 1
@@ -192,6 +193,43 @@ def fetch_hound_last_run():
             ORDER BY created_at DESC LIMIT 1
         """).fetchone()
         return row[0] if row else None
+
+def fetch_gemini_usage():
+    """
+    Return rolling-24h Gemini usage from gemini_call_log.
+    Returns dict like:
+      {
+        'gemini-2.5-pro':   {'calls': 42, 'tokens_in': 210000, 'tokens_out': 18000,
+                             'soft_limit': 800, 'pct': 0.053, 'status': 'ok'},
+        'gemini-2.5-flash': {'calls': 130, ...},
+      }
+    """
+    try:
+        import gemini_client
+        usage = gemini_client.get_rolling_usage(24)
+        result = {}
+        for model_id, soft_limit in gemini_client.QUOTA_SOFT_LIMITS.items():
+            data = usage.get(model_id, {})
+            calls = data.get('calls', 0)
+            pct   = calls / soft_limit if soft_limit else 0.0
+            if pct >= gemini_client.QUOTA_BLOCK_PCT:
+                status = 'block'
+            elif pct >= gemini_client.QUOTA_WARN_PCT:
+                status = 'warn'
+            else:
+                status = 'ok'
+            result[model_id] = {
+                'calls':      calls,
+                'tokens_in':  data.get('tokens_in', 0) or 0,
+                'tokens_out': data.get('tokens_out', 0) or 0,
+                'soft_limit': soft_limit,
+                'pct':        pct,
+                'status':     status,
+            }
+        return result
+    except Exception:
+        return {}
+
 
 def fetch_active_conditionals():
     """Fetch active entry conditionals ordered by attention score descending."""
@@ -670,7 +708,7 @@ def build_model_card(b, title, icon):
 
 def build_html(status, positions, closed, stats, briefings, macro, watchlist,
                sig_history, news, cong_clusters, cong_trades, hound_candidates, hound_last_run=None,
-               conditionals=None):
+               conditionals=None, gemini_usage=None):
 
     now_str    = _et_now().strftime('%Y-%m-%d %H:%M:%S ET')
     last_cycle = status.get('created_at', '—')
@@ -687,6 +725,47 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
             hound_last_str = str(hound_last_run)[:16]
     else:
         hound_last_str = 'No runs yet'
+
+    # ── Gemini quota widget HTML ─────────────────────────────────────────────
+    _quota_color = {'ok': '#00ff88', 'warn': '#ffb300', 'block': '#ff4444'}
+    _quota_label = {'ok': 'OK', 'warn': 'WARN', 'block': 'NEAR LIMIT'}
+    _model_short = {
+        'gemini-2.5-pro':   'Pro 2.5 (Reasoning)',
+        'gemini-2.5-flash': 'Flash 2.5 (Fast/Balanced)',
+    }
+    gemini_usage = gemini_usage or {}
+    _quota_rows  = ''
+    for _mid in ['gemini-2.5-pro', 'gemini-2.5-flash']:
+        _d       = gemini_usage.get(_mid, {})
+        _calls   = _d.get('calls', 0)
+        _limit   = _d.get('soft_limit', 0)
+        _pct     = _d.get('pct', 0.0)
+        _st      = _d.get('status', 'ok')
+        _col     = _quota_color.get(_st, '#00ff88')
+        _lbl     = _quota_label.get(_st, 'OK')
+        _tok_in  = _d.get('tokens_in', 0) or 0
+        _tok_out = _d.get('tokens_out', 0) or 0
+        _bar_w   = min(int(_pct * 100), 100)
+        _bar_col = _col
+        _short   = _model_short.get(_mid, _mid)
+        _quota_rows += f"""
+        <div style="margin-bottom:6px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
+            <span style="color:#aaa;font-size:10px;">{_short}</span>
+            <span style="color:{_col};font-size:10px;font-weight:600;">{_calls}/{_limit} calls &nbsp;·&nbsp; {_pct*100:.0f}% &nbsp;·&nbsp; {_lbl}</span>
+          </div>
+          <div style="background:#1a1a2e;border-radius:3px;height:5px;overflow:hidden;">
+            <div style="width:{_bar_w}%;height:5px;background:{_bar_col};border-radius:3px;transition:width 0.3s;"></div>
+          </div>
+          <div style="color:#444;font-size:9px;margin-top:1px;">in: {_tok_in:,} tok &nbsp;·&nbsp; out: {_tok_out:,} tok &nbsp;·&nbsp; rolling 24h</div>
+        </div>"""
+    if not _quota_rows:
+        _quota_rows = '<div style="color:#555;font-size:10px;">No calls logged yet</div>'
+    gemini_quota_html = f"""
+      <div class="stat">
+        <div class="stat-label">&#128200; Gemini Quota &mdash; Rolling 24h</div>
+        {_quota_rows}
+      </div>"""
 
     total_capital = 100_000.0
     realized      = float(stats.get('realized_pnl') or 0)
@@ -1488,8 +1567,8 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
         <div style="color:#666;font-size:10px;margin-top:3px;">Elevated signal analysis &middot; broader reasoning on breaking news &middot; secondary daily review</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Gemini Pro 3.1 &mdash; Reasoning Tier</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; gemini-3.1-pro-preview &middot; thinking=-1 &middot; OAuth</div>
+        <div class="stat-label">Gemini Pro 2.5 &mdash; Reasoning Tier</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; gemini-2.5-pro &middot; thinking=-1 &middot; OAuth</div>
         <div style="color:#666;font-size:10px;margin-top:3px;">📋 4:30 PM deep daily briefing &middot; acquisition analyst &middot; pre-purchase gate &middot; 16k output tokens &middot; dynamic thinking budget</div>
       </div>
       <div class="stat">
@@ -1503,10 +1582,11 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
         <div style="color:#666;font-size:10px;margin-top:3px;">5-signal scoring (sentiment &middot; concentration &middot; urgency &middot; confidence &middot; specificity) &middot; auto-promotes &ge;75 alpha &middot; feeds researcher pipeline</div>
         <div style="color:#555;font-size:10px;margin-top:2px;">Last run: {hound_last_str}</div>
       </div>
+{gemini_quota_html}
       <div class="stat">
         <div class="stat-label">Auth &amp; Token Efficiency</div>
-        <div style="color:#7eb8f7;font-size:11px;">&#128274; OAuth-only &middot; Gemini CLI 0.29.2 &middot; ~2-5% daily quota used</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">No API key &middot; dedup gate skips Flash+Pro on zero new articles &middot; massive headroom for scale</div>
+        <div style="color:#7eb8f7;font-size:11px;">&#128274; OAuth-only &middot; Gemini CLI 0.29.2 &middot; auto-downgrade at 95% soft limit</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">No API key &middot; dedup gate skips Flash+Pro on zero new articles &middot; soft limits: Pro 800/day · Flash 700/day</div>
       </div>
     </div>
   </div>
@@ -1691,9 +1771,10 @@ def generate_dashboard_html():
     hound_candidates = fetch_hound_candidates()
     hound_last_run   = fetch_hound_last_run()
     conditionals     = fetch_active_conditionals()
+    gemini_usage     = fetch_gemini_usage()
     return build_html(status, positions, closed, stats, briefings, macro,
                       watchlist, sig_hist, news, cong_cl, cong_tr, hound_candidates, hound_last_run,
-                      conditionals=conditionals)
+                      conditionals=conditionals, gemini_usage=gemini_usage)
 
 
 # ─── Flask server ─────────────────────────────────────────────────────────────

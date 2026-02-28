@@ -907,8 +907,14 @@ Check dashboard for detailed analysis.
                         if exits > 0:
                             logger.info(f"✅ BROKER: {exits} position(s) exited autonomously")
 
-            # ── Acquisition conditionals (every cycle, any broker mode except disabled) ──
-            if self.broker_mode != 'disabled':
+            # ── Acquisition conditionals (market hours only — Mon-Fri 9:30-16:00 ET) ──
+            _now_et = _et_now()
+            _market_open = (
+                _now_et.weekday() < 5  # Mon-Fri only
+                and (_now_et.hour > 9 or (_now_et.hour == 9 and _now_et.minute >= 30))
+                and _now_et.hour < 16
+            )
+            if self.broker_mode != 'disabled' and _market_open:
                 try:
                     live_state = {
                         'defcon': current_defcon,
