@@ -201,12 +201,16 @@ def _build_analyst_prompt(ticker: str, research: Dict) -> str:
         f"  Macro composite score:         {macro_score}\n"
     )
 
+    import gemini_client as _gc
+    _session_block = _gc.market_context_block()
+
     return (
         f"You are HighTrade's senior acquisition analyst. Today is {datetime.now().strftime('%Y-%m-%d')}.\n"
         f"You have been given comprehensive research on {ticker} gathered from multiple sources.\n"
         f"Your job: determine whether to set a CONDITIONAL ENTRY ORDER on {ticker}.\n\n"
         f"This is a paper trading system. Be precise and specific — no vague answers.\n"
         f"If you recommend entering, every price level must be a real number.\n\n"
+        f"{_session_block}\n"
         f"══════════════════════════════════════════════════════\n"
         f"PRICE & TECHNICALS — {ticker}\n"
         f"══════════════════════════════════════════════════════\n"

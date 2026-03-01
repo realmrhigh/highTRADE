@@ -500,9 +500,13 @@ class BrokerDecisionEngine:
         news_score = live_state.get('news_score', 'N/A')
         macro_score = live_state.get('macro_score', 'N/A')
 
+        import gemini_client as _gc
+        _session_ctx = _gc.market_context_block(vix=float(vix) if vix else None)
+
         prompt = (
             f"You are a pre-purchase risk gate for an automated paper trading system.\n"
             f"A conditional entry just triggered for {ticker} (watch_tag: {tag}).\n\n"
+            f"{_session_ctx}\n"
             f"ORIGINAL THESIS:\n{thesis}\n\n"
             f"TRADE LEVELS:\n"
             f"  Entry target: ${entry_tgt} | Current price: ${current_price:.2f}\n"

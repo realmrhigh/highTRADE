@@ -212,8 +212,15 @@ class GeminiAnalyzer:
             
         extra_context = "\n".join(context_parts) if context_parts else "No additional macro context available."
         
+        import gemini_client as _gc
+        _vix_val = None
+        if vix_term_structure:
+            _vix_val = vix_term_structure.get('vix_level') or vix_term_structure.get('vix_spot')
+        _session_block = _gc.market_context_block(vix=_vix_val)
+
         return f"""You are a quantitative financial analyst AI. Analyze these {len(articles)} market news articles and provide a JSON response.
 
+{_session_block}
 CURRENT SIGNAL METRICS:
 - Crisis Type: {crisis_type}
 - Sentiment: {sentiment_summary}
@@ -286,9 +293,16 @@ Respond with ONLY valid JSON in this exact structure:
 
         macro_text = "\n".join(macro_lines) if macro_lines else "No additional macro data available."
         
-        return f"""You are a senior quantitative trading analyst with expertise in crisis detection and risk management. 
+        import gemini_client as _gc
+        _vix_val = None
+        if vix_term_structure:
+            _vix_val = vix_term_structure.get('vix_level') or vix_term_structure.get('vix_spot')
+        _session_block = _gc.market_context_block(vix=_vix_val)
+
+        return f"""You are a senior quantitative trading analyst with expertise in crisis detection and risk management.
 This is a DEEP ANALYSIS triggered because the news signal score ({news_score:.1f}/100) exceeded the alert threshold.
 
+{_session_block}
 SYSTEM STATE:
 - Current DEFCON Level: {current_defcon}/5 (1=highest alert, 5=normal)
 - News Score: {news_score:.1f}/100

@@ -1262,10 +1262,19 @@ Check dashboard for detailed analysis.
             market_ctx = f"  Market snapshot unavailable ({_me})"
 
         # ── Build time-of-day specific prompt ───────────────────────────
+        from gemini_client import market_context_block as _mctx
+        _live_vix = None
+        try:
+            _live_vix = float(mkt_lines[0].split('VIX')[1].split()[0].strip(':').strip()) if mkt_lines else None
+        except Exception:
+            pass
+        _session_ctx = _mctx(vix=_live_vix)
+
         if label == 'morning':
             prompt = f"""You are HighTrade's pre-market analyst. Today is {now_str} — market opens in minutes or just opened.
 Provide a START-OF-DAY market setup brief — 5 to 7 sentences. Be direct and actionable.
 
+{_session_ctx}
 CURRENT STATE:
   DEFCON: {defcon}/5
   Macro Score: {macro_score:.0f}/100
@@ -1287,16 +1296,17 @@ OUTPUT FORMAT (plain text, no JSON):
 4. Active conditionals — which are closest to triggering? Any that could fill today?
 5. Your thesis for the session: what would need to happen for a buy signal or a hold?
 6-7. Key risk levels and one specific thing to monitor through the first hour.
-DATA GAPS: On the second-to-last line starting with "GAPS:" list any specific data that was missing — e.g. "GAPS: pre-market volume data, overnight futures move, earnings releases today". If nothing is missing write "GAPS: none".
-STRUCTURED TAIL: On the final line output a single JSON object (no markdown fences, no line breaks):
+GAPS LINE: The second-to-last line must start with exactly "GAPS:" followed by a comma-separated list of missing data items, e.g. "GAPS: pre-market volume data, overnight futures move". If nothing is missing write "GAPS: none".
+FINAL LINE: The absolute last line of your response must contain ONLY the following JSON object — no prose, no punctuation before or after it, nothing else on that line:
 {{"defcon_forecast":<1-5>,"watch":[{{"ticker":"SYMBOL","urgency":"high|medium|low","reason":"one sentence"}}]}}
-Only include tickers that appear in the ACTIVE CONDITIONALS section above. If none are notable, output: {{"defcon_forecast":<1-5>,"watch":[]}}"""
+Only include tickers that appear in the ACTIVE CONDITIONALS section above. If none are notable output: {{"defcon_forecast":<1-5>,"watch":[]}}"""
             model_key_to_use = 'balanced'   # thinking=8000 — worth the extra reasoning at open
 
         else:  # midday
             prompt = f"""You are HighTrade's midday analyst. Today is {now_str} — midday check-in.
 Provide a MID-DAY status update — 4 to 6 sentences. Focus on what has CHANGED since open.
 
+{_session_ctx}
 CURRENT STATE:
   DEFCON: {defcon}/5
   Macro Score: {macro_score:.0f}/100
@@ -1317,11 +1327,11 @@ OUTPUT FORMAT (plain text, no JSON):
 3. Which conditionals moved significantly since open? Any that got close or crossed targets?
 4. Any midday catalysts (Fed speakers, economic data, earnings) affecting our sectors?
 5. Afternoon watch: what are the key levels and setups heading into the close?
-DATA GAPS: On the second-to-last line starting with "GAPS:" list any specific data that was missing. If nothing is missing write "GAPS: none".
-STRUCTURED TAIL: On the final line output a single JSON object (no markdown fences, no line breaks):
+GAPS LINE: The second-to-last line must start with exactly "GAPS:" followed by a comma-separated list of missing data items. If nothing is missing write "GAPS: none".
+FINAL LINE: The absolute last line of your response must contain ONLY the following JSON object — no prose, no punctuation before or after it, nothing else on that line:
 {{"defcon_forecast":<1-5>,"watch":[{{"ticker":"SYMBOL","urgency":"high|medium|low","reason":"one sentence"}}]}}
-Only include tickers that appear in the ACTIVE CONDITIONALS section above. If none are notable, output: {{"defcon_forecast":<1-5>,"watch":[]}}"""
-            model_key_to_use = 'fast'       # quick midday check — no reasoning overhead needed
+Only include tickers that appear in the ACTIVE CONDITIONALS section above. If none are notable output: {{"defcon_forecast":<1-5>,"watch":[]}}"""
+            model_key_to_use = 'balanced'   # thinking=8000 — needed for reliable GAPS/JSON tail output
 
         from gemini_client import call as gemini_call
         text, in_tok, out_tok = gemini_call(prompt, model_key=model_key_to_use)
@@ -1342,27 +1352,48 @@ Only include tickers that appear in the ACTIVE CONDITIONALS section above. If no
                 summary_text = '\n'.join(lines[:i] + lines[i+1:]).strip()
                 break
 
-        # ── Parse STRUCTURED TAIL (last non-empty line, single JSON object) ──
+        # ── Parse STRUCTURED TAIL — brace-balanced scan, handles inline JSON ─────
+        # Model sometimes appends JSON to the last sentence instead of a clean newline.
+        # Strategy: find the last occurrence of {"defcon_forecast" then walk forward
+        # counting braces to extract the complete balanced JSON object.
         defcon_forecast = None
         watch_list = []
-        tail_lines = summary_text.strip().splitlines()
-        # Walk from the end looking for the JSON tail line
-        for _j, _tl in enumerate(reversed(tail_lines)):
-            _stripped = _tl.strip()
-            if _stripped.startswith('{') and _stripped.endswith('}'):
-                try:
-                    tail_obj = json.loads(_stripped)
-                    _fc = tail_obj.get('defcon_forecast')
-                    if isinstance(_fc, (int, float)) and 1 <= int(_fc) <= 5:
-                        defcon_forecast = int(_fc)
-                    watch_list = tail_obj.get('watch', [])
-                    # Remove the JSON tail from display text
-                    _idx = len(tail_lines) - 1 - _j
-                    summary_text = '\n'.join(tail_lines[:_idx]).strip()
-                    logger.info(f"  📊 Flash forecast: DEFCON {defcon_forecast}, watching {len(watch_list)} tickers")
-                except Exception:
-                    pass
-                break
+
+        def _extract_tail_json(text: str):
+            """Find last {"defcon_forecast":...} in text, return (obj, start_idx) or (None, -1)."""
+            marker = '"defcon_forecast"'
+            pos = text.rfind(marker)
+            if pos == -1:
+                return None, -1
+            # Walk backwards from marker to find the opening '{'
+            open_pos = text.rfind('{', 0, pos)
+            if open_pos == -1:
+                return None, -1
+            # Walk forward from open_pos counting braces until balanced
+            depth = 0
+            for idx in range(open_pos, len(text)):
+                if text[idx] == '{':
+                    depth += 1
+                elif text[idx] == '}':
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(text[open_pos:idx + 1]), open_pos
+                        except Exception:
+                            return None, -1
+            return None, -1
+
+        tail_obj, tail_start = _extract_tail_json(summary_text)
+        if tail_obj is not None:
+            _fc = tail_obj.get('defcon_forecast')
+            if isinstance(_fc, (int, float)) and 1 <= int(_fc) <= 5:
+                defcon_forecast = int(_fc)
+            watch_list = tail_obj.get('watch', [])
+            # Strip the JSON and trailing whitespace — preserve sentence-ending punctuation
+            summary_text = summary_text[:tail_start].rstrip(' \n').strip()
+            logger.info(f"  📊 Flash forecast: DEFCON {defcon_forecast}, watching {len(watch_list)} tickers")
+        else:
+            logger.warning("  ⚠️  No structured tail JSON found in flash response")
 
         logger.info(f"  {emoji} Flash ({in_tok}→{out_tok} tok): {summary_text[:120]}...")
         if gaps_list:
@@ -1407,15 +1438,18 @@ Only include tickers that appear in the ACTIVE CONDITIONALS section above. If no
             conn.execute("""
                 INSERT OR REPLACE INTO daily_briefings
                 (date, model_key, model_id, headline_summary,
-                 macro_alignment, input_tokens, output_tokens,
+                 macro_alignment, defcon_forecast, watchlist_json,
+                 input_tokens, output_tokens,
                  full_response_json, data_gaps_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 date_str,
                 model_key_db,
                 'gemini-2.5-flash',
                 summary_text,
                 f"DEFCON {defcon}/5 | Macro {macro_score:.0f}/100",
+                str(defcon_forecast) if defcon_forecast else None,
+                json.dumps(watch_list) if watch_list else None,
                 in_tok,
                 out_tok,
                 json.dumps({'label': label, 'defcon': defcon,
@@ -1433,14 +1467,16 @@ Only include tickers that appear in the ACTIVE CONDITIONALS section above. If no
 
         # Send to #all-hightrade (push notification) and mirror to #logs-silent
         payload = {
-            'label':      label,
-            'emoji':      emoji,
-            'summary':    summary_text,
-            'gaps':       gaps_list,
-            'defcon':     defcon,
-            'macro_score': macro_score,
-            'in_tokens':  in_tok,
-            'out_tokens': out_tok,
+            'label':            label,
+            'emoji':            emoji,
+            'summary':          summary_text,
+            'gaps':             gaps_list,
+            'defcon':           defcon,
+            'defcon_forecast':  defcon_forecast,
+            'watch':            watch_list,
+            'macro_score':      macro_score,
+            'in_tokens':        in_tok,
+            'out_tokens':       out_tok,
         }
         self.alerts.send_notify('flash_briefing', payload)
         self.alerts.send_silent_log('flash_briefing', payload)

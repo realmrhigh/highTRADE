@@ -389,10 +389,14 @@ def _build_daily_prompt(ctx: Dict) -> str:
     else:
         trades_text = "  No closed trades this week\n"
 
+    import gemini_client as _gc
+    _session_block = _gc.market_context_block()
+
     body = (
         "You are HighTrade's senior market strategist AI. Today is " + date + ".\n"
         "You have access to a full day of automated market monitoring data. "
         "Your job is to produce a comprehensive, actionable daily market briefing.\n\n"
+        + _session_block + "\n"
         "═══════════════════════════════════════════════════════════\n"
         "SECTION 1: NEWS INTELLIGENCE (" + str(ns.get('cycles', 0)) + " monitoring cycles today)\n"
         "═══════════════════════════════════════════════════════════\n"

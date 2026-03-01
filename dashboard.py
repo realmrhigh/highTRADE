@@ -506,6 +506,18 @@ def build_conditional_rows(conditionals):
         )
     return ''.join(rows)
 
+def _utc_to_et_str(utc_str: str) -> str:
+    """Convert a UTC datetime string ('2026-03-01 05:50:55') to ET 'MM/DD HH:MM' label."""
+    try:
+        from datetime import timezone
+        _UTC = timezone.utc
+        dt_utc = datetime.fromisoformat(utc_str.replace('T', ' ')[:19]).replace(tzinfo=_UTC)
+        dt_et  = dt_utc.astimezone(_ET)
+        return dt_et.strftime('%m/%d %I:%M %p').lstrip('0')
+    except Exception:
+        return (utc_str or '—')[11:16]
+
+
 def build_news_items(news):
     if not news:
         return '<div style="color:#555;text-align:center;padding:20px;">No news signals</div>'
@@ -513,17 +525,26 @@ def build_news_items(news):
     for n in news:
         score = float(n.get('news_score') or 0)
         sc = '#ff4444' if score >= 70 else '#ffd700' if score >= 45 else '#888'
-        ts = (n.get('created_at') or '—')[11:16]
-        reasoning = (n.get('gemini_pro_reasoning') or '')[:130]
-        
+        ts = _utc_to_et_str(n.get('created_at') or '')
+
+        # Primary insight: prefer Pro reasoning, fall back to sentiment summary
+        reasoning = (n.get('gemini_pro_reasoning') or '').strip()
+        sentiment  = (n.get('sentiment') or '').strip()
+        if not reasoning and sentiment:
+            insight_html = f'<div style="font-size:11px;color:#777;margin-top:4px;">{sentiment[:120]}</div>'
+        elif reasoning:
+            insight_html = f'<div style="font-size:11px;color:#888;margin-top:4px;font-style:italic;">{reasoning[:130]}{"…" if len(reasoning)>=130 else ""}</div>'
+        else:
+            insight_html = '<div style="font-size:11px;color:#444;margin-top:4px;font-style:italic;">Low-score cycle — Flash analysis not triggered</div>'
+
         grok_badge = ""
         if n.get('grok_action'):
             grok_badge = f'<span style="color:#aaa;font-size:10px;margin-left:6px;">𝕏 {action_badge(n["grok_action"])}</span>'
-            
+
         items.append(
             '<div class="news-item">'
             '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">'
-            f'<span style="color:#888;font-size:10px;">{ts} <span onclick="sendCommand(\'/update\')" style="cursor:pointer;margin-left:5px;" title="Rerun Analysis">&#8635;</span></span>'
+            f'<span style="color:#666;font-size:10px;">{ts} ET <span onclick="sendCommand(\'/update\')" style="cursor:pointer;margin-left:5px;color:#555;" title="Rerun Analysis">&#8635;</span></span>'
             f'<span style="color:{sc};font-size:13px;font-weight:700;">{score:.1f}</span>'
             f'<span style="color:#aaa;font-size:11px;">{(n.get("crisis_type","")).replace("_"," ").upper()}</span>'
             '<div>'
@@ -531,8 +552,8 @@ def build_news_items(news):
             f'{grok_badge}'
             '</div>'
             '</div>'
-            f'<div style="font-size:11px;color:#666;">{n.get("article_count",0)} articles &middot; {n.get("breaking_count",0)} breaking &middot; {(n.get("sentiment") or "")[:40]}</div>'
-            f'<div style="font-size:11px;color:#888;margin-top:4px;font-style:italic;">{reasoning}{"…" if len(reasoning)>=130 else ""}</div>'
+            f'<div style="font-size:11px;color:#555;">{n.get("article_count",0)} articles &middot; {n.get("breaking_count",0)} breaking</div>'
+            f'{insight_html}'
             '</div>'
         )
     return ''.join(items)
@@ -787,10 +808,16 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
     fast_b   = next((b for b in briefings if b.get('model_key') == 'fast'), {})
     bal_b    = next((b for b in briefings if b.get('model_key') == 'balanced'), {})
 
-    # Today's intraday flash briefings (shown in schedule section) — ET date matches how they're stored
-    _today_str = _et_now().strftime('%Y-%m-%d')
-    morning_b = next((b for b in briefings if b.get('model_key') == 'morning_flash' and b.get('date') == _today_str), {})
-    midday_b  = next((b for b in briefings if b.get('model_key') == 'midday_flash'  and b.get('date') == _today_str), {})
+    # Today's intraday flash briefings — match most recent of each type within 36h
+    # (36h window handles after-midnight viewing where ET date != briefing date)
+    _today_str  = _et_now().strftime('%Y-%m-%d')
+    _cutoff_str = (_et_now() - __import__('datetime').timedelta(hours=36)).strftime('%Y-%m-%d %H:%M:%S')
+    morning_b = next((b for b in briefings
+                      if b.get('model_key') == 'morning_flash'
+                      and (b.get('created_at') or '') >= _cutoff_str), {})
+    midday_b  = next((b for b in briefings
+                      if b.get('model_key') == 'midday_flash'
+                      and (b.get('created_at') or '') >= _cutoff_str), {})
 
     macro_sigs = []
     try:
@@ -864,7 +891,7 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
     midday_card  = build_flash_card(midday_b,  'MID-DAY',     '12:00 PM', '☀️', '#ffd70033')
     # Close card — compact version of the reasoning brief if available
     close_date_str = latest_b.get('date', '—')
-    close_fired = bool(latest_b and latest_b.get('date') == _today_str)
+    close_fired = bool(latest_b and (latest_b.get('created_at') or '') >= _cutoff_str)
     if close_fired:
         _close_summary = (latest_b.get('headline_summary') or '')[:280]
         _close_regime  = latest_b.get('market_regime', 'unknown')
@@ -1088,9 +1115,10 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
             <option value="fast">Gemini 2.5 Flash (Fast)</option>
             <option value="grok">Grok 4.1 (X-Powered)</option>
           </select>
-          <input type="text" id="custom-prompt" placeholder="Ask AI about the market, positions, or specific tickers..." 
+          <input type="text" id="custom-prompt" placeholder="Ask AI about the market, positions, or specific tickers..."
                  style="flex:1;background:#0a0b14;color:var(--text);border:1px solid var(--border);padding:8px;border-radius:4px;">
           <button onclick="sendPrompt()" style="background:var(--accent);color:#000;border:none;padding:0 20px;border-radius:4px;font-weight:700;cursor:pointer;">SEND</button>
+          <button onclick="clearChat()" title="Clear chat history" style="background:#1a1a2e;color:#666;border:1px solid #333;padding:0 14px;border-radius:4px;cursor:pointer;font-size:13px;">&#10005;</button>
         </div>
         <div id="ai-response" style="background:#0a0b14;border:1px solid #111;border-radius:4px;padding:10px;min-height:60px;font-size:12px;color:#aaa;white-space:pre-wrap;">AI response will appear here...</div>
       </div>
@@ -1231,6 +1259,11 @@ function renderChat() {{
     ).join('');
     // Scroll to bottom
     output.scrollTop = output.scrollHeight;
+}}
+
+function clearChat() {{
+    localStorage.removeItem('hightrade_chat_log');
+    renderChat();
 }}
 
 // Initialize chat on load
@@ -1550,6 +1583,12 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
         <div style="color:#00ff88;font-size:11px;">&#9679; ACTIVE &mdash; hourly verifier &middot; DEFCON 1-2: every 15 min</div>
         <div style="color:#666;font-size:10px;margin-top:3px;">Researcher &rarr; Analyst (Pro 3) &rarr; Verifier (Flash · hourly / 15-min at DEFCON 1-2) &rarr; Conditionals &middot; deep checks: 9 AM · 12:30 PM · 4:30 PM</div>
       </div>
+      <div class="stat">
+        <div class="stat-label">🦮 Grok Hound &mdash; Alpha Scanner</div>
+        <div style="color:#ff8c00;font-size:11px;">&#9679; grok-4-1-fast-reasoning &middot; X.com momentum feed &middot; hourly cycles</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">5-signal scoring (sentiment &middot; concentration &middot; urgency &middot; confidence &middot; specificity) &middot; auto-promotes &ge;75 alpha &middot; feeds researcher &rarr; analyst pipeline</div>
+        <div style="color:#555;font-size:10px;margin-top:2px;">Last run: {hound_last_str}</div>
+      </div>
     </div>
   </div>
 
@@ -1575,12 +1614,6 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
         <div class="stat-label">Grok 4.1 &mdash; Parallel Analyst</div>
         <div style="color:#00ff88;font-size:11px;">&#9679; grok-4-1-fast-reasoning &middot; X-Powered</div>
         <div style="color:#666;font-size:10px;margin-top:3px;">𝕏 Daily Second Opinion &middot; Real-time X.com sentiment audit &middot; Contrarian signal detection &middot; Veto participant</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">🦮 Grok Hound &mdash; Alpha Scanner</div>
-        <div style="color:#ff8c00;font-size:11px;">&#9679; grok-4-1-fast-reasoning &middot; X.com momentum feed &middot; hourly cycles</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">5-signal scoring (sentiment &middot; concentration &middot; urgency &middot; confidence &middot; specificity) &middot; auto-promotes &ge;75 alpha &middot; feeds researcher pipeline</div>
-        <div style="color:#555;font-size:10px;margin-top:2px;">Last run: {hound_last_str}</div>
       </div>
 {gemini_quota_html}
       <div class="stat">
@@ -1807,18 +1840,36 @@ def run_server(host='0.0.0.0', port=5055):
     @app.route('/')
     def dashboard():
         html = generate_dashboard_html()
-        # Inject auto-refresh meta tag into <head> (every 60s by default)
+        # Inject scroll-preserving JS refresh (replaces meta http-equiv="refresh")
         refresh = flask_request.args.get('refresh', '60')
         try:
-            int(refresh)
+            refresh_secs = int(refresh)
         except ValueError:
-            refresh = '60'
-        if refresh != '0':
-            html = html.replace(
-                '<meta name="viewport"',
-                f'<meta http-equiv="refresh" content="{refresh}"/>\n<meta name="viewport"',
-                1
-            )
+            refresh_secs = 60
+        if refresh_secs > 0:
+            soft_refresh_js = f"""
+<script>
+(function() {{
+  var _refreshMs = {refresh_secs * 1000};
+  var _timer = setInterval(function() {{
+    var sy = window.scrollY;
+    sessionStorage.setItem('ht_scroll_y', sy);
+    window.location.reload();
+  }}, _refreshMs);
+  // On load restore scroll position (set before reload)
+  var _saved = sessionStorage.getItem('ht_scroll_y');
+  if (_saved !== null) {{
+    window.scrollTo(0, parseInt(_saved, 10));
+    sessionStorage.removeItem('ht_scroll_y');
+  }}
+  // Expose manual soft-reload helper for buttons etc.
+  window._htSoftReload = function() {{
+    sessionStorage.setItem('ht_scroll_y', window.scrollY);
+    window.location.reload();
+  }};
+}})();
+</script>"""
+            html = html.replace('</body>', soft_refresh_js + '\n</body>', 1)
         return Response(html, mimetype='text/html')
 
     @app.route('/api/command', methods=['POST'])

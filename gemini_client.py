@@ -162,6 +162,118 @@ def check_quota(model_key: str) -> str:
     return 'ok'
 
 
+# ── Market session context block (injected into all AI prompts) ───────────────
+
+try:
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    _ET_ZONE = _ZoneInfo('America/New_York')
+except ImportError:
+    _ET_ZONE = None   # Python < 3.9 fallback — context block will degrade gracefully
+
+def market_context_block(vix: Optional[float] = None) -> str:
+    """
+    Return a formatted string block describing the current market session state.
+    Inject this into every AI prompt so models know whether markets are open,
+    what day it is, and whether price/VIX data is live or stale.
+
+    Example output (weekend):
+        ═══ MARKET SESSION CONTEXT ════════════════════════════════
+          Date/Time (ET): Saturday 2026-03-01 01:15 AM ET
+          Session status: ⛔ WEEKEND — US markets CLOSED
+          Next open:      Monday 2026-03-03 09:30 AM ET
+          Data freshness: VIX / prices are from Friday's close — NOT live
+          ⚠️  This is an overnight/weekend monitoring cycle.
+              Do NOT treat stale data as live market conditions.
+              Do NOT simulate intraday trading or react to "rising VIX" as if
+              markets are open. Focus on structural signals only.
+        ════════════════════════════════════════════════════════════
+
+    Example output (market open):
+        ═══ MARKET SESSION CONTEXT ════════════════════════════════
+          Date/Time (ET): Monday 2026-03-03 10:45 AM ET
+          Session status: ✅ OPEN — regular session (09:30–16:00 ET)
+          Data freshness: Live — prices and VIX are current
+        ════════════════════════════════════════════════════════════
+    """
+    try:
+        if _ET_ZONE:
+            now = datetime.now(_ET_ZONE)
+        else:
+            now = datetime.utcnow()   # degraded — no timezone support
+
+        day_name   = now.strftime('%A')       # 'Saturday', 'Monday', …
+        date_str   = now.strftime('%Y-%m-%d')
+        time_str   = now.strftime('%I:%M %p').lstrip('0')
+        weekday    = now.weekday()            # 0=Mon … 4=Fri, 5=Sat, 6=Sun
+        hour       = now.hour
+        minute     = now.minute
+
+        # Determine US regular session status
+        _is_weekday = weekday < 5
+        _after_open = (hour > 9) or (hour == 9 and minute >= 30)
+        _before_close = hour < 16
+        market_open = _is_weekday and _after_open and _before_close
+
+        # Calculate next open
+        if market_open:
+            next_open_str = "currently open"
+        elif _is_weekday and not _after_open:
+            next_open_str = f"today ({day_name}) at 09:30 AM ET"
+        elif _is_weekday and not _before_close:
+            # After close on a weekday — next open is next weekday
+            days_until = 3 if weekday == 4 else 1   # Friday→Monday, else +1
+            from datetime import timedelta as _td
+            next_day = now + _td(days=days_until)
+            next_open_str = next_day.strftime('%A %Y-%m-%d') + ' at 09:30 AM ET'
+        else:
+            # Weekend
+            days_until = (7 - weekday) % 7   # days until Monday (weekday=0)
+            if days_until == 0:
+                days_until = 7
+            from datetime import timedelta as _td
+            next_day = now + _td(days=days_until)
+            next_open_str = next_day.strftime('%A %Y-%m-%d') + ' at 09:30 AM ET'
+
+        vix_str = f"  VIX reference: {vix:.2f}\n" if vix is not None else ""
+
+        if market_open:
+            status_line  = '✅ OPEN — regular US session (NYSE/NASDAQ 09:30–16:00 ET)'
+            freshness    = 'Live — prices and VIX are current'
+            warning_text = ''
+        else:
+            if not _is_weekday:
+                reason = 'WEEKEND'
+            elif not _after_open:
+                reason = 'PRE-MARKET'
+            else:
+                reason = 'AFTER HOURS'
+            status_line  = f'⛔ {reason} — US markets CLOSED'
+            freshness    = f'Stale — VIX/prices reflect the most recent session close, NOT live data'
+            warning_text = (
+                '  ⚠️  IMPORTANT: This is an outside-hours monitoring cycle.\n'
+                '      Do NOT treat stale price or VIX readings as live market conditions.\n'
+                '      Do NOT describe the market as actively trading, rising, or falling.\n'
+                '      Do NOT suggest intraday actions. Focus on structural signals,\n'
+                '      overnight news flow, and setup for the next open.\n'
+            )
+
+        block = (
+            '═══ MARKET SESSION CONTEXT ════════════════════════════════\n'
+            f'  Date/Time (ET): {day_name} {date_str} {time_str} ET\n'
+            f'  Session status: {status_line}\n'
+            + (f'  Next open:      {next_open_str}\n' if not market_open else '')
+            + f'  Data freshness: {freshness}\n'
+            + vix_str
+            + warning_text
+            + '════════════════════════════════════════════════════════════\n'
+        )
+        return block
+
+    except Exception as _e:
+        # Never crash a caller — return a minimal safe fallback
+        return f'[market_context_block error: {_e}]\n'
+
+
 # ── CLI availability check (cached after first call) ──────────────────────────
 _cli_path: Optional[str] = None
 _cli_authenticated: Optional[bool] = None
