@@ -1235,10 +1235,20 @@ Check dashboard for detailed analysis.
                 pass
 
             _today = _date.today()
+            # ETFs (GLD, TLT, USO, ITA, XLE, etc.) never have earnings calendars —
+            # yfinance logs a 404 ERROR for them internally before raising. Silence
+            # the yfinance logger to CRITICAL during .calendar calls so those harmless
+            # 404s don't pollute our logs.
+            import logging as _log_mod
+            _yf_log = _log_mod.getLogger('yfinance')
+            _yf_log_lvl = _yf_log.level
+
             _earnings_flags = []
             for _sym in sorted(_watch_syms):
                 try:
+                    _yf_log.setLevel(_log_mod.CRITICAL)
                     _cal = _yf2.Ticker(_sym).calendar
+                    _yf_log.setLevel(_yf_log_lvl)
                     if _cal is None:
                         continue
                     _dates = (_cal.get('Earnings Date', [])
@@ -1254,6 +1264,8 @@ Check dashboard for detailed analysis.
                             pass
                 except Exception:
                     pass
+                finally:
+                    _yf_log.setLevel(_yf_log_lvl)  # always restore
 
             _earnings_str = ', '.join(_earnings_flags) if _earnings_flags else 'none for watched/held tickers'
             mkt_lines.append(f"  Earnings ±1d: {_earnings_str}")

@@ -1299,8 +1299,8 @@ setTimeout(renderChat, 100);
 // ── Rolling log overlay ──────────────────────────────────────────────────────
 (function() {{
   var LOG_POLL_MS  = 12000;   // re-fetch every 12 s
-  var SECS_PER_LINE = 0.85;   // scroll speed: seconds per line of log text
-  var MIN_DURATION  = 18;     // minimum scroll cycle seconds
+  var SECS_PER_LINE = 1.7;    // scroll speed: seconds per line of log text
+  var MIN_DURATION  = 36;     // minimum scroll cycle seconds
   var _currentLines = [];
 
   function _applyRoll(reel, lines) {{
