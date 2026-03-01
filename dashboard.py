@@ -1080,14 +1080,41 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
 
 /* Footer */
 .footer { text-align:center; color:#2a2a40; font-size:10px; letter-spacing:2px; padding:24px 0; margin-top:10px; }
+
+/* ── Rolling log overlay ── */
+@keyframes htLogRoll {
+  from { transform: translateY(0); }
+  to   { transform: translateY(-50%); }
+}
+#log-overlay-wrap {
+  position: absolute; top:0; right:0;
+  width: 40%; height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(to right, transparent 0%, rgba(0,0,0,0.6) 10%, black 24%);
+          mask-image: linear-gradient(to right, transparent 0%, rgba(0,0,0,0.6) 10%, black 24%);
+}
+#log-reel {
+  opacity: 0.52;
+  font-family: 'SF Mono','Fira Code','Cascadia Code',monospace;
+  font-size: 8px;
+  color: #00ff88;
+  line-height: 1.5;
+  white-space: pre;
+  padding: 6px 14px 6px 18px;
+  will-change: transform;
+}
 </style>
 </head>
 <body>
 <div class="page">
 """ + f"""
 <!-- ═══ HEADER ═══ -->
-<div style="border-radius:10px 10px 0 0;overflow:hidden;line-height:0;margin-bottom:0;">
+<div style="border-radius:10px 10px 0 0;overflow:hidden;line-height:0;margin-bottom:0;position:relative;">
   <img src="/header-image" style="width:100%;height:auto;display:block;" alt="HighTrade"/>
+  <div id="log-overlay-wrap">
+    <div id="log-reel"></div>
+  </div>
 </div>
 <div class="header" style="border-radius:0 0 10px 10px;margin-bottom:20px;padding:8px 24px;border-top:none;">
   <div></div>
@@ -1268,6 +1295,53 @@ function clearChat() {{
 
 // Initialize chat on load
 setTimeout(renderChat, 100);
+
+// ── Rolling log overlay ──────────────────────────────────────────────────────
+(function() {{
+  var LOG_POLL_MS  = 12000;   // re-fetch every 12 s
+  var SECS_PER_LINE = 0.85;   // scroll speed: seconds per line of log text
+  var MIN_DURATION  = 18;     // minimum scroll cycle seconds
+  var _currentLines = [];
+
+  function _applyRoll(reel, lines) {{
+    if (!lines || !lines.length) return;
+    _currentLines = lines;
+
+    // Double the content for seamless infinite loop
+    var content = lines.join('\\n');
+    reel.textContent = content + '\\n\\n' + content;
+
+    // Duration proportional to content length so scroll speed is constant
+    var dur = Math.max(MIN_DURATION, lines.length * SECS_PER_LINE);
+
+    // Reset animation cleanly
+    reel.style.animation = 'none';
+    void reel.offsetHeight;  // force reflow
+    reel.style.animation = 'htLogRoll ' + dur + 's linear infinite';
+  }}
+
+  async function _fetchAndRoll() {{
+    var reel = document.getElementById('log-reel');
+    if (!reel) return;
+    try {{
+      var resp = await fetch('/api/logs');
+      if (!resp.ok) return;
+      var data = await resp.json();
+      if (!data.ok || !data.lines || !data.lines.length) return;
+
+      // Only re-render if content actually changed (avoid animation jank)
+      var newSig = data.lines.slice(-3).join('|');
+      var oldSig = _currentLines.slice(-3).join('|');
+      if (newSig !== oldSig) {{
+        _applyRoll(reel, data.lines);
+      }}
+    }} catch(e) {{ /* log endpoint not available yet — silently ignore */ }}
+  }}
+
+  // Initial load after a short delay (let page settle)
+  setTimeout(_fetchAndRoll, 800);
+  setInterval(_fetchAndRoll, LOG_POLL_MS);
+}})();
 
 async function approveTicker(ticker) {{
     if (!confirm('Send ' + ticker + ' to Acquisition Pipeline for deep analysis?')) return;
@@ -2018,6 +2092,31 @@ def run_server(host='0.0.0.0', port=5055):
             'signal_score': status.get('signal_score'),
             'last_cycle': status.get('created_at'),
         }
+
+    @app.route('/api/logs')
+    def get_logs():
+        """Return last 35 cleaned lines from the orchestrator log for the rolling overlay."""
+        import os, re as _re
+        log_path = '/tmp/orchestrator.log'
+        try:
+            with open(log_path, 'r') as _f:
+                raw = _f.readlines()
+            cleaned = []
+            for line in raw[-60:]:                           # read 60, trim to 35 after cleaning
+                line = line.strip()
+                if not line:
+                    continue
+                # Strip Python logging prefix: "INFO:module.submodule:  text" → "text"
+                line = _re.sub(r'^(DEBUG|INFO|WARNING|ERROR|CRITICAL):[^:]*:\s*', '', line)
+                # Collapse leading whitespace to single space
+                line = line.strip()
+                if line:
+                    cleaned.append(line)
+            return {'ok': True, 'lines': cleaned[-35:]}
+        except FileNotFoundError:
+            return {'ok': False, 'lines': ['Orchestrator log not found — is it running?']}
+        except Exception as _e:
+            return {'ok': False, 'lines': [f'Log read error: {_e}']}
 
     print()
     print("  ⚡ HighTrade Dashboard Server")
