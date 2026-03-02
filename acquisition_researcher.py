@@ -50,7 +50,7 @@ def _get_conn() -> sqlite3.Connection:
 
 
 def _ensure_library_table(conn: sqlite3.Connection):
-    """Create stock_research_library table if it doesn't exist."""
+    """Create stock_research_library table if it doesn't exist, and migrate new columns."""
     conn.execute("""
         CREATE TABLE IF NOT EXISTS stock_research_library (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,6 +81,9 @@ def _ensure_library_table(conn: sqlite3.Connection):
             analyst_buy_count   INTEGER,
             analyst_hold_count  INTEGER,
             analyst_sell_count  INTEGER,
+            recommendation_key  TEXT,
+            recommendation_mean REAL,
+            analyst_count       INTEGER,
             -- Earnings
             next_earnings_date  TEXT,
             last_eps_surprise_pct REAL,
@@ -96,10 +99,33 @@ def _ensure_library_table(conn: sqlite3.Connection):
             -- Macro context (snapshot)
             macro_score         REAL,
             market_regime       TEXT,
+            vix_level           REAL,
+            -- Short interest (data_bridge)
+            short_pct_float     REAL,
+            shares_short        INTEGER,
+            short_ratio         REAL,
+            short_date          TEXT,
+            -- Options snapshot (data_bridge)
+            options_atm_iv_call    REAL,
+            options_atm_iv_put     REAL,
+            options_put_call_ratio REAL,
+            options_total_call_oi  INTEGER,
+            options_total_put_oi   INTEGER,
+            options_nearest_expiry TEXT,
+            -- Pre-market (data_bridge)
+            pre_market_price    REAL,
+            pre_market_chg_pct  REAL,
+            -- Insider activity (data_bridge)
+            insider_buys_90d    INTEGER DEFAULT 0,
+            insider_sells_90d   INTEGER DEFAULT 0,
+            insider_net_sentiment TEXT,
+            insider_last_date   TEXT,
             -- Raw blobs for analyst
             yfinance_info_json  TEXT,
             sec_filings_json    TEXT,
             news_signals_json   TEXT,
+            insider_txns_json   TEXT,
+            news_zero_reason    TEXT,
             -- Status
             status              TEXT DEFAULT 'library_ready',
             error_notes         TEXT,
@@ -110,6 +136,38 @@ def _ensure_library_table(conn: sqlite3.Connection):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_lib_ticker ON stock_research_library(ticker)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_lib_status ON stock_research_library(status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_lib_date   ON stock_research_library(research_date)")
+
+    # Migrate new columns onto existing tables (safe — silently skips if already present)
+    _new_cols = [
+        ("recommendation_key",     "TEXT"),
+        ("recommendation_mean",    "REAL"),
+        ("analyst_count",          "INTEGER"),
+        ("vix_level",              "REAL"),
+        ("short_pct_float",        "REAL"),
+        ("shares_short",           "INTEGER"),
+        ("short_ratio",            "REAL"),
+        ("short_date",             "TEXT"),
+        ("options_atm_iv_call",    "REAL"),
+        ("options_atm_iv_put",     "REAL"),
+        ("options_put_call_ratio", "REAL"),
+        ("options_total_call_oi",  "INTEGER"),
+        ("options_total_put_oi",   "INTEGER"),
+        ("options_nearest_expiry", "TEXT"),
+        ("pre_market_price",       "REAL"),
+        ("pre_market_chg_pct",     "REAL"),
+        ("insider_buys_90d",       "INTEGER DEFAULT 0"),
+        ("insider_sells_90d",      "INTEGER DEFAULT 0"),
+        ("insider_net_sentiment",  "TEXT"),
+        ("insider_last_date",      "TEXT"),
+        ("insider_txns_json",      "TEXT"),
+        ("news_zero_reason",       "TEXT"),
+    ]
+    for col, col_type in _new_cols:
+        try:
+            conn.execute(f"ALTER TABLE stock_research_library ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass  # Column already exists — safe to skip
+
     conn.commit()
 
 
@@ -134,20 +192,9 @@ def _fetch_yfinance(ticker: str) -> Dict:
 
         avg_vol = int(hist['Volume'].tail(20).mean()) if len(hist) >= 20 else None
 
-        # Earnings calendar
+        # Earnings calendar — handled by data_bridge.get_earnings_date() below;
+        # leave as None here so the bridge can fill it with its multi-method logic.
         next_earnings = None
-        try:
-            cal = stock.calendar
-            if cal is not None and not cal.empty:
-                # calendar is a DataFrame with dates as columns
-                if 'Earnings Date' in cal.index:
-                    ed = cal.loc['Earnings Date']
-                    if hasattr(ed, 'iloc'):
-                        next_earnings = str(ed.iloc[0])[:10]
-                    else:
-                        next_earnings = str(ed)[:10]
-        except Exception:
-            pass
 
         # Last EPS surprise
         eps_surprise = None
@@ -419,7 +466,18 @@ def research_ticker(ticker: str, date_str: str, conn: sqlite3.Connection) -> boo
     if 'error' in yf_data:
         errors.append(f"yfinance: {yf_data['error']}")
 
-    # Small delay to be polite to APIs
+    # 1b. data_bridge — fills recurring gaps (earnings, short interest, options,
+    #     pre-market, VIX, analyst consensus, insider activity, news coverage)
+    try:
+        import data_bridge
+        bridge_data = data_bridge.enrich(ticker, yf_data)
+        # Merge bridge results; bridge wins for fields it provides
+        yf_data.update(bridge_data)
+        logger.debug(f"  🌉 Bridge enriched {ticker}: {list(bridge_data.keys())}")
+    except Exception as _be:
+        errors.append(f"bridge: {_be}")
+        logger.warning(f"  ⚠️  data_bridge failed for {ticker}: {_be}")
+
     time.sleep(0.5)
 
     # 2. SEC EDGAR filings
@@ -447,16 +505,23 @@ def research_ticker(ticker: str, date_str: str, conn: sqlite3.Connection) -> boo
                 debt_to_equity, free_cash_flow,
                 analyst_target_mean, analyst_target_high, analyst_target_low,
                 analyst_buy_count, analyst_hold_count, analyst_sell_count,
+                recommendation_key, recommendation_mean, analyst_count,
                 next_earnings_date, last_eps_surprise_pct,
                 latest_filing_type, latest_filing_date, sec_recent_8k_summary,
                 news_mention_count, news_sentiment_avg,
                 congressional_signal_strength, congressional_buy_count,
-                macro_score, market_regime,
+                macro_score, market_regime, vix_level,
+                short_pct_float, shares_short, short_ratio, short_date,
+                options_atm_iv_call, options_atm_iv_put, options_put_call_ratio,
+                options_total_call_oi, options_total_put_oi, options_nearest_expiry,
+                pre_market_price, pre_market_chg_pct,
+                insider_buys_90d, insider_sells_90d, insider_net_sentiment, insider_last_date,
                 yfinance_info_json, sec_filings_json, news_signals_json,
+                insider_txns_json, news_zero_reason,
                 status, error_notes
             ) VALUES (
                 ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                ?,?,?,?,?,?,?,?,?,?,?
+                ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
             )
         """, (
             ticker, date_str,
@@ -482,6 +547,9 @@ def research_ticker(ticker: str, date_str: str, conn: sqlite3.Connection) -> boo
             yf_data.get('analyst_buy_count', 0),
             yf_data.get('analyst_hold_count', 0),
             yf_data.get('analyst_sell_count', 0),
+            yf_data.get('recommendation_key'),
+            yf_data.get('recommendation_mean'),
+            yf_data.get('analyst_count'),
             yf_data.get('next_earnings_date'),
             yf_data.get('last_eps_surprise_pct'),
             sec_data.get('latest_filing_type'),
@@ -493,9 +561,28 @@ def research_ticker(ticker: str, date_str: str, conn: sqlite3.Connection) -> boo
             internal.get('congressional_buy_count', 0),
             internal.get('macro_score'),
             regime,
+            yf_data.get('vix_level'),
+            yf_data.get('short_pct_float'),
+            yf_data.get('shares_short'),
+            yf_data.get('short_ratio'),
+            yf_data.get('short_date'),
+            yf_data.get('options_atm_iv_call'),
+            yf_data.get('options_atm_iv_put'),
+            yf_data.get('options_put_call_ratio'),
+            yf_data.get('options_total_call_oi'),
+            yf_data.get('options_total_put_oi'),
+            yf_data.get('options_nearest_expiry'),
+            yf_data.get('pre_market_price'),
+            yf_data.get('pre_market_chg_pct'),
+            yf_data.get('insider_buys_90d', 0),
+            yf_data.get('insider_sells_90d', 0),
+            yf_data.get('insider_net_sentiment'),
+            yf_data.get('insider_last_date'),
             json.dumps(yf_data.get('info', {})),
             json.dumps(sec_data.get('filings_json', {})),
             json.dumps(internal.get('news_signals_sample', [])),
+            yf_data.get('insider_txns_json'),
+            yf_data.get('news_zero_reason'),
             'library_ready' if not errors else 'partial',
             '; '.join(errors) if errors else None,
         ))

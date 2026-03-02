@@ -158,21 +158,27 @@ def _build_analyst_prompt(ticker: str, research: Dict) -> str:
     buy_c    = research.get('analyst_buy_count', 0)
     hold_c   = research.get('analyst_hold_count', 0)
     sell_c   = research.get('analyst_sell_count', 0)
+    rec_key  = research.get('recommendation_key') or 'N/A'
+    rec_mean = research.get('recommendation_mean')
+    n_analysts = research.get('analyst_count')
     upside   = ((tgt_mean - price) / price * 100) if (isinstance(tgt_mean, float) and isinstance(price, float)) else None
 
     analyst_block = (
         f"  Price targets:    Mean ${tgt_mean} / High ${tgt_high} / Low ${tgt_low}\n"
         f"  Implied upside:   {f'{upside:+.1f}%' if upside is not None else 'N/A'}\n"
         f"  Ratings (recent): {buy_c} Buy / {hold_c} Hold / {sell_c} Sell\n"
+        f"  Consensus:        {rec_key}"
+        + (f" (mean {rec_mean:.2f}/5.0)" if isinstance(rec_mean, float) else "")
+        + (f" — {n_analysts} analysts" if n_analysts else "") + "\n"
     )
 
     # Earnings
-    next_earn    = research.get('next_earnings_date', 'Unknown')
+    next_earn    = research.get('next_earnings_date') or 'Unknown'
     eps_surprise = research.get('last_eps_surprise_pct')
     eps_str      = f"{eps_surprise:+.1f}%" if isinstance(eps_surprise, float) else 'N/A'
 
     earnings_block = (
-        f"  Next earnings:  {next_earn}\n"
+        f"  Next earnings:     {next_earn}\n"
         f"  Last EPS surprise: {eps_str}\n"
     )
 
@@ -186,15 +192,82 @@ def _build_analyst_prompt(ticker: str, research: Dict) -> str:
         f"  Recent 8-K:     {sec_8k or 'None'}\n"
     )
 
+    # Short interest (data_bridge)
+    short_pct   = research.get('short_pct_float')
+    short_ratio = research.get('short_ratio')
+    short_date  = research.get('short_date') or 'N/A'
+    shares_short = research.get('shares_short')
+
+    def _fmt_short_pct(v):
+        return f"{v*100:.1f}%" if isinstance(v, float) else 'N/A'
+    def _fmt_shares(v):
+        return f"{v:,}" if isinstance(v, (int, float)) and v else 'N/A'
+
+    short_block = (
+        f"  Short % of float: {_fmt_short_pct(short_pct)}"
+        + (f" ({_fmt_shares(shares_short)} shares)" if shares_short else "") + "\n"
+        f"  Days to cover:    {f'{short_ratio:.1f}' if isinstance(short_ratio, float) else 'N/A'}\n"
+        f"  Short data date:  {short_date}\n"
+    )
+
+    # Options snapshot (data_bridge)
+    atm_iv_call = research.get('options_atm_iv_call')
+    atm_iv_put  = research.get('options_atm_iv_put')
+    pcr         = research.get('options_put_call_ratio')
+    call_oi     = research.get('options_total_call_oi')
+    put_oi      = research.get('options_total_put_oi')
+    expiry      = research.get('options_nearest_expiry') or 'N/A'
+
+    def _fmt_iv(v):
+        return f"{v*100:.1f}%" if isinstance(v, float) else 'N/A'
+    def _fmt_oi(v):
+        return f"{v:,}" if isinstance(v, (int, float)) and v else 'N/A'
+
+    options_block = (
+        f"  Nearest expiry:   {expiry}\n"
+        f"  ATM IV (call/put): {_fmt_iv(atm_iv_call)} / {_fmt_iv(atm_iv_put)}\n"
+        f"  Put/Call OI ratio: {f'{pcr:.2f}' if isinstance(pcr, float) else 'N/A'}"
+        + (" (>1.0 = bearish lean)" if isinstance(pcr, float) and pcr > 1.0 else
+           " (<1.0 = bullish lean)" if isinstance(pcr, float) else "") + "\n"
+        f"  Total OI (C/P):   {_fmt_oi(call_oi)} / {_fmt_oi(put_oi)}\n"
+    )
+
+    # Pre-market (data_bridge)
+    pre_price = research.get('pre_market_price')
+    pre_chg   = research.get('pre_market_chg_pct')
+    vix_lvl   = research.get('vix_level')
+
+    premarket_block = (
+        f"  Pre-market price: {'${:.2f}'.format(pre_price) if pre_price else 'N/A'}"
+        + (f" ({pre_chg:+.2f}%)" if isinstance(pre_chg, float) else "") + "\n"
+        f"  VIX (latest):     {f'{vix_lvl:.2f}' if isinstance(vix_lvl, float) else 'N/A'}\n"
+    )
+
+    # Insider activity (data_bridge)
+    ins_buys  = research.get('insider_buys_90d', 0)
+    ins_sells = research.get('insider_sells_90d', 0)
+    ins_sent  = research.get('insider_net_sentiment') or 'neutral'
+    ins_last  = research.get('insider_last_date') or 'N/A'
+
+    insider_block = (
+        f"  Insider txns (90d): {ins_buys} buys / {ins_sells} sells → {ins_sent.upper()}\n"
+        f"  Last transaction:   {ins_last}\n"
+    )
+
     # Internal signals
     news_count   = research.get('news_mention_count', 0)
     news_sent    = research.get('news_sentiment_avg')
+    news_zero    = research.get('news_zero_reason')
     cong_strength = research.get('congressional_signal_strength', 0)
     cong_buys    = research.get('congressional_buy_count', 0)
     macro_score  = research.get('macro_score', 'N/A')
 
+    news_count_str = str(news_count)
+    if news_count == 0 and news_zero:
+        news_count_str = f"0 — {news_zero}"
+
     signals_block = (
-        f"  News mentions (30d): {news_count}\n"
+        f"  News mentions (30d): {news_count_str}\n"
         f"  News sentiment avg:  {f'{news_sent:.1f}/100' if isinstance(news_sent, float) else 'N/A'}\n"
         f"  Congressional signal strength: {cong_strength:.0f}\n"
         f"  Congressional buy count:       {cong_buys}\n"
@@ -227,6 +300,22 @@ def _build_analyst_prompt(ticker: str, research: Dict) -> str:
         f"EARNINGS\n"
         f"══════════════════════════════════════════════════════\n"
         f"{earnings_block}\n"
+        f"══════════════════════════════════════════════════════\n"
+        f"SHORT INTEREST\n"
+        f"══════════════════════════════════════════════════════\n"
+        f"{short_block}\n"
+        f"══════════════════════════════════════════════════════\n"
+        f"OPTIONS MARKET SNAPSHOT\n"
+        f"══════════════════════════════════════════════════════\n"
+        f"{options_block}\n"
+        f"══════════════════════════════════════════════════════\n"
+        f"PRE-MARKET & VIX\n"
+        f"══════════════════════════════════════════════════════\n"
+        f"{premarket_block}\n"
+        f"══════════════════════════════════════════════════════\n"
+        f"INSIDER ACTIVITY (Form 4 — last 90 days)\n"
+        f"══════════════════════════════════════════════════════\n"
+        f"{insider_block}\n"
         f"══════════════════════════════════════════════════════\n"
         f"SEC FILINGS\n"
         f"══════════════════════════════════════════════════════\n"
