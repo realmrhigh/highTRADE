@@ -231,6 +231,54 @@ def fetch_gemini_usage():
         return {}
 
 
+def fetch_exit_queue():
+    """Fetch open positions enriched with exit levels from trade_records and
+    conditional_tracking (analyst-set stops/TPs). Uses COALESCE so analyst
+    levels fill in when the trade_record fields are NULL (manual entries)."""
+    with _conn() as db:
+        try:
+            rows = db.execute("""
+                SELECT
+                    t.asset_symbol,
+                    t.shares,
+                    t.entry_price,
+                    t.current_price,
+                    t.position_size_dollars,
+                    t.unrealized_pnl_dollars,
+                    t.unrealized_pnl_percent,
+                    t.entry_date,
+                    t.defcon_at_entry,
+                    -- Effective exit levels: trade_record value wins, else most-recent analyst conditional
+                    COALESCE(t.stop_loss,     c.stop_loss)     AS stop_loss,
+                    COALESCE(t.take_profit_1, c.take_profit_1) AS take_profit_1,
+                    COALESCE(t.take_profit_2, c.take_profit_2) AS take_profit_2,
+                    c.stop_loss_rationale,
+                    c.take_profit_rationale,
+                    c.invalidation_conditions_json,
+                    c.thesis_summary,
+                    c.watch_tag,
+                    c.research_confidence,
+                    CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END AS has_framework
+                FROM trade_records t
+                LEFT JOIN (
+                    -- One row per ticker: the most recent conditional by created_at
+                    SELECT * FROM conditional_tracking
+                    WHERE status IN ('active','invalidated','filled')
+                      AND id IN (
+                          SELECT id FROM conditional_tracking c2
+                          WHERE c2.status IN ('active','invalidated','filled')
+                          GROUP BY UPPER(c2.ticker)
+                          HAVING id = MAX(id)
+                      )
+                ) c ON UPPER(t.asset_symbol) = UPPER(c.ticker)
+                WHERE t.status = 'open'
+                ORDER BY t.entry_date ASC
+            """).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
+
 def fetch_active_conditionals():
     """Fetch active entry conditionals ordered by attention score descending."""
     with _conn() as db:
@@ -420,6 +468,134 @@ def build_closed_rows(closed):
             '</tr>'
         )
     return ''.join(rows)
+
+def build_exit_queue_rows(positions):
+    """Build exit queue table rows for all open positions."""
+    if not positions:
+        return '<tr><td colspan="9" style="color:#555;text-align:center;padding:20px;">No open positions</td></tr>'
+
+    from datetime import datetime as _dt
+    rows = []
+    for p in positions:
+        sym      = p.get('asset_symbol', '?')
+        entry    = float(p.get('entry_price')    or 0)
+        current  = float(p.get('current_price')  or entry)
+        upnl_d   = float(p.get('unrealized_pnl_dollars')  or 0)
+        upnl_pct = float(p.get('unrealized_pnl_percent')  or 0)
+        stop     = p.get('stop_loss')
+        tp1      = p.get('take_profit_1')
+        tp2      = p.get('take_profit_2')
+        has_fw   = bool(p.get('has_framework'))
+        watch_tag = p.get('watch_tag') or ''
+
+        # ── Hold time ─────────────────────────────────────────────────────
+        hold_str = '—'
+        try:
+            ed = _dt.fromisoformat(str(p.get('entry_date') or '')[:10])
+            days = (_dt.now() - ed).days
+            hold_str = f'{days}d'
+        except Exception:
+            pass
+
+        # ── Distance calculations ─────────────────────────────────────────
+        def _dist_cell(target, price, direction):
+            """Return (display_str, cell_style) for a distance-to-level cell."""
+            if target is None or price is None or price == 0:
+                return '—', 'color:#444;'
+            target = float(target)
+            dist_pct = (target - price) / price * 100
+            if direction == 'down':   # stop — negative is bad (already broken)
+                dist_abs = abs(dist_pct)
+                if dist_abs <= 3:
+                    style = 'color:#ff4444;font-weight:700;'
+                elif dist_abs <= 8:
+                    style = 'color:#ffb300;font-weight:600;'
+                else:
+                    style = 'color:#888;'
+                return f'{dist_pct:+.1f}%', style
+            else:                     # TP — positive is good
+                if 0 < dist_pct <= 3:
+                    style = 'color:#00ff88;font-weight:700;'
+                elif 0 < dist_pct <= 8:
+                    style = 'color:#00d4ff;'
+                elif dist_pct <= 0:   # already above TP
+                    style = 'color:#00ff88;font-weight:700;'
+                else:
+                    style = 'color:#888;'
+                return f'{dist_pct:+.1f}%', style
+
+        # ── Stop cell ─────────────────────────────────────────────────────
+        if stop:
+            stop_f = float(stop)
+            sd, ss = _dist_cell(stop_f, current, 'down')
+            stop_cell = (
+                f'<div style="font-size:12px;font-weight:600;">${stop_f:,.2f}</div>'
+                f'<div style="font-size:10px;{ss}">{sd}</div>'
+            )
+        else:
+            stop_cell = '<div style="color:#ff4444;font-size:10px;letter-spacing:1px;">⚠ NOT SET</div>'
+
+        # ── TP1 cell ──────────────────────────────────────────────────────
+        if tp1:
+            tp1_f = float(tp1)
+            td1, ts1 = _dist_cell(tp1_f, current, 'up')
+            tp1_cell = (
+                f'<div style="font-size:12px;font-weight:600;">${tp1_f:,.2f}</div>'
+                f'<div style="font-size:10px;{ts1}">{td1}</div>'
+            )
+        else:
+            tp1_cell = '<div style="color:#444;font-size:10px;">—</div>'
+
+        # ── TP2 cell ──────────────────────────────────────────────────────
+        if tp2:
+            tp2_f = float(tp2)
+            td2, ts2 = _dist_cell(tp2_f, current, 'up')
+            tp2_cell = (
+                f'<div style="font-size:12px;font-weight:600;">${tp2_f:,.2f}</div>'
+                f'<div style="font-size:10px;{ts2}">{td2}</div>'
+            )
+        else:
+            tp2_cell = '<div style="color:#444;font-size:10px;">—</div>'
+
+        # ── Framework badge ───────────────────────────────────────────────
+        fw_badge = (
+            '<span style="background:#1a2a1a;color:#00ff88;font-size:9px;'
+            'padding:2px 6px;border-radius:3px;letter-spacing:1px;">🎯 ANALYST</span>'
+            if has_fw else
+            '<span style="background:#2a1a1a;color:#ff8c44;font-size:9px;'
+            'padding:2px 6px;border-radius:3px;letter-spacing:1px;">✋ MANUAL</span>'
+        )
+
+        # ── P&L cell ──────────────────────────────────────────────────────
+        pnl_c = pnl_color(upnl_d)
+
+        # ── Watch tag pill ────────────────────────────────────────────────
+        tag_html = ''
+        if watch_tag:
+            tag_html = (
+                f'<div style="font-size:9px;color:#888;margin-top:2px;'
+                f'letter-spacing:1px;">{watch_tag.upper()}</div>'
+            )
+
+        rows.append(
+            '<tr class="trow">'
+            f'<td class="sym" onclick="showChart(\'{sym}\')">'
+            f'  {sym}{tag_html}'
+            f'</td>'
+            f'<td style="color:#ddd;">${entry:,.2f}<br>'
+            f'  <span style="color:#888;font-size:10px;">→ ${current:,.2f}</span></td>'
+            f'<td style="color:{pnl_c};font-weight:700;">{fmt_dollar(upnl_d)}'
+            f'  <br><span style="font-size:10px;">{fmt_pct(upnl_pct)}</span></td>'
+            f'<td>{stop_cell}</td>'
+            f'<td>{tp1_cell}</td>'
+            f'<td>{tp2_cell}</td>'
+            f'<td style="color:#666;font-size:11px;">{hold_str}</td>'
+            f'<td>{fw_badge}</td>'
+            '</tr>'
+        )
+
+    return ''.join(rows)
+
 
 def source_badge(source):
     cfg = {
@@ -729,7 +905,7 @@ def build_model_card(b, title, icon):
 
 def build_html(status, positions, closed, stats, briefings, macro, watchlist,
                sig_history, news, cong_clusters, cong_trades, hound_candidates, hound_last_run=None,
-               conditionals=None, gemini_usage=None):
+               conditionals=None, gemini_usage=None, exit_queue=None):
 
     now_str    = _et_now().strftime('%Y-%m-%d %H:%M:%S ET')
     last_cycle = status.get('created_at', '—')
@@ -877,6 +1053,7 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
 
     open_rows      = build_open_rows(positions)
     closed_rows    = build_closed_rows(closed)
+    exit_queue_rows = build_exit_queue_rows(exit_queue or [])
     wl_rows        = build_wl_rows(watchlist)
     cond_rows      = build_conditional_rows(conditionals or [])
     news_items     = build_news_items(news)
@@ -1538,6 +1715,27 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
 </div>
 
 <div class="grid-full">
+  <div class="panel" style="border-color:#ff444422;">
+    <div class="panel-title">🎯 Exit Queue &mdash; Open Position Management
+      <span style="font-size:10px;color:#666;font-weight:400;margin-left:10px;">
+        🔴 stop &lt;3% &nbsp; 🟡 stop &lt;8% &nbsp; 🟢 near TP &nbsp;
+        <span style="background:#1a2a1a;color:#00ff88;padding:1px 5px;border-radius:2px;font-size:9px;">🎯 ANALYST</span> = analyst exit framework attached
+      </span>
+    </div>
+    <div class="scroll-wrap">
+      <table>
+        <thead><tr>
+          <th>Symbol</th><th>Entry → Current</th><th>Unrealized P&amp;L</th>
+          <th>Stop Loss</th><th>TP1</th><th>TP2</th>
+          <th>Hold</th><th>Framework</th>
+        </tr></thead>
+        <tbody>{exit_queue_rows}</tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="grid-full">
   <div class="panel">
     <div class="panel-title">Closed Trades</div>
     <div class="scroll-wrap">
@@ -1879,9 +2077,11 @@ def generate_dashboard_html():
     hound_last_run   = fetch_hound_last_run()
     conditionals     = fetch_active_conditionals()
     gemini_usage     = fetch_gemini_usage()
+    exit_queue       = fetch_exit_queue()
     return build_html(status, positions, closed, stats, briefings, macro,
                       watchlist, sig_hist, news, cong_cl, cong_tr, hound_candidates, hound_last_run,
-                      conditionals=conditionals, gemini_usage=gemini_usage)
+                      conditionals=conditionals, gemini_usage=gemini_usage,
+                      exit_queue=exit_queue)
 
 
 # ─── Flask server ─────────────────────────────────────────────────────────────
