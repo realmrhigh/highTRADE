@@ -35,22 +35,30 @@ from config_validator import ConfigValidator
 # Configuration
 SCRIPT_DIR = Path(__file__).parent.resolve()
 DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
-LOGS_PATH = SCRIPT_DIR / 'trading_data' / 'logs'
+LOGS_PATH = SCRIPT_DIR / 'logs'               # unified log dir — matches launchd stdout
+LEGACY_LOGS_PATH = SCRIPT_DIR / 'trading_data' / 'logs'  # keep for other components
 CONFIG_PATH = SCRIPT_DIR / 'trading_data' / 'orchestrator_config.json'
 
-# Create logs directory
+# Create logs directories
 LOGS_PATH.mkdir(parents=True, exist_ok=True)
+LEGACY_LOGS_PATH.mkdir(parents=True, exist_ok=True)
 
-# Set up logging
+# Set up logging — force=True overrides any root logger already configured by
+# imported modules; StreamHandler goes to stdout which launchd writes to
+# logs/orchestrator.log; FileHandler writes a dated backup copy.
 LOG_FILE = LOGS_PATH / f"hightrade_{datetime.now().strftime('%Y%m%d')}.log"
+_file_handler = logging.FileHandler(LOG_FILE)
+_file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+_stream_handler = logging.StreamHandler(sys.stdout)
+_stream_handler.setFormatter(logging.Formatter('%(levelname)s:%(name)s:%(message)s'))
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(LOG_FILE),
-        logging.StreamHandler()
-    ]
+    handlers=[_file_handler, _stream_handler],
+    force=True,
 )
+# Ensure log lines are flushed immediately so tail -f works in real time
+sys.stdout.reconfigure(line_buffering=True)
 logger = logging.getLogger(__name__)
 
 

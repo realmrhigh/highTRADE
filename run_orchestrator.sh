@@ -1,5 +1,5 @@
 #!/bin/bash
 export HOME=/Users/stantonhigh
-export PATH=/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin
+export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 cd /Users/stantonhigh/Documents/hightrade
-exec /Applications/Xcode.app/Contents/Developer/usr/bin/python3 hightrade_orchestrator.py continuous 15
+exec /opt/homebrew/bin/python3.11 hightrade_orchestrator.py continuous 15

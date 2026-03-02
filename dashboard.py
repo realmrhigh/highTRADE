@@ -2097,7 +2097,15 @@ def run_server(host='0.0.0.0', port=5055):
     def get_logs():
         """Return last 35 cleaned lines from the orchestrator log for the rolling overlay."""
         import os, re as _re
-        log_path = '/tmp/orchestrator.log'
+        _base = Path(__file__).parent.resolve()
+        # Prefer the unified logs/ path (written by launchd stdout); fall back to /tmp
+        _candidates = [
+            _base / 'logs' / 'orchestrator.log',
+            Path('/tmp/orchestrator.log'),
+        ]
+        log_path = next((str(p) for p in _candidates if p.exists()), None)
+        if log_path is None:
+            return {'ok': False, 'lines': ['Orchestrator log not found — is it running?']}
         try:
             with open(log_path, 'r') as _f:
                 raw = _f.readlines()
