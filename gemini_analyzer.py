@@ -18,7 +18,7 @@ import grok_client
 
 logger = logging.getLogger(__name__)
 
-FLASH_MODEL = "gemini-2.5-flash"
+FLASH_MODEL = "gemini-3-flash-preview"
 PRO_MODEL   = "gemini-3.1-pro-preview"
 GROK_MODEL  = "grok-3"
 
