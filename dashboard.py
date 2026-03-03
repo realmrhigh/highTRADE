@@ -196,22 +196,25 @@ def fetch_hound_last_run():
 
 def fetch_gemini_usage():
     """
-    Return rolling-24h Gemini usage from gemini_call_log.
-    Returns dict like:
+    Return rolling-24h Gemini usage from gemini_call_log for all tracked models.
+    Returns dict keyed by model_id:
       {
-        'gemini-2.5-pro':   {'calls': 42, 'tokens_in': 210000, 'tokens_out': 18000,
-                             'soft_limit': 800, 'pct': 0.053, 'status': 'ok'},
-        'gemini-2.5-flash': {'calls': 130, ...},
+        'gemini-2.5-pro': {
+            'calls': 42, 'tokens_in': 210000, 'tokens_out': 18000,
+            'daily_limit': 100, 'rpm_limit': 5,
+            'pct': 0.42, 'status': 'warn',
+            'resets_in_s': 51420,   # seconds until rolling window resets (approx)
+        }, ...
       }
     """
     try:
         import gemini_client
-        usage = gemini_client.get_rolling_usage(24)
+        # Use reset-aligned counts — synced to Google's actual daily reset times
+        # (not a rolling 24h window) so percentages and "resets in" match the Gemini CLI.
+        usage = gemini_client.get_reset_aligned_usage()
         result = {}
-        for model_id, soft_limit in gemini_client.QUOTA_SOFT_LIMITS.items():
-            data = usage.get(model_id, {})
-            calls = data.get('calls', 0)
-            pct   = calls / soft_limit if soft_limit else 0.0
+        for model_id, data in usage.items():
+            pct = data.get('pct', 0.0)
             if pct >= gemini_client.QUOTA_BLOCK_PCT:
                 status = 'block'
             elif pct >= gemini_client.QUOTA_WARN_PCT:
@@ -219,12 +222,9 @@ def fetch_gemini_usage():
             else:
                 status = 'ok'
             result[model_id] = {
-                'calls':      calls,
-                'tokens_in':  data.get('tokens_in', 0) or 0,
-                'tokens_out': data.get('tokens_out', 0) or 0,
-                'soft_limit': soft_limit,
-                'pct':        pct,
+                **data,
                 'status':     status,
+                'soft_limit': data.get('daily_limit', 0),  # backward compat
             }
         return result
     except Exception:
@@ -925,17 +925,28 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
 
     # ── Gemini quota widget HTML ─────────────────────────────────────────────
     _quota_color = {'ok': '#00ff88', 'warn': '#ffb300', 'block': '#ff4444'}
-    _quota_label = {'ok': 'OK', 'warn': 'WARN', 'block': 'NEAR LIMIT'}
+    _quota_label = {'ok': 'OK', 'warn': 'WARN', 'block': '⚠ NEAR LIMIT'}
     _model_short = {
-        'gemini-2.5-pro':   'Pro 2.5 (Reasoning)',
-        'gemini-2.5-flash': 'Flash 2.5 (Fast/Balanced)',
+        'gemini-3.1-pro-preview': '3.1 Pro Preview (Reasoning — 50/d, 2 RPM)',
+        'gemini-2.5-pro':         '2.5 Pro (Reasoning — 100/d, 5 RPM)',
+        'gemini-2.5-flash':       '2.5 Flash (Fast/Balanced — 1500/d, 15 RPM)',
+        'gemini-3-flash-preview':  '3 Flash Preview (Fast — 1500/d, 15 RPM)',
+        'gemini-2.0-flash-lite':  '2.0 Flash Lite (Ultra-fast — 2000/d, 30 RPM)',
     }
+    _model_order = [
+        'gemini-3.1-pro-preview',
+        'gemini-2.5-pro',
+        'gemini-2.5-flash',
+        'gemini-3-flash-preview',
+        'gemini-2.0-flash-lite',
+    ]
     gemini_usage = gemini_usage or {}
     _quota_rows  = ''
-    for _mid in ['gemini-2.5-pro', 'gemini-2.5-flash']:
+    for _mid in _model_order:
         _d       = gemini_usage.get(_mid, {})
         _calls   = _d.get('calls', 0)
-        _limit   = _d.get('soft_limit', 0)
+        _limit   = _d.get('daily_limit', 0)
+        _rpm     = _d.get('rpm_limit', '?')
         _pct     = _d.get('pct', 0.0)
         _st      = _d.get('status', 'ok')
         _col     = _quota_color.get(_st, '#00ff88')
@@ -943,18 +954,26 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
         _tok_in  = _d.get('tokens_in', 0) or 0
         _tok_out = _d.get('tokens_out', 0) or 0
         _bar_w   = min(int(_pct * 100), 100)
-        _bar_col = _col
         _short   = _model_short.get(_mid, _mid)
+        # Resets-in string
+        _rs = _d.get('resets_in_s', 0)
+        if _rs > 0:
+            _rh, _rm = divmod(_rs // 60, 60)
+            _reset_str = f'resets in {_rh}h {_rm}m'
+        elif _calls == 0:
+            _reset_str = 'no calls this window'
+        else:
+            _reset_str = 'window expired'
         _quota_rows += f"""
-        <div style="margin-bottom:6px;">
+        <div style="margin-bottom:8px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
-            <span style="color:#aaa;font-size:10px;">{_short}</span>
-            <span style="color:{_col};font-size:10px;font-weight:600;">{_calls}/{_limit} calls &nbsp;·&nbsp; {_pct*100:.0f}% &nbsp;·&nbsp; {_lbl}</span>
+            <span style="color:#aaa;font-size:9px;">{_short}</span>
+            <span style="color:{_col};font-size:10px;font-weight:600;">{_calls}/{_limit} &nbsp;·&nbsp; {_pct*100:.0f}% &nbsp;·&nbsp; {_lbl}</span>
           </div>
           <div style="background:#1a1a2e;border-radius:3px;height:5px;overflow:hidden;">
-            <div style="width:{_bar_w}%;height:5px;background:{_bar_col};border-radius:3px;transition:width 0.3s;"></div>
+            <div style="width:{_bar_w}%;height:5px;background:{_col};border-radius:3px;transition:width 0.3s;"></div>
           </div>
-          <div style="color:#444;font-size:9px;margin-top:1px;">in: {_tok_in:,} tok &nbsp;·&nbsp; out: {_tok_out:,} tok &nbsp;·&nbsp; rolling 24h</div>
+          <div style="color:#444;font-size:9px;margin-top:1px;">in: {_tok_in:,} tok &nbsp;·&nbsp; out: {_tok_out:,} tok &nbsp;·&nbsp; {_reset_str}</div>
         </div>"""
     if not _quota_rows:
         _quota_rows = '<div style="color:#555;font-size:10px;">No calls logged yet</div>'

@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dashboard",
+      "runtimeExecutable": "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python",
+      "runtimeArgs": ["/Users/stantonhigh/Documents/hightrade/dashboard.py", "--serve"],
+      "port": 5055
+    }
+  ]
+}

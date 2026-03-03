@@ -24,7 +24,7 @@ import shutil
 import sqlite3
 import subprocess
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -78,13 +78,60 @@ MODEL_CONFIG = {
 # ── Quota tracking ─────────────────────────────────────────────────────────────
 _DB_PATH = Path(__file__).parent / 'trading_data' / 'trading_history.db'
 
-# Rolling-24h soft limits (conservative vs. actual RPD — auto-downgrade kicks in before hard limit)
-QUOTA_SOFT_LIMITS = {
-    'gemini-2.5-pro':    800,   # stable: ~1000 RPD actual
-    'gemini-2.5-flash':  700,   # stable: ~1000 RPD actual
+# Actual Google free-tier daily request limits (RPD) — updated 2026-03
+# These are the real hard limits, not conservative guesses.
+QUOTA_DAILY_LIMITS = {
+    'gemini-3.1-pro-preview':  50,     # 2 RPM,  50 RPD,  32K TPM
+    'gemini-2.5-pro':          100,    # 5 RPM, 100 RPD, 250K TPM
+    'gemini-2.5-flash':        1500,   # 15 RPM, 1,500 RPD, 1M TPM
+    'gemini-3-flash-preview':  1500,   # 15 RPM, 1,500 RPD, 1M TPM
+    'gemini-2.0-flash-lite':   2000,   # 30 RPM, 2,000 RPD, 4M TPM
 }
-QUOTA_WARN_PCT  = 0.75   # warn at 75% of soft limit
-QUOTA_BLOCK_PCT = 0.95   # downgrade at 95% of soft limit
+
+# Actual Google free-tier RPM limits per model
+QUOTA_RPM_LIMITS = {
+    'gemini-3.1-pro-preview':  2,
+    'gemini-2.5-pro':          5,
+    'gemini-2.5-flash':        15,
+    'gemini-3-flash-preview':  15,
+    'gemini-2.0-flash-lite':   30,
+}
+
+# Backward-compat alias — dashboard.py and acquisition_analyst.py reference this name
+QUOTA_SOFT_LIMITS = QUOTA_DAILY_LIMITS
+
+QUOTA_WARN_PCT  = 0.75   # warn at 75% of daily limit
+QUOTA_BLOCK_PCT = 0.90   # downgrade/block at 90% — leaves 10% headroom for manual use
+
+# Google's actual daily quota reset times (UTC hour, minute) per model.
+# Derived from observed CLI output: "resets in Xh Ym" at a known UTC timestamp.
+# Flash family resets at 08:45 UTC; Pro family resets at 14:30 UTC.
+# Update these if Google changes the reset schedule.
+QUOTA_RESET_UTC = {
+    'gemini-2.5-flash':        (8,  45),
+    'gemini-3-flash-preview':  (8,  45),
+    'gemini-2.0-flash-lite':   (8,  45),
+    'gemini-2.5-pro':          (14, 30),
+    'gemini-3.1-pro-preview':  (14, 30),
+}
+
+
+def _last_reset_utc(model_id: str) -> datetime:
+    """Return the most recent Google quota reset datetime (UTC naive) for this model."""
+    hm = QUOTA_RESET_UTC.get(model_id)
+    if not hm:
+        return datetime.utcnow() - timedelta(hours=24)  # fallback: rolling 24h
+    h, m = hm
+    now = datetime.utcnow()
+    reset_today = now.replace(hour=h, minute=m, second=0, microsecond=0)
+    if reset_today > now:
+        reset_today -= timedelta(days=1)   # reset hasn't happened yet today
+    return reset_today
+
+
+def _next_reset_utc(model_id: str) -> datetime:
+    """Return the next Google quota reset datetime (UTC naive) for this model."""
+    return _last_reset_utc(model_id) + timedelta(hours=24)
 
 def _ensure_call_log(conn: sqlite3.Connection):
     conn.execute("""
@@ -121,7 +168,9 @@ def _log_call(model_id: str, model_key: str, caller: str,
 def get_rolling_usage(hours: int = 24) -> dict:
     """
     Return call counts and token totals per model_id for the last N hours.
-    Example: {'gemini-2.5-pro': {'calls': 12, 'tokens_in': 84000, 'tokens_out': 9600},
+    Also includes oldest_call_at (ISO str) so callers can compute approximate reset time.
+    Example: {'gemini-2.5-pro': {'calls': 12, 'tokens_in': 84000, 'tokens_out': 9600,
+                                  'oldest_call_at': '2026-03-02 14:23:11'},
               'gemini-2.5-flash': {'calls': 45, ...}}
     """
     try:
@@ -132,7 +181,8 @@ def get_rolling_usage(hours: int = 24) -> dict:
             SELECT model_id,
                    COUNT(*)        AS calls,
                    SUM(tokens_in)  AS tokens_in,
-                   SUM(tokens_out) AS tokens_out
+                   SUM(tokens_out) AS tokens_out,
+                   MIN(created_at) AS oldest_call_at
             FROM gemini_call_log
             WHERE created_at >= datetime('now', ?)
             GROUP BY model_id
@@ -142,19 +192,98 @@ def get_rolling_usage(hours: int = 24) -> dict:
     except Exception:
         return {}
 
+
+def get_rolling_usage_seconds(seconds: int = 60) -> dict:
+    """
+    Return call counts per model_id for the last N seconds.
+    Used for RPM gate in check_quota() — detects burst rate violations.
+    """
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+        conn.row_factory = sqlite3.Row
+        _ensure_call_log(conn)
+        rows = conn.execute("""
+            SELECT model_id, COUNT(*) AS calls
+            FROM gemini_call_log
+            WHERE created_at >= datetime('now', ?)
+            GROUP BY model_id
+        """, (f'-{seconds} seconds',)).fetchall()
+        conn.close()
+        return {r['model_id']: {'calls': r['calls']} for r in rows}
+    except Exception:
+        return {}
+
+def get_reset_aligned_usage() -> dict:
+    """
+    Return call counts per model_id since Google's last actual quota reset
+    (not a rolling 24h window). Used for display only — gives accurate counts
+    that match what the Gemini CLI shows.
+    Also returns resets_in_s: seconds until the next Google reset.
+    """
+    result = {}
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+        conn.row_factory = sqlite3.Row
+        _ensure_call_log(conn)
+        for model_id, daily_limit in QUOTA_DAILY_LIMITS.items():
+            last_reset  = _last_reset_utc(model_id)
+            next_reset  = _next_reset_utc(model_id)
+            resets_in_s = max(0, int((next_reset - datetime.utcnow()).total_seconds()))
+            since_str   = last_reset.strftime('%Y-%m-%d %H:%M:%S')
+            row = conn.execute("""
+                SELECT COUNT(*)        AS calls,
+                       SUM(tokens_in)  AS tokens_in,
+                       SUM(tokens_out) AS tokens_out
+                FROM gemini_call_log
+                WHERE model_id = ? AND created_at >= ?
+            """, (model_id, since_str)).fetchone()
+            calls    = row['calls']    or 0
+            tok_in   = row['tokens_in']  or 0
+            tok_out  = row['tokens_out'] or 0
+            pct      = calls / daily_limit if daily_limit else 0.0
+            result[model_id] = {
+                'calls':       calls,
+                'tokens_in':   tok_in,
+                'tokens_out':  tok_out,
+                'daily_limit': daily_limit,
+                'rpm_limit':   QUOTA_RPM_LIMITS.get(model_id, '?'),
+                'pct':         pct,
+                'resets_in_s': resets_in_s,
+                'last_reset':  since_str,
+            }
+        conn.close()
+    except Exception:
+        pass
+    return result
+
+
 def check_quota(model_key: str) -> str:
     """
-    Check rolling-24h usage against soft limits for the given model_key.
+    Check rolling-24h usage against actual daily limits AND last-60s against RPM limits.
     Returns: 'ok' | 'warn' | 'block'
-    'block' means the caller should downgrade to a cheaper tier.
+    'block' means the caller should downgrade to a cheaper tier immediately.
+    Checks RPM first (instantaneous burst) then daily headroom.
     """
     model_id = MODEL_CONFIG.get(model_key, {}).get('model_id', '')
-    limit = QUOTA_SOFT_LIMITS.get(model_id)
-    if not limit:
+
+    # ── RPM gate (last 60 seconds) ─────────────────────────────────────────
+    rpm_limit = QUOTA_RPM_LIMITS.get(model_id)
+    if rpm_limit:
+        usage_1m = get_rolling_usage_seconds(60)
+        calls_1m = usage_1m.get(model_id, {}).get('calls', 0)
+        if calls_1m >= rpm_limit:
+            logger.warning(
+                f"⚡ {model_id}: RPM limit hit ({calls_1m}/{rpm_limit} calls in last 60s) — blocking"
+            )
+            return 'block'
+
+    # ── Daily gate (rolling 24h) ────────────────────────────────────────────
+    daily_limit = QUOTA_DAILY_LIMITS.get(model_id)
+    if not daily_limit:
         return 'ok'
     usage = get_rolling_usage(24)
     calls = usage.get(model_id, {}).get('calls', 0)
-    ratio = calls / limit
+    ratio = calls / daily_limit
     if ratio >= QUOTA_BLOCK_PCT:
         return 'block'
     if ratio >= QUOTA_WARN_PCT:
