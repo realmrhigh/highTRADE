@@ -490,12 +490,19 @@ class AlertSystem:
                 confirmed   = data.get('confirmed',   0)
                 flagged     = data.get('flagged',     0)
                 invalidated = data.get('invalidated', 0)
+                corrected   = data.get('corrected',   0)
+                demoted     = data.get('demoted',     0)
+                archived    = data.get('archived',    0)
                 defcon      = data.get('defcon',      '?')
                 mode        = data.get('mode',        'hourly')
                 status_line = f"✅ {confirmed} confirmed"
                 if flagged:     status_line += f" · 🚩 {flagged} flagged"
-                if invalidated: status_line += f" · ❌ {invalidated} invalidated"
-                emoji = '⚠️' if (flagged or invalidated) else '🔍'
+                if corrected:   status_line += f" · 🔄 {corrected} corrected & restored"
+                if demoted:     status_line += f" · ⬇️ {demoted} demoted to low-priority"
+                if archived:    status_line += f" · 💀 {archived} archived (terminal)"
+                if invalidated: status_line += f" · ❌ {invalidated} hard-invalidated"
+                any_action = flagged or invalidated or corrected or demoted or archived
+                emoji = '⚠️' if any_action else '🔍'
                 text = (
                     f"{emoji} *Verifier [{mode}]* — DEFCON {defcon}/5\n"
                     f"{status_line}"
@@ -623,12 +630,19 @@ class AlertSystem:
                 confirmed   = data.get('confirmed',   0)
                 flagged     = data.get('flagged',     0)
                 invalidated = data.get('invalidated', 0)
+                corrected   = data.get('corrected',   0)
+                demoted     = data.get('demoted',     0)
+                archived    = data.get('archived',    0)
                 defcon      = data.get('defcon',      '?')
                 mode        = data.get('mode',        'hourly')
                 status_line = f"✅ {confirmed} confirmed"
                 if flagged:     status_line += f" · 🚩 {flagged} flagged"
-                if invalidated: status_line += f" · ❌ {invalidated} invalidated"
-                emoji = '⚠️' if (flagged or invalidated) else '🔍'
+                if corrected:   status_line += f" · 🔄 {corrected} corrected & restored"
+                if demoted:     status_line += f" · ⬇️ {demoted} demoted to low-priority"
+                if archived:    status_line += f" · 💀 {archived} archived (terminal)"
+                if invalidated: status_line += f" · ❌ {invalidated} hard-invalidated"
+                any_action = flagged or invalidated or corrected or demoted or archived
+                emoji = '⚠️' if any_action else '🔍'
                 text = (
                     f"{emoji} *Verifier [{mode}]* — DEFCON {defcon}/5\n"
                     f"{status_line}"

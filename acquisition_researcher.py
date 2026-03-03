@@ -645,21 +645,30 @@ def run_research_cycle() -> List[str]:
         success = research_ticker(ticker, date_str, conn)
 
         if success:
-            # Mark as researched in watchlist
+            # Mark as researched in watchlist — prepend status prefix but preserve any
+            # existing notes (e.g. exit_review tags set by the missing-framework monitor)
             conn.execute("""
                 UPDATE acquisition_watchlist
-                SET status = 'researched', notes = ?
+                SET status = 'researched',
+                    notes = CASE
+                        WHEN notes IS NULL OR notes = '' THEN ?
+                        ELSE ? || ' | ' || notes
+                    END
                 WHERE ticker = ? AND status = 'pending'
-            """, (f"Researched {date_str}", ticker))
+            """, (f"Researched {date_str}", f"Researched {date_str}", ticker))
             conn.commit()
             researched.append(ticker)
         else:
             # Mark as error but don't block pipeline
             conn.execute("""
                 UPDATE acquisition_watchlist
-                SET status = 'research_error', notes = ?
+                SET status = 'research_error',
+                    notes = CASE
+                        WHEN notes IS NULL OR notes = '' THEN ?
+                        ELSE ? || ' | ' || notes
+                    END
                 WHERE ticker = ? AND status = 'pending'
-            """, (f"Research failed {date_str}", ticker))
+            """, (f"Research failed {date_str}", f"Research failed {date_str}", ticker))
             conn.commit()
 
         # Polite delay between tickers

@@ -1,19 +1,35 @@
 #!/usr/bin/env python3
 """
-acquisition_verifier.py — Daily Flash reverification of active conditionals.
+acquisition_verifier.py — Daily Flash re-verification of active and low-priority conditionals.
 
-Runs once per day (called by daily_briefing.py after the main briefing).
-For each 'active' conditional in conditional_tracking, it feeds a compact
+Runs once per day (called from orchestrator verifier cycle).
+For each 'active' conditional in conditional_tracking it feeds a compact
 snapshot of current price, recent news, and macro to Gemini Flash (fast tier,
 no thinking budget) and asks: confirm / flag / invalidate.
 
-  confirm    → update last_verified, increment verification_count
-  flag       → status stays 'active' but verification_notes records the concern
-               Analyst should review flagged conditionals manually
-  invalidate → status = 'invalidated', thesis has failed
+Degradation ladder
+──────────────────
+  active
+    │  verdict = confirm             → stays active (last_verified refreshed)
+    │  verdict = flag (< 3 times)   → stays active, flag_count++, note added
+    │  verdict = flag (≥ 3 times)   → demoted to low_priority
+    │  verdict = invalidate          → see confidence routing below
+    ▼
+  low_priority
+    │  (checked at most once per 7 days)
+    │  verdict = confirm             → restored to active
+    │  verdict = flag / invalidate   → see confidence routing
+    ▼
+  archived (terminal)
 
-This is intentionally a cheap call (Flash, no thinking) because it runs on
-potentially many conditionals daily.
+Confidence routing on invalidate
+──────────────────────────────────
+  corrected_confidence ≥ 0.60   → restored to active with corrected entry/stop/TP/conditions
+  corrected_confidence 0.25–0.59 → low_priority with corrected levels (weekly cadence)
+  corrected_confidence < 0.25   → invalidated (terminal)
+  terminal = true               → invalidated regardless of confidence
+
+After invalidation_count ≥ 2 AND corrected_confidence < 0.25 → archived outright.
 """
 
 import json
@@ -21,7 +37,7 @@ import logging
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import gemini_client
 
@@ -30,11 +46,27 @@ logger = logging.getLogger(__name__)
 SCRIPT_DIR = Path(__file__).parent.resolve()
 DB_PATH    = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
 
+# Thresholds
+ACTIVE_CONFIDENCE_THRESHOLD  = 0.60   # corrected_conf >= this → restored to active
+LOW_PRIORITY_THRESHOLD       = 0.25   # corrected_conf >= this → low_priority
+FLAG_DEMOTION_THRESHOLD      = 3      # consecutive flags before demotion to low_priority
+LOW_PRIORITY_COOLDOWN_DAYS   = 7      # low_priority items checked at most once per week
+MAX_INVALIDATIONS_BEFORE_ARCHIVE = 2  # archive after this many invalidations with conf < 0.25
+
 _VERIFIER_JSON_TEMPLATE = """{
   "verdict": "confirm",
   "confidence_adjustment": 0.0,
   "flag_reason": "",
   "invalidation_reason": "",
+  "corrected_entry_target": null,
+  "corrected_stop_loss": null,
+  "corrected_take_profit_1": null,
+  "corrected_take_profit_2": null,
+  "corrected_entry_conditions": [],
+  "corrected_confidence": 0.0,
+  "correction_rationale": "",
+  "terminal": false,
+  "terminal_reason": "",
   "updated_thesis": "",
   "price_still_valid": true,
   "reasoning": "brief explanation"
@@ -91,8 +123,13 @@ def _get_latest_macro(conn: sqlite3.Connection) -> Dict:
 
 
 def _build_verifier_prompt(cond: Dict, current_price: Optional[float],
-                            recent_news: List[str], macro: Dict) -> str:
-    """Build the compact Flash verification prompt."""
+                            recent_news: List[str], macro: Dict,
+                            is_low_priority: bool = False) -> str:
+    """Build the compact Flash verification prompt.
+
+    When verdict is 'invalidate', the model MUST also provide corrected conditionals
+    so the system can decide whether to restore, demote, or kill the position.
+    """
     ticker      = cond['ticker']
     entry_tgt   = cond.get('entry_price_target', 'N/A')
     stop        = cond.get('stop_loss', 'N/A')
@@ -102,6 +139,9 @@ def _build_verifier_prompt(cond: Dict, current_price: Optional[float],
     date_set    = cond.get('date_created', 'N/A')
     conditions  = json.loads(cond.get('entry_conditions_json') or '[]')
     invalidates = json.loads(cond.get('invalidation_conditions_json') or '[]')
+    inval_count = cond.get('invalidation_count') or 0
+    flag_count  = cond.get('flag_count') or 0
+    priority    = cond.get('priority') or 'normal'
 
     price_str   = f"${current_price:.2f}" if current_price else 'N/A'
     distance    = None
@@ -115,16 +155,28 @@ def _build_verifier_prompt(cond: Dict, current_price: Optional[float],
 
     macro_text = ''
     if macro:
-        macro_text = (
-            f"  Macro score: {macro.get('macro_score', 'N/A')}\n"
-            f"  Yield curve: {macro.get('yield_curve_spread', 'N/A'):+.2f}% " if isinstance(macro.get('yield_curve_spread'), float) else
-            f"  Macro score: {macro.get('macro_score', 'N/A')}\n"
+        ms = macro.get('macro_score', 'N/A')
+        yc = macro.get('yield_curve_spread', 'N/A')
+        yc_str = f"{yc:+.2f}%" if isinstance(yc, float) else str(yc)
+        macro_text = f"  Macro score: {ms}  |  Yield curve: {yc_str}\n"
+
+    status_note = ''
+    if is_low_priority:
+        status_note = (
+            f"\n⚠️  NOTE: This conditional is already LOW-PRIORITY "
+            f"(prior invalidations={inval_count}, flags={flag_count}). "
+            f"It needs a compelling case to stay in the system.\n"
+        )
+    elif inval_count > 0 or flag_count > 0:
+        status_note = (
+            f"\n📋 History: {inval_count} prior invalidation(s), {flag_count} prior flag(s).\n"
         )
 
     return (
         f"You are a trading system verifier. Today is {datetime.now().strftime('%Y-%m-%d')}.\n"
         f"A Gemini 3 Pro analyst set a conditional entry on {ticker} on {date_set}.\n"
-        f"Your job: quickly decide if this conditional is still VALID.\n\n"
+        f"Your job: quickly decide if this conditional is still VALID.\n"
+        f"{status_note}\n"
         f"CONDITIONAL SUMMARY\n"
         f"  Thesis: {thesis}\n"
         f"  Entry target: ${entry_tgt}  |  Stop: ${stop}  |  TP1: ${tp1}\n"
@@ -136,16 +188,25 @@ def _build_verifier_prompt(cond: Dict, current_price: Optional[float],
         f"{macro_text}\n"
         f"RECENT NEWS MENTIONS\n{news_text}\n\n"
         f"VERDICT OPTIONS:\n"
-        f"  confirm    — thesis intact, conditional still valid, nothing has changed materially\n"
-        f"  flag       — something concerns me, analyst should review, but don't kill it yet\n"
-        f"  invalidate — a core invalidation condition has been triggered or thesis has clearly failed\n\n"
-        f"Respond ONLY in this exact JSON format:\n"
+        f"  confirm    — thesis intact, conditional still valid\n"
+        f"  flag       — concern raised, analyst should review, but don't kill it yet\n"
+        f"  invalidate — a core invalidation condition has triggered OR thesis has clearly failed\n\n"
+        f"CRITICAL: If your verdict is 'invalidate', you MUST provide corrected conditionals.\n"
+        f"Ask yourself: at what price/conditions could this thesis still work?\n"
+        f"  • Set corrected_confidence based on how convinced you still are (0.0–1.0)\n"
+        f"  • If the company is failing, delisted, or thesis is completely dead: "
+        f"set terminal=true and corrected_confidence < 0.25\n"
+        f"  • If the setup just needs recalibration: provide corrected entry/stop/TP/conditions\n"
+        f"  • corrected_confidence < 0.25 → system will archive this ticker\n"
+        f"  • corrected_confidence 0.25–0.59 → system will demote to low-priority watch list\n"
+        f"  • corrected_confidence ≥ 0.60 → system will restore to active with new levels\n\n"
+        f"Respond ONLY in this exact JSON format (no other text):\n"
         f"{_VERIFIER_JSON_TEMPLATE}"
     )
 
 
 def _parse_verifier_response(text: str) -> Dict:
-    """Parse Flash JSON response."""
+    """Parse Flash JSON response with code-fence stripping."""
     if "```json" in text:
         text = text.split("```json")[1].split("```")[0].strip()
     elif "```" in text:
@@ -156,55 +217,150 @@ def _parse_verifier_response(text: str) -> Dict:
         return {'verdict': 'confirm', 'reasoning': 'parse_failed', '_parse_failed': True}
 
 
+def _write_corrected_levels(conn: sqlite3.Connection, cond_id: int, result: Dict,
+                             new_status: str, now_iso: str, new_conf: float,
+                             new_inval_count: int, new_flag_count: int,
+                             new_priority: str, notes: str):
+    """Apply corrected conditionals from LLM back to conditional_tracking."""
+    corrected_entry = result.get('corrected_entry_target')
+    corrected_stop  = result.get('corrected_stop_loss')
+    corrected_tp1   = result.get('corrected_take_profit_1')
+    corrected_tp2   = result.get('corrected_take_profit_2')
+    corrected_conds = result.get('corrected_entry_conditions') or []
+    updated_thesis  = result.get('updated_thesis') or ''
+    correction_rat  = result.get('correction_rationale') or ''
+
+    conn.execute("""
+        UPDATE conditional_tracking
+        SET status              = ?,
+            research_confidence = ?,
+            entry_price_target  = COALESCE(?, entry_price_target),
+            stop_loss           = COALESCE(?, stop_loss),
+            take_profit_1       = COALESCE(?, take_profit_1),
+            take_profit_2       = COALESCE(?, take_profit_2),
+            entry_conditions_json = CASE
+                WHEN ? != '[]' THEN ?
+                ELSE entry_conditions_json
+            END,
+            thesis_summary      = CASE WHEN ? != '' THEN ? ELSE thesis_summary END,
+            verification_notes  = ?,
+            last_verified       = ?,
+            invalidation_count  = ?,
+            flag_count          = ?,
+            priority            = ?,
+            updated_at          = ?
+        WHERE id = ?
+    """, (
+        new_status,
+        new_conf,
+        corrected_entry, corrected_stop, corrected_tp1, corrected_tp2,
+        json.dumps(corrected_conds), json.dumps(corrected_conds),
+        updated_thesis, updated_thesis,
+        notes,
+        now_iso,
+        new_inval_count,
+        new_flag_count,
+        new_priority,
+        now_iso,
+        cond_id,
+    ))
+
+
 def run_verification_cycle() -> Dict:
     """
-    Main entry point — called by daily_briefing.py after the main briefing.
+    Main entry point — called by orchestrator verifier cycle.
 
-    Iterates all 'active' conditionals, runs Flash verification on each,
-    and updates conditional_tracking accordingly.
+    Iterates all 'active' conditionals (every run) and 'low_priority' conditionals
+    (only if last_verified > 7 days ago) and runs Flash verification on each.
 
-    Returns summary dict: {'confirmed': n, 'flagged': n, 'invalidated': n, 'errors': n}
+    Status transitions:
+      confirm           → stays active / low_priority promoted to active if conf ≥ 0.60
+      flag (< 3 times)  → stays active, flag_count++
+      flag (≥ 3 times)  → demoted to low_priority
+      invalidate:
+        conf ≥ 0.60     → restored to active with corrected levels
+        conf 0.25–0.59  → low_priority with corrected levels
+        conf < 0.25 / terminal → invalidated (terminal), then archived next pass
+
+    Returns summary dict: {confirmed, flagged, invalidated, corrected, demoted, archived, errors}
     """
     date_str = datetime.now().strftime('%Y-%m-%d')
     logger.info(f"🔍 Acquisition Verifier: starting cycle for {date_str}")
 
     conn = _get_conn()
-    summary = {'confirmed': 0, 'flagged': 0, 'invalidated': 0, 'errors': 0}
+    summary = {
+        'confirmed':   0,
+        'flagged':     0,
+        'invalidated': 0,
+        'corrected':   0,   # restored to active with new levels
+        'demoted':     0,   # moved to low_priority
+        'archived':    0,   # terminal — moved to invalidated (final)
+        'errors':      0,
+    }
 
     try:
-        cursor = conn.execute("""
+        # Active conditionals — checked every run
+        active_rows = conn.execute("""
             SELECT id, ticker, date_created, entry_price_target, stop_loss,
                    take_profit_1, take_profit_2, thesis_summary, research_confidence,
                    entry_conditions_json, invalidation_conditions_json,
-                   verification_count, time_horizon_days
+                   verification_count, time_horizon_days,
+                   invalidation_count, flag_count, priority, last_verified
             FROM conditional_tracking
             WHERE status = 'active'
             ORDER BY COALESCE(attention_score, 0) DESC, research_confidence DESC
-        """)
-        actives = [dict(r) for r in cursor.fetchall()]
+        """).fetchall()
+
+        # Low-priority — only if not verified in the last 7 days
+        lp_cutoff = (datetime.now() - timedelta(days=LOW_PRIORITY_COOLDOWN_DAYS)).isoformat()
+        lp_rows = conn.execute("""
+            SELECT id, ticker, date_created, entry_price_target, stop_loss,
+                   take_profit_1, take_profit_2, thesis_summary, research_confidence,
+                   entry_conditions_json, invalidation_conditions_json,
+                   verification_count, time_horizon_days,
+                   invalidation_count, flag_count, priority, last_verified
+            FROM conditional_tracking
+            WHERE status = 'low_priority'
+              AND (last_verified IS NULL OR last_verified < ?)
+            ORDER BY research_confidence DESC
+        """, (lp_cutoff,)).fetchall()
+
+        actives = [dict(r) for r in active_rows]
+        lp_list = [dict(r) for r in lp_rows]
+
     except Exception as e:
-        logger.error(f"Failed to fetch active conditionals: {e}")
+        logger.error(f"Failed to fetch conditionals: {e}")
         conn.close()
         return summary
 
-    if not actives:
-        logger.info("  📭 No active conditionals to verify")
+    all_to_verify = [(c, False) for c in actives] + [(c, True) for c in lp_list]
+
+    if not all_to_verify:
+        logger.info("  📭 No conditionals to verify this cycle")
         conn.close()
         return summary
 
-    logger.info(f"  📋 {len(actives)} active conditionals to verify: {[c['ticker'] for c in actives]}")
+    active_tickers = [c['ticker'] for c in actives]
+    lp_tickers     = [c['ticker'] for c in lp_list]
+    logger.info(
+        f"  📋 {len(actives)} active: {active_tickers} | "
+        f"{len(lp_list)} low-priority due: {lp_tickers}"
+    )
+
     macro = _get_latest_macro(conn)
 
-    for cond in actives:
+    for cond, is_low_priority in all_to_verify:
         ticker  = cond['ticker']
         cond_id = cond['id']
 
-        logger.info(f"  🔎 Verifying {ticker}...")
+        lp_tag = ' [LOW-PRI]' if is_low_priority else ''
+        logger.info(f"  🔎 Verifying {ticker}{lp_tag}...")
 
         try:
             current_price = _get_current_price(ticker)
             recent_news   = _fetch_recent_news_for_ticker(ticker, conn)
-            prompt        = _build_verifier_prompt(cond, current_price, recent_news, macro)
+            prompt        = _build_verifier_prompt(cond, current_price, recent_news, macro,
+                                                   is_low_priority=is_low_priority)
 
             text, in_tok, out_tok = gemini_client.call(
                 prompt=prompt,
@@ -224,54 +380,195 @@ def run_verification_cycle() -> Dict:
                 f"({in_tok}→{out_tok} tok) | {result.get('reasoning','')[:80]}"
             )
 
-            now_iso = datetime.now().isoformat()
-            new_count = (cond.get('verification_count') or 0) + 1
+            now_iso       = datetime.now().isoformat()
+            new_ver_count = (cond.get('verification_count') or 0) + 1
+            inval_count   = cond.get('invalidation_count') or 0
+            flag_count    = cond.get('flag_count') or 0
+            priority      = cond.get('priority') or 'normal'
 
-            if verdict == 'invalidate':
-                conn.execute("""
-                    UPDATE conditional_tracking
-                    SET status='invalidated', verification_notes=?, last_verified=?,
-                        verification_count=?, updated_at=?
-                    WHERE id=?
-                """, (
-                    result.get('invalidation_reason', result.get('reasoning', '')),
-                    now_iso, new_count, now_iso, cond_id
-                ))
-                summary['invalidated'] += 1
-                logger.info(f"  ❌ {ticker} INVALIDATED: {result.get('invalidation_reason','')}")
+            # ── CONFIRM ─────────────────────────────────────────────────────
+            if verdict == 'confirm':
+                if is_low_priority:
+                    # Low-priority with a confirmed thesis → promote back to active
+                    new_conf = min(
+                        float(cond.get('research_confidence') or 0) +
+                        float(result.get('confidence_adjustment') or 0),
+                        1.0
+                    )
+                    conn.execute("""
+                        UPDATE conditional_tracking
+                        SET status='active', last_verified=?, verification_count=?,
+                            flag_count=0, priority='normal',
+                            research_confidence=?, updated_at=?
+                        WHERE id=?
+                    """, (now_iso, new_ver_count, max(new_conf, 0.0), now_iso, cond_id))
+                    logger.info(f"  ⬆️  {ticker} LOW-PRI PROMOTED back to active (confirmed)")
+                    summary['confirmed'] += 1
+                else:
+                    conn.execute("""
+                        UPDATE conditional_tracking
+                        SET last_verified=?, verification_count=?, updated_at=?
+                        WHERE id=?
+                    """, (now_iso, new_ver_count, now_iso, cond_id))
+                    logger.info(f"  ✅ {ticker} confirmed valid")
+                    summary['confirmed'] += 1
 
-                # Update acquisition_watchlist status
-                conn.execute("""
-                    UPDATE acquisition_watchlist SET status='invalidated'
-                    WHERE UPPER(ticker) = UPPER(?) AND status IN ('conditional_set','researched')
-                """, (ticker,))
-
+            # ── FLAG ─────────────────────────────────────────────────────────
             elif verdict == 'flag':
-                conn.execute("""
-                    UPDATE conditional_tracking
-                    SET verification_notes=?, last_verified=?,
-                        verification_count=?, updated_at=?
-                    WHERE id=?
-                """, (
-                    f"[FLAGGED {date_str}] {result.get('flag_reason', result.get('reasoning', ''))}",
-                    now_iso, new_count, now_iso, cond_id
-                ))
-                summary['flagged'] += 1
-                logger.warning(f"  🚩 {ticker} FLAGGED: {result.get('flag_reason','')}")
+                new_flag_count = flag_count + 1
+                flag_note = (
+                    f"[FLAGGED {date_str} #{new_flag_count}] "
+                    f"{result.get('flag_reason', result.get('reasoning', ''))}"
+                )
 
-            else:  # confirm (or anything unexpected)
+                if new_flag_count >= FLAG_DEMOTION_THRESHOLD:
+                    # Too many consecutive flags → demote to low_priority
+                    conn.execute("""
+                        UPDATE conditional_tracking
+                        SET status='low_priority', priority='low',
+                            verification_notes=?, last_verified=?,
+                            verification_count=?, flag_count=?, updated_at=?
+                        WHERE id=?
+                    """, (flag_note, now_iso, new_ver_count, new_flag_count, now_iso, cond_id))
+                    logger.warning(
+                        f"  ⬇️  {ticker} DEMOTED to low_priority "
+                        f"({new_flag_count} consecutive flags)"
+                    )
+                    summary['demoted'] += 1
+                else:
+                    conn.execute("""
+                        UPDATE conditional_tracking
+                        SET verification_notes=?, last_verified=?,
+                            verification_count=?, flag_count=?, updated_at=?
+                        WHERE id=?
+                    """, (flag_note, now_iso, new_ver_count, new_flag_count, now_iso, cond_id))
+                    logger.warning(
+                        f"  🚩 {ticker} FLAGGED ({new_flag_count}/{FLAG_DEMOTION_THRESHOLD}): "
+                        f"{result.get('flag_reason','')}"
+                    )
+                    summary['flagged'] += 1
+
+            # ── INVALIDATE ───────────────────────────────────────────────────
+            elif verdict == 'invalidate':
+                new_inval_count   = inval_count + 1
+                corrected_conf    = float(result.get('corrected_confidence') or 0.0)
+                is_terminal       = bool(result.get('terminal', False))
+                terminal_reason   = result.get('terminal_reason', '')
+                inval_reason      = result.get('invalidation_reason', result.get('reasoning', ''))
+                correction_rat    = result.get('correction_rationale', '')
+
+                # Terminal or confidence too low → archive / hard kill
+                if is_terminal or corrected_conf < LOW_PRIORITY_THRESHOLD:
+                    if new_inval_count >= MAX_INVALIDATIONS_BEFORE_ARCHIVE or is_terminal:
+                        # Fully archive
+                        arch_note = (
+                            f"[ARCHIVED {date_str}] Terminal={is_terminal}. "
+                            f"{terminal_reason or inval_reason} | "
+                            f"corrected_conf={corrected_conf:.2f}"
+                        )
+                        conn.execute("""
+                            UPDATE conditional_tracking
+                            SET status='invalidated', priority='low',
+                                verification_notes=?, last_verified=?,
+                                verification_count=?, invalidation_count=?,
+                                research_confidence=?, updated_at=?
+                            WHERE id=?
+                        """, (
+                            arch_note, now_iso, new_ver_count,
+                            new_inval_count, corrected_conf, now_iso, cond_id
+                        ))
+                        # Also mark acquisition_watchlist
+                        conn.execute("""
+                            UPDATE acquisition_watchlist SET status='invalidated'
+                            WHERE UPPER(ticker) = UPPER(?)
+                              AND status IN ('conditional_set','researched','analyst_pass')
+                        """, (ticker,))
+                        logger.info(
+                            f"  💀 {ticker} TERMINAL INVALIDATED "
+                            f"(conf={corrected_conf:.2f}, inval#{new_inval_count})"
+                        )
+                        summary['archived'] += 1
+                    else:
+                        # First terminal-level invalidation — move to low_priority and wait
+                        notes = (
+                            f"[INVALIDATED→LOW-PRI {date_str} #{new_inval_count}] "
+                            f"{inval_reason} | corrected_conf={corrected_conf:.2f}"
+                        )
+                        conn.execute("""
+                            UPDATE conditional_tracking
+                            SET status='low_priority', priority='low',
+                                verification_notes=?, last_verified=?,
+                                verification_count=?, invalidation_count=?,
+                                research_confidence=?, updated_at=?
+                            WHERE id=?
+                        """, (
+                            notes, now_iso, new_ver_count,
+                            new_inval_count, corrected_conf, now_iso, cond_id
+                        ))
+                        logger.warning(
+                            f"  ⬇️  {ticker} INVALIDATED→LOW-PRI "
+                            f"(conf={corrected_conf:.2f}, first invalidation)"
+                        )
+                        summary['demoted'] += 1
+
+                # Strong correction — restore to active with corrected levels
+                elif corrected_conf >= ACTIVE_CONFIDENCE_THRESHOLD:
+                    notes = (
+                        f"[CORRECTED {date_str}] {inval_reason} → "
+                        f"Restored at conf={corrected_conf:.2f}. {correction_rat}"
+                    )
+                    _write_corrected_levels(
+                        conn, cond_id, result,
+                        new_status='active',
+                        now_iso=now_iso,
+                        new_conf=corrected_conf,
+                        new_inval_count=new_inval_count,
+                        new_flag_count=0,         # reset flags on successful correction
+                        new_priority='normal',
+                        notes=notes,
+                    )
+                    logger.info(
+                        f"  🔄 {ticker} CORRECTED & RESTORED active "
+                        f"(conf={corrected_conf:.2f}) | {correction_rat[:60]}"
+                    )
+                    summary['corrected'] += 1
+
+                # Moderate correction — demote to low_priority with corrected levels
+                else:  # 0.25 <= corrected_conf < 0.60
+                    notes = (
+                        f"[INVALIDATED→LOW-PRI {date_str} #{new_inval_count}] "
+                        f"{inval_reason} → corrected_conf={corrected_conf:.2f}. {correction_rat}"
+                    )
+                    _write_corrected_levels(
+                        conn, cond_id, result,
+                        new_status='low_priority',
+                        now_iso=now_iso,
+                        new_conf=corrected_conf,
+                        new_inval_count=new_inval_count,
+                        new_flag_count=flag_count,
+                        new_priority='low',
+                        notes=notes,
+                    )
+                    logger.warning(
+                        f"  ⬇️  {ticker} INVALIDATED→LOW-PRI "
+                        f"(conf={corrected_conf:.2f}) | {correction_rat[:60]}"
+                    )
+                    summary['demoted'] += 1
+
+            else:
+                # Unknown verdict — treat as confirm
                 conn.execute("""
                     UPDATE conditional_tracking
                     SET last_verified=?, verification_count=?, updated_at=?
                     WHERE id=?
-                """, (now_iso, new_count, now_iso, cond_id))
+                """, (now_iso, new_ver_count, now_iso, cond_id))
+                logger.info(f"  ✅ {ticker} unknown verdict '{verdict}' → treated as confirm")
                 summary['confirmed'] += 1
-                logger.info(f"  ✅ {ticker} confirmed valid")
 
             conn.commit()
 
         except Exception as e:
-            logger.error(f"  ❌ Verification failed for {ticker}: {e}")
+            logger.error(f"  ❌ Verification failed for {ticker}: {e}", exc_info=True)
             summary['errors'] += 1
 
     conn.close()
@@ -279,7 +576,10 @@ def run_verification_cycle() -> Dict:
         f"✅ Verification cycle complete: "
         f"{summary['confirmed']} confirmed, "
         f"{summary['flagged']} flagged, "
-        f"{summary['invalidated']} invalidated, "
+        f"{summary['corrected']} corrected, "
+        f"{summary['demoted']} demoted, "
+        f"{summary['archived']} archived, "
+        f"{summary['invalidated']} hard-invalidated, "
         f"{summary['errors']} errors"
     )
     return summary

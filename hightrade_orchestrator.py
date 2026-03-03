@@ -14,6 +14,13 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 import time
 
+# Load .env early — before any module that reads os.getenv (e.g. AlpacaBroker)
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv(Path(__file__).parent / ".env")
+except ImportError:
+    pass  # python-dotenv not installed; rely on shell environment
+
 # All market-schedule decisions use Eastern Time regardless of server location
 _ET = ZoneInfo('America/New_York')
 
@@ -31,6 +38,7 @@ from news_aggregator import NewsAggregator
 from news_sentiment import NewsSentimentAnalyzer
 from news_signals import NewsSignalGenerator
 from config_validator import ConfigValidator
+import exit_analyst
 
 # Configuration
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -801,6 +809,7 @@ class HighTradeOrchestrator:
 
             logger.info(f"✅ DEFCON Level: {current_defcon}/5")
             logger.info(f"✅ Signal Score: {signal_score:.1f}/100")
+            self._last_defcon = current_defcon  # stored for exit_analyst context
 
             # Send alerts if DEFCON changed or escalated
             if current_defcon != self.previous_defcon:
@@ -903,6 +912,8 @@ Check dashboard for detailed analysis.
                         exits = self.broker.process_exits()
                         if exits > 0:
                             logger.info(f"✅ BROKER: {exits} position(s) exited autonomously")
+                        # Always check for positions missing exit frameworks, regardless of broker mode
+                        self._check_positions_missing_exit_framework()
 
             else:
                 logger.info("No DEFCON change - maintaining current status")
@@ -914,6 +925,8 @@ Check dashboard for detailed analysis.
                         exits = self.broker.process_exits()
                         if exits > 0:
                             logger.info(f"✅ BROKER: {exits} position(s) exited autonomously")
+                        # Always check for positions missing exit frameworks, regardless of broker mode
+                        self._check_positions_missing_exit_framework()
 
             # ── Acquisition conditionals (market hours only — Mon-Fri 9:30-16:00 ET) ──
             _now_et = _et_now()
@@ -1000,16 +1013,26 @@ Check dashboard for detailed analysis.
                 confirmed   = summary.get('confirmed',   0)
                 flagged     = summary.get('flagged',     0)
                 invalidated = summary.get('invalidated', 0)
-                logger.info(f"  ✅ Verifier: confirmed={confirmed}, flagged={flagged}, invalidated={invalidated}")
+                corrected   = summary.get('corrected',   0)
+                demoted     = summary.get('demoted',     0)
+                archived    = summary.get('archived',    0)
+                logger.info(
+                    f"  ✅ Verifier: confirmed={confirmed}, flagged={flagged}, "
+                    f"corrected={corrected}, demoted={demoted}, "
+                    f"archived={archived}, invalidated={invalidated}"
+                )
                 _v_payload = {
                     'confirmed':   confirmed,
                     'flagged':     flagged,
                     'invalidated': invalidated,
+                    'corrected':   corrected,
+                    'demoted':     demoted,
+                    'archived':    archived,
                     'defcon':      self.previous_defcon,
                     'mode':        _v_mode,
                 }
-                if flagged or invalidated:
-                    # Push notify — thesis changed or conditional dropped
+                if flagged or invalidated or corrected or demoted or archived:
+                    # Push notify — thesis changed, corrected, demoted, or killed
                     self.alerts.send_notify('verifier_alert', _v_payload)
                 self.alerts.send_silent_log('verifier_alert', _v_payload)
             except Exception as e:
@@ -1281,6 +1304,14 @@ Check dashboard for detailed analysis.
         except Exception as _me:
             market_ctx = f"  Market snapshot unavailable ({_me})"
 
+        # ── Pull full day's DB context (same data the close briefing uses) ──
+        try:
+            import daily_briefing as _db_module
+            day_ctx = _db_module._gather_daily_context(str(DB_PATH))
+        except Exception as _dce:
+            logger.warning(f"  ⚠️  Could not gather daily context: {_dce}")
+            day_ctx = {}
+
         # ── Build time-of-day specific prompt ───────────────────────────
         from gemini_client import market_context_block as _mctx
         _live_vix = None
@@ -1290,223 +1321,356 @@ Check dashboard for detailed analysis.
             pass
         _session_ctx = _mctx(vix=_live_vix)
 
+        # ── Format full-day DB context for the prompt ───────────────────
+        _ns   = day_ctx.get('news_summary', {})
+        _mac  = day_ctx.get('macro', {})
+        _dh   = day_ctx.get('defcon_history', [])
+        _pro  = day_ctx.get('pro_analyses', [])
+        _fl   = day_ctx.get('flash_analyses', [])
+        _cong = day_ctx.get('congressional_clusters', [])
+        _cls  = day_ctx.get('recent_closed', [])
+
+        def _fmt_macro(m):
+            if not m or not isinstance(m.get('yield_curve_spread'), float):
+                return "  FRED data not yet available today\n"
+            return (
+                f"  Yield Curve (10Y-2Y): {m.get('yield_curve_spread',0):+.2f}%\n"
+                f"  Fed Funds: {m.get('fed_funds_rate','N/A'):.2f}%   "
+                f"Unemployment: {m.get('unemployment_rate','N/A'):.1f}%\n"
+                f"  HY Credit Spreads: {m.get('hy_oas_bps','N/A'):.0f}bps   "
+                f"Consumer Sentiment: {m.get('consumer_sentiment','N/A'):.1f}\n"
+                f"  Macro Composite Score: {m.get('macro_score',50):.0f}/100\n"
+            )
+
+        def _fmt_defcon_timeline(dh):
+            if not dh:
+                return "  No monitoring cycles recorded yet today\n"
+            return ''.join(
+                f"  {d.get('monitoring_time','?')} — DEFCON {d.get('defcon_level','?')} "
+                f"Score {d.get('signal_score',0):.1f} VIX {d.get('vix_close','?')} "
+                f"Yield {d.get('bond_10yr_yield','?')}%\n"
+                for d in dh
+            )
+
+        def _fmt_cong(clusters):
+            if not clusters:
+                return "  No significant cluster signals\n"
+            lines = []
+            for c in clusters[:4]:
+                lines.append(
+                    f"  ${c.get('ticker','?')}: {c.get('buy_count',0)} politicians "
+                    f"strength={c.get('signal_strength',0):.0f} "
+                    f"bipartisan={'Yes' if c.get('bipartisan') else 'No'}\n"
+                )
+            return ''.join(lines)
+
+        def _fmt_pro(pro):
+            if not pro:
+                return "  No Pro analyses today yet\n"
+            from collections import Counter
+            acts = Counter(p.get('recommended_action','?') for p in pro)
+            out = f"  Consensus: {dict(acts)}\n"
+            for p in pro[:2]:
+                out += f"  [{p.get('trigger_type','?')}] {p.get('recommended_action','?')} — {(p.get('reasoning') or '')[:200]}\n"
+            return out
+
+        def _fmt_news_history(ns, fl):
+            out = (
+                f"  Cycles today: {ns.get('cycles',0)}  "
+                f"Avg score: {ns.get('avg_score',0):.1f}  "
+                f"Peak: {ns.get('peak_score',0):.1f}  "
+                f"Articles: {ns.get('total_articles',0)}\n"
+                f"  Dominant type: {ns.get('dominant_crisis','N/A')}\n"
+            )
+            if fl:
+                themes = list({f.get('dominant_theme','') for f in fl if f.get('dominant_theme')})[:4]
+                if themes:
+                    out += f"  Flash themes: {', '.join(themes)}\n"
+            return out
+
+        def _fmt_closed(cls):
+            if not cls:
+                return "  None this week\n"
+            return ''.join(
+                f"  {t['asset_symbol']} → {t.get('exit_reason','?')}: "
+                f"${t.get('profit_loss_dollars',0):+,.2f} ({t.get('profit_loss_percent',0):+.1f}%)\n"
+                for t in cls
+            )
+
+        _macro_block      = _fmt_macro(_mac)
+        _defcon_timeline  = _fmt_defcon_timeline(_dh)
+        _cong_block       = _fmt_cong(_cong)
+        _pro_block        = _fmt_pro(_pro)
+        _news_hist_block  = _fmt_news_history(_ns, _fl)
+        _closed_block     = _fmt_closed(_cls)
+
+        # ── Session-specific JSON templates ──────────────────────────────
+        _MORNING_JSON = """{
+  "market_regime": "risk-on | risk-off | neutral | transitioning",
+  "regime_confidence": 0.0,
+  "session_setup": "How today is set up at open — pre-market conditions, overnight moves, key gap analysis",
+  "headline_summary": "2-3 sentence summary of what is driving markets today",
+  "key_themes": ["theme1", "theme2", "theme3"],
+  "biggest_risk_today": "specific near-term risk with evidence from data",
+  "biggest_opportunity_today": "specific opportunity with evidence from data",
+  "signal_quality_assessment": "were today's early signals meaningful or noise?",
+  "macro_alignment": "how FRED macro (yield curve, credit spreads, etc.) aligns with today's setup",
+  "congressional_alpha": "actionable intelligence from recent congressional trading, or 'none notable'",
+  "portfolio_assessment": "position-by-position: stop/TP proximity, thesis status, risk to each",
+  "positions_at_risk": ["TICKER: stop within X% because reason — or empty list"],
+  "conditionals_to_watch": [{"ticker": "SYMBOL", "urgency": "high|medium|low", "reason": "one sentence"}],
+  "defcon_forecast": "expected DEFCON level through end of session and why",
+  "entry_conditions_today": "specific conditions that must be met today to trigger any new position",
+  "key_levels": "critical price levels for SPY/QQQ and any held positions to monitor today",
+  "first_hour_watch": "one specific setup or trigger to monitor in the first 60 minutes",
+  "model_confidence": 0.0,
+  "data_gaps": ["specific items that were absent or stale in today's data"]
+}"""
+
+        _MIDDAY_JSON = """{
+  "market_regime": "risk-on | risk-off | neutral | transitioning",
+  "regime_confidence": 0.0,
+  "morning_vs_now": "how the session has tracked vs the morning setup — what changed, what held",
+  "headline_summary": "2-3 sentence summary of the mid-session narrative",
+  "key_themes": ["theme1", "theme2", "theme3"],
+  "biggest_risk_today": "specific PM session risk with evidence from current data",
+  "biggest_opportunity_today": "specific PM session opportunity with evidence from current data",
+  "signal_quality_assessment": "quality and consistency of signals seen so far today",
+  "macro_alignment": "how FRED macro aligns with today's intraday price action",
+  "congressional_alpha": "actionable intelligence from congressional trading, or 'none notable'",
+  "portfolio_assessment": "P&L update and momentum direction for each position — any thesis changes?",
+  "positions_at_risk": ["TICKER: stop within X% because reason — or empty list"],
+  "conditionals_to_watch": [{"ticker": "SYMBOL", "urgency": "high|medium|low", "reason": "one sentence"}],
+  "defcon_forecast": "expected DEFCON level for the afternoon session and into close",
+  "afternoon_plan": "setup heading into close — key levels, setups, risk management for each position",
+  "model_confidence": 0.0,
+  "data_gaps": ["specific items that were absent or stale in today's data"]
+}"""
+
         if label == 'morning':
-            prompt = f"""You are HighTrade's pre-market analyst. Today is {now_str} — market opens in minutes or just opened.
-Provide a START-OF-DAY market setup brief — 5 to 7 sentences. Be direct and actionable.
+            session_label = "START-OF-DAY DEEP DIVE"
+            session_guidance = (
+                "You are HighTrade's senior pre-market strategist. Today is {now}.\n"
+                "Synthesize ALL provided data into a comprehensive morning briefing. "
+                "You have access to FRED macro, congressional trading signals, the full "
+                "DEFCON monitoring history from overnight cycles, live market prices, "
+                "open positions with stop/TP levels, and the active entry queue.\n"
+                "Be specific and cite the data. No hedging, no disclaimers."
+            ).format(now=now_str)
+            json_template = _MORNING_JSON
+        else:
+            session_label = "MID-SESSION DEEP DIVE"
+            session_guidance = (
+                "You are HighTrade's senior midday strategist. Today is {now}.\n"
+                "Synthesize ALL provided data into a comprehensive midday briefing. "
+                "Focus on what has CHANGED since the morning open — regime shifts, "
+                "momentum changes, conditional progress, any thesis invalidation. "
+                "Use the morning_flash briefing (in INTRADAY CONTEXT) as your baseline. "
+                "Be specific and cite the data. No hedging, no disclaimers."
+            ).format(now=now_str)
+            json_template = _MIDDAY_JSON
+
+        prompt = f"""{session_guidance}
 
 {_session_ctx}
-CURRENT STATE:
-  DEFCON: {defcon}/5
-  Macro Score: {macro_score:.0f}/100
-  News: {news_ctx}
-
-MARKET SNAPSHOT (live):
+══════════════════════════════════════════════════════════
+SECTION 1: LIVE MARKET SNAPSHOT
+══════════════════════════════════════════════════════════
 {market_ctx}
 
-OPEN POSITIONS (live prices + unrealized P&L):
+══════════════════════════════════════════════════════════
+SECTION 2: OPEN POSITIONS (live prices, stop/TP levels)
+══════════════════════════════════════════════════════════
 {pos_ctx}
 
-ACTIVE CONDITIONALS (live price vs entry target):
+══════════════════════════════════════════════════════════
+SECTION 3: ENTRY QUEUE — ACTIVE CONDITIONALS (live distance to trigger)
+══════════════════════════════════════════════════════════
 {cond_ctx}
 
-OUTPUT FORMAT (plain text, no JSON):
-1. Overall market regime and tone at open — what is the macro backdrop setting up today?
-2. Any overnight developments, gap conditions, or pre-market catalysts to be aware of?
-3. Open positions — initial P&L at open. Any immediate stop or target levels to watch today?
-4. Active conditionals — which are closest to triggering? Any that could fill today?
-5. Your thesis for the session: what would need to happen for a buy signal or a hold?
-6-7. Key risk levels and one specific thing to monitor through the first hour.
-GAPS LINE: The second-to-last line must start with exactly "GAPS:" followed by a comma-separated list of missing data items, e.g. "GAPS: pre-market volume data, overnight futures move". If nothing is missing write "GAPS: none".
-FINAL LINE: The absolute last line of your response must contain ONLY the following JSON object — no prose, no punctuation before or after it, nothing else on that line:
-{{"defcon_forecast":<1-5>,"watch":[{{"ticker":"SYMBOL","urgency":"high|medium|low","reason":"one sentence"}}]}}
-Only include tickers that appear in the ACTIVE CONDITIONALS section above. If none are notable output: {{"defcon_forecast":<1-5>,"watch":[]}}"""
-            model_key_to_use = 'balanced'   # thinking=8000 — worth the extra reasoning at open
+══════════════════════════════════════════════════════════
+SECTION 4: TODAY'S NEWS INTELLIGENCE ({_ns.get('cycles', 0)} cycles)
+══════════════════════════════════════════════════════════
+{_news_hist_block}
+Latest signal: {news_ctx}
 
-        else:  # midday
-            prompt = f"""You are HighTrade's midday analyst. Today is {now_str} — midday check-in.
-Provide a MID-DAY status update — 4 to 6 sentences. Focus on what has CHANGED since open.
+══════════════════════════════════════════════════════════
+SECTION 5: DEFCON & SIGNAL SCORE TIMELINE TODAY
+══════════════════════════════════════════════════════════
+{_defcon_timeline}
+Current DEFCON: {defcon}/5   Macro Score: {macro_score:.0f}/100
 
-{_session_ctx}
-CURRENT STATE:
-  DEFCON: {defcon}/5
-  Macro Score: {macro_score:.0f}/100
-  News: {news_ctx}
+══════════════════════════════════════════════════════════
+SECTION 6: MACROECONOMIC ENVIRONMENT (FRED)
+══════════════════════════════════════════════════════════
+{_macro_block}
+══════════════════════════════════════════════════════════
+SECTION 7: CONGRESSIONAL TRADING SIGNALS
+══════════════════════════════════════════════════════════
+{_cong_block}
+══════════════════════════════════════════════════════════
+SECTION 8: GEMINI PRO ANALYSIS CONSENSUS (today)
+══════════════════════════════════════════════════════════
+{_pro_block}
+══════════════════════════════════════════════════════════
+SECTION 9: RECENT CLOSED TRADES (last 7 days)
+══════════════════════════════════════════════════════════
+{_closed_block}
+══════════════════════════════════════════════════════════
+YOUR TASK: {session_label}
+══════════════════════════════════════════════════════════
+Synthesize ALL of the above into a structured briefing.
+Populate EVERY field. regime_confidence and model_confidence must be actual numbers 0.0–1.0.
+conditionals_to_watch must only contain tickers from SECTION 3 above.
+Respond in this EXACT JSON format — no prose, no markdown, no code fences:
+{json_template}"""
 
-MARKET SNAPSHOT (live):
-{market_ctx}
-
-OPEN POSITIONS (live prices + unrealized P&L):
-{pos_ctx}
-
-ACTIVE CONDITIONALS (live price vs entry target):
-{cond_ctx}
-
-OUTPUT FORMAT (plain text, no JSON):
-1. How is the market tracking vs the morning setup? Any regime shift?
-2. Open positions — P&L update, momentum direction, any thesis changes?
-3. Which conditionals moved significantly since open? Any that got close or crossed targets?
-4. Any midday catalysts (Fed speakers, economic data, earnings) affecting our sectors?
-5. Afternoon watch: what are the key levels and setups heading into the close?
-GAPS LINE: The second-to-last line must start with exactly "GAPS:" followed by a comma-separated list of missing data items. If nothing is missing write "GAPS: none".
-FINAL LINE: The absolute last line of your response must contain ONLY the following JSON object — no prose, no punctuation before or after it, nothing else on that line:
-{{"defcon_forecast":<1-5>,"watch":[{{"ticker":"SYMBOL","urgency":"high|medium|low","reason":"one sentence"}}]}}
-Only include tickers that appear in the ACTIVE CONDITIONALS section above. If none are notable output: {{"defcon_forecast":<1-5>,"watch":[]}}"""
-            model_key_to_use = 'balanced'   # thinking=8000 — needed for reliable GAPS/JSON tail output
-
+        # ── Call Gemini Pro with full reasoning (same tier as close briefing) ──
         from gemini_client import call as gemini_call
-        text, in_tok, out_tok = gemini_call(prompt, model_key=model_key_to_use)
+        logger.info(f"  🔬 {emoji} {session_label} — calling Gemini Pro (reasoning)...")
+        text, in_tok, out_tok = gemini_call(
+            prompt,
+            model_key='reasoning',
+            max_output_tokens=16000,
+            caller=f'{label}_briefing',
+        )
 
         if not text:
-            raise RuntimeError(f"Gemini returned no response for {label} flash")
+            raise RuntimeError(f"Gemini returned no response for {label} deep dive")
 
-        # ── Parse GAPS: line from end of response ────────────────────────
-        gaps_list = []
-        summary_text = text
-        lines = text.strip().splitlines()
-        for i, line in enumerate(lines):
-            if line.strip().upper().startswith('GAPS:'):
-                gaps_raw = line.split(':', 1)[1].strip()
-                if gaps_raw.lower() != 'none':
-                    gaps_list = [g.strip() for g in gaps_raw.split(',') if g.strip()]
-                # Remove GAPS line from display summary
-                summary_text = '\n'.join(lines[:i] + lines[i+1:]).strip()
-                break
+        # ── Parse full JSON response ─────────────────────────────────────
+        # Strip markdown fences if present
+        clean = text.strip()
+        if clean.startswith('```'):
+            clean = clean.split('```', 2)[1]
+            if clean.startswith('json'):
+                clean = clean[4:]
+            clean = clean.rsplit('```', 1)[0].strip()
 
-        # ── Parse STRUCTURED TAIL — brace-balanced scan, handles inline JSON ─────
-        # Model sometimes appends JSON to the last sentence instead of a clean newline.
-        # Strategy: find the last occurrence of {"defcon_forecast" then walk forward
-        # counting braces to extract the complete balanced JSON object.
+        result = {}
+        try:
+            result = json.loads(clean)
+        except json.JSONDecodeError:
+            # Try to extract JSON object from surrounding text
+            brace = clean.find('{')
+            if brace != -1:
+                try:
+                    result = json.loads(clean[brace:clean.rfind('}')+1])
+                except Exception:
+                    pass
+            if not result:
+                logger.warning(f"  ⚠️  Could not parse {label} briefing JSON — storing raw text")
+                result = {'headline_summary': clean[:500], 'data_gaps': ['JSON parse failure']}
+
+        # Extract key fields
+        regime        = result.get('market_regime', 'unknown')
+        regime_conf   = float(result.get('regime_confidence', 0.0) or 0.0)
+        headline      = result.get('headline_summary', '')
+        key_themes    = result.get('key_themes', [])
+        biggest_risk  = result.get('biggest_risk_today', '')
+        best_opp      = result.get('biggest_opportunity_today', '')
+        sig_quality   = result.get('signal_quality_assessment', '')
+        macro_align   = result.get('macro_alignment', '')
+        cong_alpha    = result.get('congressional_alpha', '')
+        port_assess   = result.get('portfolio_assessment', '')
+        at_risk       = result.get('positions_at_risk', [])
+        cond_watch    = result.get('conditionals_to_watch', [])
+        defcon_fc_str = str(result.get('defcon_forecast', ''))
+        entry_conds   = result.get('entry_conditions_today', result.get('afternoon_plan', ''))
+        session_key   = result.get('session_setup', result.get('morning_vs_now', ''))
+        model_conf    = float(result.get('model_confidence', 0.0) or 0.0)
+        gaps_list     = result.get('data_gaps', [])
+        reasoning     = result.get('reasoning_chain', session_key)
+
+        # Extract DEFCON forecast integer
         defcon_forecast = None
-        watch_list = []
+        try:
+            import re as _re
+            m = _re.search(r'\b([1-5])\b', defcon_fc_str)
+            if m:
+                defcon_forecast = int(m.group(1))
+        except Exception:
+            pass
 
-        def _extract_tail_json(text: str):
-            """Find last {"defcon_forecast":...} in text, return (obj, start_idx) or (None, -1)."""
-            marker = '"defcon_forecast"'
-            pos = text.rfind(marker)
-            if pos == -1:
-                return None, -1
-            # Walk backwards from marker to find the opening '{'
-            open_pos = text.rfind('{', 0, pos)
-            if open_pos == -1:
-                return None, -1
-            # Walk forward from open_pos counting braces until balanced
-            depth = 0
-            for idx in range(open_pos, len(text)):
-                if text[idx] == '{':
-                    depth += 1
-                elif text[idx] == '}':
-                    depth -= 1
-                    if depth == 0:
-                        try:
-                            return json.loads(text[open_pos:idx + 1]), open_pos
-                        except Exception:
-                            return None, -1
-            return None, -1
-
-        tail_obj, tail_start = _extract_tail_json(summary_text)
-        if tail_obj is not None:
-            _fc = tail_obj.get('defcon_forecast')
-            if isinstance(_fc, (int, float)) and 1 <= int(_fc) <= 5:
-                defcon_forecast = int(_fc)
-            watch_list = tail_obj.get('watch', [])
-            # Strip the JSON and trailing whitespace — preserve sentence-ending punctuation
-            summary_text = summary_text[:tail_start].rstrip(' \n').strip()
-            logger.info(f"  📊 Flash forecast: DEFCON {defcon_forecast}, watching {len(watch_list)} tickers")
-        else:
-            logger.warning("  ⚠️  No structured tail JSON found in flash response")
-
-        logger.info(f"  {emoji} Flash ({in_tok}→{out_tok} tok): {summary_text[:120]}...")
+        logger.info(
+            f"  {emoji} {session_label} ({in_tok}→{out_tok} tok): "
+            f"regime={regime} DEFCON→{defcon_forecast} conf={model_conf:.2f}"
+        )
+        logger.info(f"  📰 {headline[:140]}...")
         if gaps_list:
-            logger.info(f"  🔍 Flash data gaps: {' | '.join(gaps_list)}")
+            logger.info(f"  🔍 Gaps: {' | '.join(gaps_list[:5])}")
 
-        # ── Write to daily_briefings DB so Pro end-of-day has structured intraday context ──
-        date_str = _et_now().strftime('%Y-%m-%d')   # ET date — market date, not server date
-        model_key_db = f"{label.lower().replace(' ', '_')}_flash"  # e.g. 'morning_flash', 'midday_flash'
+        # ── Write ALL columns to daily_briefings ────────────────────────
+        date_str      = _et_now().strftime('%Y-%m-%d')
+        model_key_db  = f"{label.lower().replace(' ', '_')}_flash"
+
         try:
             import sqlite3 as _sq
             conn = _sq.connect(str(DB_PATH))
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
-                CREATE TABLE IF NOT EXISTS daily_briefings (
-                    briefing_id      INTEGER PRIMARY KEY AUTOINCREMENT,
-                    date             TEXT NOT NULL,
-                    model_key        TEXT NOT NULL,
-                    model_id         TEXT,
-                    market_regime    TEXT,
-                    regime_confidence REAL,
-                    headline_summary TEXT,
-                    key_themes_json  TEXT,
-                    biggest_risk     TEXT,
-                    biggest_opportunity TEXT,
-                    signal_quality   TEXT,
-                    macro_alignment  TEXT,
-                    congressional_alpha TEXT,
-                    portfolio_assessment TEXT,
-                    watchlist_json   TEXT,
-                    entry_conditions TEXT,
-                    defcon_forecast  TEXT,
-                    reasoning_chain  TEXT,
-                    model_confidence REAL,
-                    input_tokens     INTEGER,
-                    output_tokens    INTEGER,
-                    full_response_json TEXT,
-                    data_gaps_json   TEXT,
-                    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(date, model_key)
-                )
-            """)
-            conn.execute("""
                 INSERT OR REPLACE INTO daily_briefings
-                (date, model_key, model_id, headline_summary,
-                 macro_alignment, defcon_forecast, watchlist_json,
-                 input_tokens, output_tokens,
+                (date, model_key, model_id,
+                 market_regime, regime_confidence,
+                 headline_summary, key_themes_json,
+                 biggest_risk, biggest_opportunity,
+                 signal_quality, macro_alignment,
+                 congressional_alpha, portfolio_assessment,
+                 watchlist_json, entry_conditions,
+                 defcon_forecast, reasoning_chain,
+                 model_confidence, input_tokens, output_tokens,
                  full_response_json, data_gaps_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
-                date_str,
-                model_key_db,
-                'gemini-2.5-flash',
-                summary_text,
-                f"DEFCON {defcon}/5 | Macro {macro_score:.0f}/100",
-                str(defcon_forecast) if defcon_forecast else None,
-                json.dumps(watch_list) if watch_list else None,
-                in_tok,
-                out_tok,
-                json.dumps({'label': label, 'defcon': defcon,
-                            'macro_score': macro_score, 'summary': summary_text,
-                            'gaps': gaps_list,
-                            'defcon_forecast': defcon_forecast,
-                            'watch': watch_list}),
+                date_str, model_key_db, 'gemini-2.5-pro',
+                regime, regime_conf,
+                headline, json.dumps(key_themes),
+                biggest_risk, best_opp,
+                sig_quality, macro_align,
+                cong_alpha, port_assess,
+                json.dumps(cond_watch), entry_conds,
+                defcon_fc_str, reasoning,
+                model_conf, in_tok, out_tok,
+                json.dumps(result),
                 json.dumps(gaps_list) if gaps_list else None,
             ))
             conn.commit()
             conn.close()
-            logger.info(f"  💾 {emoji} Flash briefing saved to daily_briefings ({model_key_db})")
+            logger.info(f"  💾 {emoji} {session_label} saved to daily_briefings ({model_key_db})")
         except Exception as db_err:
-            logger.warning(f"  ⚠️  Flash briefing DB write failed: {db_err}")
+            logger.warning(f"  ⚠️  Briefing DB write failed: {db_err}")
 
-        # Send to #all-hightrade (push notification) and mirror to #logs-silent
-        payload = {
-            'label':            label,
-            'emoji':            emoji,
-            'summary':          summary_text,
-            'gaps':             gaps_list,
-            'defcon':           defcon,
-            'defcon_forecast':  defcon_forecast,
-            'watch':            watch_list,
-            'macro_score':      macro_score,
+        # ── Send rich Slack alert (same format as close briefing) ────────
+        notify_payload = {
+            'model_key':        model_key_db,
+            'market_regime':    f"{emoji} {regime.title()}",
+            'headline':         headline,
+            'biggest_risk':     biggest_risk,
+            'best_opportunity': best_opp,
+            'defcon_forecast':  (
+                defcon_fc_str[:120] if defcon_fc_str
+                else f"DEFCON {defcon}/5 (no change forecast)"
+            ),
+            'data_gaps':        gaps_list,
             'in_tokens':        in_tok,
             'out_tokens':       out_tok,
         }
-        self.alerts.send_notify('flash_briefing', payload)
-        self.alerts.send_silent_log('flash_briefing', payload)
+        # Prepend session label so Slack header is clear
+        notify_payload['market_regime'] = f"{emoji} *{session_label}* — {regime.title()}"
+        self.alerts.send_notify('daily_briefing', notify_payload)
+        self.alerts.send_silent_log('daily_briefing', notify_payload)
 
         # Store latest flash DEFCON forecast for use by next monitoring cycle
         self._last_flash_forecast = defcon_forecast
         if defcon_forecast:
             logger.info(f"  🧭 Flash DEFCON forecast stored: {defcon_forecast}/5")
 
-        # Update per-ticker attention scores from flash watch list
+        # Update per-ticker attention scores from conditionals_to_watch list
+        # (convert to the format _update_attention_scores expects)
+        watch_list = [
+            {'ticker': w.get('ticker', ''), 'urgency': w.get('urgency', 'low'), 'reason': w.get('reason', '')}
+            for w in cond_watch if w.get('ticker')
+        ]
         self._update_attention_scores(watch_list)
 
     def _update_attention_scores(self, watch_list: list):
@@ -2099,6 +2263,10 @@ Only include tickers that appear in the ACTIVE CONDITIONALS section above. If no
 
     def monitor_and_exit_positions(self):
         """Monitor all open positions and detect exit conditions"""
+        # Reset each cycle — exits are re-detected fresh from live prices every run,
+        # so accumulating them just inflates the pending count incorrectly.
+        self.pending_trade_exits = []
+
         exit_recommendations = self.paper_trading.monitor_all_positions()
 
         if exit_recommendations:
@@ -2111,6 +2279,35 @@ Only include tickers that appear in the ACTIVE CONDITIONALS section above. If no
                 self.pending_trade_exits.append(exit_rec)
 
             logger.info("="*60 + "\n")
+
+        # ── No-exit-framework check ───────────────────────────────────────
+        # Any open position with no stop_loss AND no take_profit_1 has no exit
+        # plan. Flag it and queue it for analyst review so the analyst sets
+        # proper exit levels — same pipeline as a conditional entry, but for exits.
+        self._check_positions_missing_exit_framework()
+
+    def _check_positions_missing_exit_framework(self):
+        """
+        Scan open positions for missing stop/TP levels and run the dedicated
+        exit_analyst directly — bypasses the acquisition pipeline which is
+        designed for entry decisions, not exit frameworks.
+
+        exit_analyst.py handles its own 20-hour guard, Gemini call, DB write,
+        and Slack alert. This method just wires it into the monitoring cycle
+        with the current macro context.
+        """
+        try:
+            macro_score = self._get_latest_macro_score() or 50.0
+            current_defcon = getattr(self, '_last_defcon', 5)
+            processed = exit_analyst.run_exit_analysis(
+                defcon=current_defcon,
+                macro_score=macro_score,
+                alerts=self.alerts,
+            )
+            if processed:
+                logger.info(f"  🎯 Exit frameworks set for: {processed}")
+        except Exception as e:
+            logger.warning(f"  _check_positions_missing_exit_framework failed: {e}")
 
     def execute_pending_trades(self, auto_approve=False):
         """
@@ -2287,7 +2484,7 @@ Examples:
         '--broker',
         type=str,
         choices=['disabled', 'semi_auto', 'full_auto'],
-        default='disabled',
+        default='semi_auto',
         help='Broker mode: disabled (manual), semi_auto (autonomous with alerts), full_auto (fully autonomous)'
     )
 

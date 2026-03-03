@@ -159,7 +159,21 @@ class GrokHound:
 
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
+
+        # ── Expire stale hound candidates (48h TTL) ───────────────────────
+        # Entries older than 48h are reset to 'expired' so the next Hound run
+        # starts fresh — prevents the list from accumulating indefinitely.
+        cutoff_48h = (datetime.now() - timedelta(hours=48)).strftime('%Y-%m-%d %H:%M:%S')
+        expired = cursor.execute("""
+            UPDATE grok_hound_candidates
+            SET status = 'expired'
+            WHERE created_at < ?
+              AND status NOT IN ('ignored', 'expired')
+        """, (cutoff_48h,)).rowcount
+        if expired:
+            logger.info(f"  🕰️  Hound: expired {expired} stale candidates (>48h)")
+        conn.commit()
+
         date_str = datetime.now().strftime('%Y-%m-%d')
         promoted_tickers = []
 
