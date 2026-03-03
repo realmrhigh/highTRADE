@@ -2264,7 +2264,7 @@ def run_server(host='0.0.0.0', port=5055):
                 text, in_tok, out_tok = grok_client.call(prompt)
             else:
                 import gemini_client
-                text, in_tok, out_tok = gemini_client.call(prompt, model_key=model_key)
+                text, in_tok, out_tok = gemini_client.call(prompt, model_key=model_key, caller='dashboard')
                 
             return {
                 'ok': True, 

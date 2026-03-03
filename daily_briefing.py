@@ -89,6 +89,7 @@ def _call_gemini(model_key: str, prompt: str) -> Tuple[Optional[str], int, int]:
     text, in_tok, out_tok = gemini_client.call(
         prompt=prompt,
         model_key=model_key,
+        caller='briefing',
     )
     return text, in_tok, out_tok
 

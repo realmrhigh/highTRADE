@@ -176,6 +176,7 @@ class GeminiAnalyzer:
             prompt=prompt,
             model_key=model_key,
             temperature=temperature,
+            caller='analyzer_flash',
         )
 
     def _build_flash_prompt(self, articles: List[Dict], score_components: Dict, 
@@ -400,6 +401,7 @@ Provide a comprehensive trading risk analysis. Respond with ONLY valid JSON:
         text, input_tokens, output_tokens = gemini_client.call(
             prompt=prompt,
             model_key='balanced',
+            caller='analyzer_pro',
         )
 
         if not text:

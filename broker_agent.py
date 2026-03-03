@@ -290,8 +290,7 @@ class BrokerDecisionEngine:
         )
 
         try:
-            text, in_tok, out_tok = gemini_client.call(prompt=prompt, model_key='balanced')
-            logger.info(f"  🔬 Pre-exit gate [{ticker}]: ({in_tok}→{out_tok} tok)")
+            text, in_tok, out_tok = gemini_client.call(prompt=prompt, model_key='balanced', caller='broker_exit')
 
             if "```json" in text:
                 text = text.split("```json")[1].split("```")[0].strip()
@@ -777,8 +776,7 @@ class BrokerDecisionEngine:
         )
 
         try:
-            text, in_tok, out_tok = gemini_client.call(prompt=prompt, model_key='balanced')
-            logger.info(f"  🔍 Pre-purchase gate [{ticker}]: {in_tok}→{out_tok} tok")
+            text, in_tok, out_tok = gemini_client.call(prompt=prompt, model_key='balanced', caller='broker_gate')
 
             # Parse JSON
             if "```json" in text:

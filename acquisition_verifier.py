@@ -367,6 +367,7 @@ def run_verification_cycle() -> Dict:
             text, in_tok, out_tok = gemini_client.call(
                 prompt=prompt,
                 model_key='fast',   # No thinking — cheap and fast
+                caller='verifier',
             )
 
             if not text:
