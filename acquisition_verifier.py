@@ -11,13 +11,13 @@ Degradation ladder
 ──────────────────
   active
     │  verdict = confirm             → stays active (last_verified refreshed)
-    │  verdict = flag (< 3 times)   → stays active, flag_count++, note added
-    │  verdict = flag (≥ 3 times)   → demoted to low_priority
+    │  verdict = flag (< 5 times)   → stays active, flag_count++, note added
+    │  verdict = flag (≥ 5 times)   → demoted to low_priority
     │  verdict = invalidate          → see confidence routing below
     ▼
   low_priority
-    │  (checked at most once per 7 days)
-    │  verdict = confirm             → restored to active
+    │  (checked at most once per 3 days — re-engages quickly on market recovery)
+    │  verdict = confirm             → restored to active, flag_count reset to 0
     │  verdict = flag / invalidate   → see confidence routing
     ▼
   archived (terminal)
@@ -49,8 +49,10 @@ DB_PATH    = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
 # Thresholds
 ACTIVE_CONFIDENCE_THRESHOLD  = 0.60   # corrected_conf >= this → restored to active
 LOW_PRIORITY_THRESHOLD       = 0.25   # corrected_conf >= this → low_priority
-FLAG_DEMOTION_THRESHOLD      = 3      # consecutive flags before demotion to low_priority
-LOW_PRIORITY_COOLDOWN_DAYS   = 7      # low_priority items checked at most once per week
+FLAG_DEMOTION_THRESHOLD      = 5      # consecutive flags before demotion to low_priority
+                                      # (5 = ~5 hours of bad macro before parking a lead)
+LOW_PRIORITY_COOLDOWN_DAYS   = 3      # low_priority items re-checked every 3 days
+                                      # (re-engages fast when market recovers)
 MAX_INVALIDATIONS_BEFORE_ARCHIVE = 2  # archive after this many invalidations with conf < 0.25
 
 _VERIFIER_JSON_TEMPLATE = """{

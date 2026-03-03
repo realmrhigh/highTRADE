@@ -457,6 +457,50 @@ class AlertSystem:
                     for sig in bearish_sigs:
                         text += f"\n  🔴 {sig.get('description', '')}"
 
+            elif event_type == 'position_closed':
+                ticker      = data.get('ticker', '?')
+                reason      = data.get('reason', 'unknown')
+                entry_px    = data.get('entry_price', 0)
+                exit_px     = data.get('exit_price', 0)
+                pnl_d       = data.get('profit_loss_dollars', 0)
+                pnl_pct     = data.get('profit_loss_pct', 0)
+                shares      = data.get('shares', 0)
+                exit_type   = data.get('decision_type', '')
+                holding_hrs = data.get('holding_hours')
+                hold_str    = f" | held {holding_hrs:.0f}h" if holding_hrs else ''
+
+                # decision_type overrides plain reason for catalyst exits
+                decision_type = data.get('decision_type', '')
+                catalyst_event = data.get('catalyst_event', '')
+
+                decision_type_map = {
+                    'SELL_CATALYST_SPIKE':   ('🚀', 'Catalyst Spike — Sold Into Strength'),
+                    'SELL_CATALYST_FAILED':  ('💥', 'Catalyst Failed — Event Went Wrong Direction'),
+                    'SELL_CATALYST_EXPIRED': ('⏰', 'Catalyst Expired — No Move Materialized'),
+                }
+                reason_map = {
+                    'stop_loss':     ('🛑', 'Stop Loss'),
+                    'profit_target': ('🎯', 'Profit Target'),
+                    'manual':        ('🖐', 'Manual Exit'),
+                    'invalidation':  ('⚠️', 'Thesis Invalidated'),
+                }
+
+                if decision_type in decision_type_map:
+                    reason_emoji, reason_label = decision_type_map[decision_type]
+                else:
+                    reason_emoji, reason_label = reason_map.get(reason, ('💼', reason.replace('_', ' ').title()))
+
+                pnl_emoji = '📈' if pnl_d >= 0 else '📉'
+                pnl_sign  = '+' if pnl_d >= 0 else ''
+                catalyst_line = f"\n📅 Catalyst: _{catalyst_event}_" if catalyst_event else ''
+
+                text = (
+                    f"{reason_emoji} *SELL EXECUTED — {ticker}* · {reason_label}\n"
+                    f"Entry `${entry_px:.2f}` → Exit `${exit_px:.2f}`{hold_str}\n"
+                    f"{pnl_emoji} P&L: `{pnl_sign}${pnl_d:,.0f}` (`{pnl_sign}{pnl_pct:.2f}%`)"
+                    f"{catalyst_line}"
+                )
+
             elif event_type == 'rebound_watchlist':
                 ticker      = data.get('ticker', '?')
                 loss_pct    = data.get('loss_pct', 0)
@@ -603,6 +647,44 @@ class AlertSystem:
                     f"{emoji} *{label} Flash Briefing* — DEFCON {defcon}/5 | Macro {macro:.0f}/100\n"
                     f"{summary}{gaps_line}\n"
                     f"_({in_tok}→{out_tok} tokens)_"
+                )
+
+            elif event_type == 'position_closed':
+                ticker        = data.get('ticker', '?')
+                reason        = data.get('reason', 'manual')
+                entry_px      = data.get('entry_price', 0)
+                exit_px       = data.get('exit_price', 0)
+                pnl_d         = data.get('profit_loss_dollars', 0)
+                pnl_pct       = data.get('profit_loss_pct', 0)
+                holding_hrs   = data.get('holding_hours')
+                hold_str      = f" | held {holding_hrs:.0f}h" if holding_hrs else ''
+                decision_type = data.get('decision_type', '')
+                catalyst_event = data.get('catalyst_event', '')
+
+                decision_type_map = {
+                    'SELL_CATALYST_SPIKE':   ('🚀', 'Catalyst Spike — Sold Into Strength'),
+                    'SELL_CATALYST_FAILED':  ('💥', 'Catalyst Failed — Event Went Wrong Direction'),
+                    'SELL_CATALYST_EXPIRED': ('⏰', 'Catalyst Expired — No Move Materialized'),
+                }
+                reason_map = {
+                    'stop_loss':     ('🛑', 'Stop Loss'),
+                    'profit_target': ('🎯', 'Profit Target'),
+                    'manual':        ('🖐', 'Manual Exit'),
+                    'invalidation':  ('⚠️', 'Thesis Invalidated'),
+                }
+                if decision_type in decision_type_map:
+                    reason_emoji, reason_label = decision_type_map[decision_type]
+                else:
+                    reason_emoji, reason_label = reason_map.get(reason, ('💼', reason.replace('_', ' ').title()))
+
+                pnl_emoji = '📈' if pnl_d >= 0 else '📉'
+                pnl_sign  = '+' if pnl_d >= 0 else ''
+                catalyst_line = f"\n📅 Catalyst: _{catalyst_event}_" if catalyst_event else ''
+                text = (
+                    f"{reason_emoji} *SELL EXECUTED — {ticker}* · {reason_label}\n"
+                    f"Entry `${entry_px:.2f}` → Exit `${exit_px:.2f}`{hold_str}\n"
+                    f"{pnl_emoji} P&L: `{pnl_sign}${pnl_d:,.0f}` (`{pnl_sign}{pnl_pct:.2f}%`)"
+                    f"{catalyst_line}"
                 )
 
             elif event_type == 'daily_briefing':

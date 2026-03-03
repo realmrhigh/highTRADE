@@ -130,6 +130,10 @@ class BrokerDecisionEngine:
         self.alerts = AlertSystem()
         self.quick_money = QuickMoneyResearch()
         self.decision_history = []
+        # Pre-exit gate: track how many times each position's stop has been vetoed
+        # this session. After MAX_STOP_VETOES, the gate no longer blocks (force exit).
+        self._stop_veto_count: Dict[str, int] = {}
+        self._MAX_STOP_VETOES = 2
 
     def analyze_market_for_trades(self, defcon_level: int, signal_score: float,
                                   crisis_description: str, market_data: Dict) -> Optional[Dict]:
@@ -184,6 +188,141 @@ class BrokerDecisionEngine:
         logger.info(f"✅ BUY DECISION: {crisis_type} - Size: ${position_size:,.0f}, Confidence: {decision['confidence']}%")
         return decision
 
+    def _run_pre_exit_gate(self, trade: Dict, current_price: float,
+                           stop_price: float, loss_pct: float) -> Dict:
+        """
+        Pre-exit deep-dive gate for stop-loss triggers.
+
+        Before executing a stop-loss exit, asks Gemini (balanced model) whether
+        the stop-hit is a genuine breakdown or market noise (gap-down spike,
+        thin pre-market, news-driven temporary dip).
+
+        Returns:
+            {"approve_exit": bool, "hold_rationale": str, "concerns": []}
+
+        SAFETY: Any error or parse failure → approve_exit=True (fail-open).
+                After _MAX_STOP_VETOES vetoes this session → force approve_exit=True.
+        """
+        ticker   = trade['asset_symbol']
+        trade_id = trade['trade_id']
+
+        # ── Veto cap: never block more than _MAX_STOP_VETOES times per position ──
+        veto_count = self._stop_veto_count.get(trade_id, 0)
+        if veto_count >= self._MAX_STOP_VETOES:
+            logger.info(
+                f"  🚪 Pre-exit gate [{ticker}]: max vetoes ({self._MAX_STOP_VETOES}) reached — "
+                f"forcing exit"
+            )
+            return {"approve_exit": True, "hold_rationale": "Max vetoes reached — forced exit",
+                    "concerns": []}
+
+        # ── Pull thesis / research context ───────────────────────────────────
+        thesis_text = trade.get('thesis_summary') or ''
+        try:
+            import sqlite3
+            from pathlib import Path
+            db_path = Path(__file__).parent / 'trading_data' / 'trading_history.db'
+            conn = sqlite3.connect(str(db_path))
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("""
+                SELECT summary, key_risks, sector, market_cap, thesis
+                FROM stock_research_library
+                WHERE ticker = ?
+                ORDER BY created_at DESC LIMIT 1
+            """, (ticker,)).fetchone()
+            if row:
+                thesis_text = (
+                    f"{row['thesis'] or row['summary'] or ''}\n"
+                    f"Sector: {row['sector']} | Risks: {row['key_risks']}"
+                )
+            # Recent news mentioning this ticker
+            since = (datetime.now() - timedelta(hours=24)).strftime('%Y-%m-%d')
+            news_rows = conn.execute("""
+                SELECT timestamp, sentiment_summary, news_score
+                FROM news_signals
+                WHERE DATE(timestamp) >= ? AND keyword_hits_json LIKE ?
+                ORDER BY news_score DESC LIMIT 3
+            """, (since, f'%{ticker}%')).fetchall()
+            recent_news = [
+                f"[{r['timestamp'][:16]}] {r['sentiment_summary']}"
+                for r in news_rows
+            ]
+            conn.close()
+        except Exception as e:
+            logger.debug(f"  Pre-exit gate context pull failed for {ticker}: {e}")
+            recent_news = []
+
+        entry_px   = trade['entry_price']
+        hold_days  = (datetime.now() - datetime.strptime(
+            trade['entry_date'][:10], '%Y-%m-%d')).days if trade.get('entry_date') else '?'
+        news_text  = '\n'.join(f"  • {n}" for n in recent_news) if recent_news else '  • No recent mentions'
+
+        prompt = (
+            f"You are a stop-loss review gate for a paper trading system.\n"
+            f"A stop-loss just triggered for {ticker}. Your job: decide if we should "
+            f"HONOR the stop (exit now) or HOLD through it (this is noise).\n\n"
+            f"POSITION\n"
+            f"  Ticker:       {ticker}\n"
+            f"  Entry price:  ${entry_px:.2f}\n"
+            f"  Stop price:   ${stop_price:.2f}\n"
+            f"  Current price: ${current_price:.2f}\n"
+            f"  Loss so far:  {loss_pct*100:.2f}%\n"
+            f"  Held:         {hold_days} day(s)\n\n"
+            f"ORIGINAL THESIS\n"
+            f"  {thesis_text or 'Not available'}\n\n"
+            f"RECENT NEWS (last 24h)\n{news_text}\n\n"
+            f"YOUR DECISION:\n"
+            f"  approve_exit=true  → honor the stop, exit now (thesis has broken down, "
+            f"or loss is real and growing)\n"
+            f"  approve_exit=false → hold through it (noise spike, thesis intact, "
+            f"expect recovery)\n\n"
+            f"CRITICAL RULES:\n"
+            f"  • If you have any doubt, approve the exit (stops exist for a reason)\n"
+            f"  • Only veto if you are highly confident this is transient noise\n"
+            f"  • You may veto at most {self._MAX_STOP_VETOES} times total for this position\n"
+            f"  • This is veto #{veto_count + 1} of {self._MAX_STOP_VETOES}\n\n"
+            f"Respond ONLY in this exact JSON (no other text):\n"
+            f'{{\n'
+            f'  "approve_exit": true,\n'
+            f'  "hold_rationale": "",\n'
+            f'  "concerns": ["specific concern 1", "specific concern 2"]\n'
+            f'}}'
+        )
+
+        try:
+            text, in_tok, out_tok = gemini_client.call(prompt=prompt, model_key='balanced')
+            logger.info(f"  🔬 Pre-exit gate [{ticker}]: ({in_tok}→{out_tok} tok)")
+
+            if "```json" in text:
+                text = text.split("```json")[1].split("```")[0].strip()
+            elif "```" in text:
+                text = text.split("```")[1].split("```")[0].strip()
+
+            result = json.loads(text.strip())
+            approve = result.get("approve_exit", True)
+
+            if not approve:
+                self._stop_veto_count[trade_id] = veto_count + 1
+                hold_rat = result.get("hold_rationale", "")
+                logger.warning(
+                    f"  🚫 Pre-exit gate VETOED stop-loss [{ticker}] "
+                    f"(veto {self._stop_veto_count[trade_id]}/{self._MAX_STOP_VETOES}): "
+                    f"{hold_rat[:100]}"
+                )
+            else:
+                logger.info(
+                    f"  ✅ Pre-exit gate APPROVED stop-loss exit [{ticker}]"
+                )
+                concerns = result.get("concerns", [])
+                if concerns:
+                    logger.info(f"  🔍 Exit concerns: {' | '.join(concerns[:2])}")
+
+            return result
+
+        except Exception as e:
+            logger.warning(f"  ⚠️  Pre-exit gate failed for {ticker}: {e} — approving exit (fail-open)")
+            return {"approve_exit": True, "hold_rationale": f"gate_error: {e}", "concerns": []}
+
     def analyze_positions_for_exits(self) -> List[Dict]:
         """
         Analyze all open positions and decide which ones to exit
@@ -197,7 +336,9 @@ class BrokerDecisionEngine:
         try:
             self.paper_trading.cursor.execute('''
             SELECT trade_id, asset_symbol, entry_price, position_size_dollars,
-                   defcon_at_entry, shares, entry_date, stop_loss, take_profit_1
+                   defcon_at_entry, shares, entry_date, stop_loss, take_profit_1,
+                   catalyst_event, catalyst_window_end,
+                   catalyst_spike_pct, catalyst_failure_pct
             FROM trade_records
             WHERE status = 'open'
             ''')
@@ -224,6 +365,91 @@ class BrokerDecisionEngine:
             tp_src  = f"${tp1_price:.2f}" if tp1_price else f"{self.paper_trading.PROFIT_TARGET*100:.0f}% (default)"
             sl_src  = f"${stop_price:.2f}" if stop_price else f"{abs(self.paper_trading.STOP_LOSS*100):.0f}% (default)"
 
+            # ── Catalyst exit check (runs BEFORE normal stop/TP) ─────────────
+            # If this position was entered on a specific event catalyst, apply
+            # event-specific exit rules during the catalyst window.
+            cat_event   = trade.get('catalyst_event')
+            cat_end_str = trade.get('catalyst_window_end')
+            cat_spike   = trade.get('catalyst_spike_pct')    # e.g. 4.0 → sell if up ≥4%
+            cat_fail    = trade.get('catalyst_failure_pct')  # e.g. -2.0 → exit if down ≥2%
+
+            if cat_event and cat_end_str:
+                try:
+                    cat_window_end = datetime.fromisoformat(cat_end_str[:19])
+                    now = datetime.now()
+                    in_window = now < cat_window_end
+                    pnl_pct_for_cat = profit_loss_pct * 100  # convert to percentage
+
+                    if in_window:
+                        # Within catalyst window — apply tighter catalyst-specific rules
+                        if cat_spike and pnl_pct_for_cat >= cat_spike:
+                            # Spike achieved — sell into strength before "sell the news" reversal
+                            decision = {
+                                'trade_id':           trade['trade_id'],
+                                'asset_symbol':       trade['asset_symbol'],
+                                'decision_type':      'SELL_CATALYST_SPIKE',
+                                'entry_price':        entry_price,
+                                'current_price':      current_price,
+                                'profit_loss_pct':    profit_loss_pct,
+                                'profit_loss_dollars': profit_loss_dollars,
+                                'reason':             f"Catalyst spike target hit: +{pnl_pct_for_cat:.1f}% ≥ {cat_spike}% | {cat_event}",
+                                'confidence':         100,
+                                'catalyst_event':     cat_event,
+                            }
+                            exit_decisions.append(decision)
+                            logger.info(f"🚀 CATALYST EXIT: {trade['asset_symbol']} — spike +{pnl_pct_for_cat:.1f}% hit target ({cat_spike}%)")
+                            continue
+
+                        elif cat_fail and pnl_pct_for_cat <= cat_fail:
+                            # Catalyst going wrong direction — thesis failed, exit early
+                            decision = {
+                                'trade_id':           trade['trade_id'],
+                                'asset_symbol':       trade['asset_symbol'],
+                                'decision_type':      'SELL_CATALYST_FAILED',
+                                'entry_price':        entry_price,
+                                'current_price':      current_price,
+                                'profit_loss_pct':    profit_loss_pct,
+                                'profit_loss_dollars': profit_loss_dollars,
+                                'reason':             f"Catalyst thesis failed: {pnl_pct_for_cat:.1f}% ≤ {cat_fail}% during event window | {cat_event}",
+                                'confidence':         100,
+                                'catalyst_event':     cat_event,
+                            }
+                            exit_decisions.append(decision)
+                            logger.warning(f"⚠️ CATALYST FAILED: {trade['asset_symbol']} — {pnl_pct_for_cat:.1f}% ≤ {cat_fail}% in window")
+                            continue
+                        else:
+                            # Still in window, watching
+                            remaining_h = (cat_window_end - now).total_seconds() / 3600
+                            logger.debug(
+                                f"  ⏳ {trade['asset_symbol']} catalyst window active: "
+                                f"{pnl_pct_for_cat:+.1f}% | {remaining_h:.1f}h remaining | {cat_event}"
+                            )
+                    else:
+                        # Window has expired — did the spike happen?
+                        if not (cat_spike and pnl_pct_for_cat >= cat_spike):
+                            # No spike materialized — event catalyst failed to drive the move
+                            decision = {
+                                'trade_id':           trade['trade_id'],
+                                'asset_symbol':       trade['asset_symbol'],
+                                'decision_type':      'SELL_CATALYST_EXPIRED',
+                                'entry_price':        entry_price,
+                                'current_price':      current_price,
+                                'profit_loss_pct':    profit_loss_pct,
+                                'profit_loss_dollars': profit_loss_dollars,
+                                'reason':             f"Catalyst window expired with no spike (at {pnl_pct_for_cat:+.1f}%) | {cat_event}",
+                                'confidence':         90,
+                                'catalyst_event':     cat_event,
+                            }
+                            exit_decisions.append(decision)
+                            logger.warning(
+                                f"⏰ CATALYST EXPIRED: {trade['asset_symbol']} — "
+                                f"window closed, {pnl_pct_for_cat:+.1f}% vs {cat_spike}% target | {cat_event}"
+                            )
+                            continue
+                except Exception as e:
+                    logger.warning(f"  ⚠️ Catalyst check failed for {trade['asset_symbol']}: {e}")
+                    # Fall through to normal stop/TP logic
+
             # Decision 1: Hit profit target?
             if profit_loss_pct >= tp_threshold:
                 decision = {
@@ -242,6 +468,22 @@ class BrokerDecisionEngine:
 
             # Decision 2: Hit stop loss?
             elif profit_loss_pct <= sl_threshold:
+                logger.warning(f"🛑 EXIT: {trade['asset_symbol']} - Stop loss ({sl_src})! {profit_loss_pct*100:.2f}%")
+
+                # ── Pre-exit deep-dive gate ───────────────────────────────────
+                gate = self._run_pre_exit_gate(
+                    trade, current_price,
+                    stop_price=trade.get('stop_loss') or entry_price * (1 + sl_threshold),
+                    loss_pct=profit_loss_pct,
+                )
+                if not gate.get('approve_exit', True):
+                    # Gate vetoed — skip exit this cycle, will re-evaluate next cycle
+                    logger.warning(
+                        f"  ⏸️  Stop-loss exit for {trade['asset_symbol']} HELD by exit gate: "
+                        f"{gate.get('hold_rationale','')[:80]}"
+                    )
+                    continue
+
                 decision = {
                     'trade_id': trade['trade_id'],
                     'asset_symbol': trade['asset_symbol'],
@@ -254,7 +496,6 @@ class BrokerDecisionEngine:
                     'confidence': 100
                 }
                 exit_decisions.append(decision)
-                logger.warning(f"🛑 EXIT: {trade['asset_symbol']} - Stop loss ({sl_src})! {profit_loss_pct*100:.2f}%")
 
             # Decision 3: Should we take early profit?
             elif self._should_take_early_profit(profit_loss_pct, trade):
@@ -764,39 +1005,19 @@ Monitor portfolio: python3 trading_cli.py status
         logger.info("📨 Buy notification sent")
 
     def send_sell_notification(self, decision: Dict):
-        """Notify user about a sell decision"""
-        profit_loss_color = "📈" if decision['profit_loss_dollars'] > 0 else "📉"
-
-        message = f"""
-💼 BROKER ACTION: SELL EXECUTED
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Decision: Autonomous Sell Executed
-Time: {datetime.now().isoformat()}
-Reason: {decision['reason']}
-
-Asset: {decision['asset_symbol']}
-Trade ID: {decision['trade_id']}
-
-Entry Price: ${decision['entry_price']:.2f}
-Exit Price: ${decision['current_price']:.2f}
-
-Result:
-  {profit_loss_color} Profit/Loss: ${decision['profit_loss_dollars']:+,.0f}
-  {profit_loss_color} Return: {decision['profit_loss_pct']:+.2f}%
-
-Exit Type: {decision['decision_type']}
-
-Your broker closed this position on your behalf.
-Check portfolio: python3 trading_cli.py status
-"""
-        # Send via all enabled channels (Slack, email, etc)
-        self.alerts.send_defcon_alert(
-            defcon_level=1,
-            signal_score=decision.get('confidence', 100),
-            details=message
-        )
-        logger.info("📨 Sell notification sent to all channels")
+        """Notify user about a sell decision via proper position_closed event."""
+        self.alerts.send_notify('position_closed', {
+            'ticker':              decision.get('asset_symbol', '?'),
+            'reason':              decision.get('reason', 'manual'),
+            'decision_type':       decision.get('decision_type', ''),
+            'entry_price':         decision.get('entry_price', 0),
+            'exit_price':          decision.get('current_price', 0),
+            'profit_loss_dollars': decision.get('profit_loss_dollars', 0),
+            'profit_loss_pct':     decision.get('profit_loss_pct', 0),
+            'shares':              decision.get('shares', 0),
+            'holding_hours':       decision.get('holding_hours'),
+        })
+        logger.info(f"📨 Sell notification sent: {decision.get('asset_symbol')} ({decision.get('reason')})")
 
     def send_tip(self, tip_type: str, content: str):
         """Send trading tips to user"""
@@ -919,13 +1140,16 @@ class AutonomousBroker:
                 # Map decision type to valid exit_reason
                 # Valid reasons: profit_target, stop_loss, manual, invalidation
                 _reason_map = {
-                    'SELL_PROFIT_TARGET': 'profit_target',
-                    'SELL_STOP_LOSS': 'stop_loss',
-                    'SELL_EARLY_PROFIT': 'profit_target',
-                    'SELL_MANUAL': 'manual',
-                    'SELL_TRAILING_STOP': 'stop_loss',
-                    'SELL_TIME_LIMIT': 'manual',
-                    'SELL_DEFCON_REVERT': 'manual',
+                    'SELL_PROFIT_TARGET':    'profit_target',
+                    'SELL_STOP_LOSS':        'stop_loss',
+                    'SELL_EARLY_PROFIT':     'profit_target',
+                    'SELL_MANUAL':           'manual',
+                    'SELL_TRAILING_STOP':    'stop_loss',
+                    'SELL_TIME_LIMIT':       'manual',
+                    'SELL_DEFCON_REVERT':    'manual',
+                    'SELL_CATALYST_SPIKE':   'profit_target',   # sold into strength
+                    'SELL_CATALYST_FAILED':  'invalidation',    # event went wrong direction
+                    'SELL_CATALYST_EXPIRED': 'invalidation',    # window closed, no move
                 }
                 exit_reason = _reason_map.get(exit['decision_type'], 'manual')
 

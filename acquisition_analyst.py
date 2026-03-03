@@ -64,7 +64,11 @@ _ANALYST_JSON_TEMPLATE = """{
   "key_risks": ["risk1", "risk2", "risk3"],
   "macro_alignment": "how macro environment supports or contradicts this trade",
   "reasoning_chain": "step-by-step walk through of how you arrived at these levels",
-  "data_gaps": ["<specific missing data that would improve entry precision or confidence — e.g. 'options open interest at $460 strike', 'insider buying last 30 days', 'next earnings date not in research'>"]
+  "data_gaps": ["<specific missing data that would improve entry precision or confidence — e.g. 'options open interest at $460 strike', 'insider buying last 30 days', 'next earnings date not in research'>"],
+  "catalyst_event": "<brief description of the specific event driving this trade, e.g. 'Robotaxi product launch 2026-03-01', or null if not event-driven>",
+  "catalyst_window_hours": null,
+  "catalyst_spike_pct": null,
+  "catalyst_failure_pct": null
 }"""
 
 # Watch tag definitions injected into every analyst prompt
@@ -337,7 +341,21 @@ def _build_analyst_prompt(ticker: str, research: Dict) -> str:
         f"  6. What % of available cash? (0.0–{MAX_POSITION_PCT:.2f}, sized per your watch_tag guidance)\n"
         f"  7. What specific, VERIFIABLE conditions must be TRUE at the time of entry?\n"
         f"     (Include numeric thresholds wherever possible: VIX < X, macro_score > Y, etc.)\n"
-        f"  8. What would invalidate this thesis entirely?\n\n"
+        f"  8. What would invalidate this thesis entirely?\n"
+        f"  9. CATALYST CHECK: Is this trade driven by a specific upcoming event "
+        f"(earnings, product launch, FDA decision, macro announcement)?\n"
+        f"     If yes, set: catalyst_event (name+date), catalyst_window_hours (how long to watch),\n"
+        f"     catalyst_spike_pct (sell into strength if up >= X% within window),\n"
+        f"     catalyst_failure_pct (exit early if down >= X% — must be negative, tighter than stop).\n"
+        f"     Reference: product reveal/sell-the-news → spike=1.5,failure=-1.5,window=24 | "
+        f"sustained product launch → spike=3,failure=-2,window=48 | "
+        f"earnings → spike=4,failure=-5,window=24 | FDA → spike=8,failure=-5,window=24\n"
+        f"     KEY: for single-event reveals (robotaxi, product drop), spike=1.5 means:\n"
+        f"     'if price hasn't moved >=1.5% within 24h, the news is a dud — exit.'\n"
+        f"     VOLATILITY SCALING: these are mid-vol baselines (beta ~1.0). For high-beta/high-IV\n"
+        f"     stocks (TSLA, GME — beta >1.5 or ATM IV >50%), scale spike_pct up 1.5-2x because\n"
+        f"     a 1.5% move is normal noise for those names. e.g. TSLA product reveal → spike=2.5-3.0.\n"
+        f"     If NOT event-driven, set all catalyst fields to null.\n\n"
         f"Set research_confidence as a float 0.0–1.0 based on how convinced you are.\n"
         f"Only set should_enter=true if research_confidence >= {CONFIDENCE_THRESHOLD:.1f}.\n\n"
         f"Respond in this EXACT JSON format (no other text):\n"
@@ -523,8 +541,10 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection) -> Opt
                     research_confidence,
                     watch_tag, watch_tag_rationale,
                     data_gaps_json,
+                    catalyst_event, catalyst_window_hours,
+                    catalyst_spike_pct, catalyst_failure_pct,
                     status, last_verified
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'active',?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'active',?)
             """, (
                 ticker, date_str,
                 result.get('entry_price_target'),
@@ -547,6 +567,10 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection) -> Opt
                 result.get('watch_tag', 'mean-reversion'),  # default if Gemini omits
                 result.get('watch_tag_rationale', ''),
                 json.dumps(gaps) if gaps else None,
+                result.get('catalyst_event'),
+                result.get('catalyst_window_hours'),
+                result.get('catalyst_spike_pct'),
+                result.get('catalyst_failure_pct'),
                 date_str,
             ))
             conn.commit()
