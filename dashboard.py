@@ -929,15 +929,15 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
     _model_short = {
         'gemini-3.1-pro-preview': '3.1 Pro Preview (Reasoning — 50/d, 2 RPM)',
         'gemini-2.5-pro':         '2.5 Pro (Reasoning — 100/d, 5 RPM)',
-        'gemini-2.5-flash':       '2.5 Flash (Fast/Balanced — 1500/d, 15 RPM)',
-        'gemini-3-flash-preview':  '3 Flash Preview (Fast — 1500/d, 15 RPM)',
+        'gemini-3-flash-preview': '3 Flash Preview ★ PRIMARY (Fast/Balanced — 1500/d, 15 RPM)',
+        'gemini-2.5-flash':       '2.5 Flash ↩ FALLBACK (Fast/Balanced — 1500/d, 15 RPM)',
         'gemini-2.0-flash-lite':  '2.0 Flash Lite (Ultra-fast — 2000/d, 30 RPM)',
     }
     _model_order = [
         'gemini-3.1-pro-preview',
         'gemini-2.5-pro',
-        'gemini-2.5-flash',
         'gemini-3-flash-preview',
+        'gemini-2.5-flash',
         'gemini-2.0-flash-lite',
     ]
     gemini_usage = gemini_usage or {}

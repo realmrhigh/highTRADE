@@ -43,26 +43,26 @@ GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 # ── Model tiers ────────────────────────────────────────────────────────────────
 MODEL_CONFIG = {
     'fast': {
-        'model_id':        'gemini-2.5-flash',
+        'model_id':        'gemini-3-flash-preview',   # fallback: gemini-2.5-flash
         'thinking_budget': 0,
         'max_output_tokens': 8192,
         'temperature':     0.4,
     },
     'balanced': {
-        'model_id':        'gemini-2.5-flash',
+        'model_id':        'gemini-3-flash-preview',   # fallback: gemini-2.5-flash
         'thinking_budget': 8000,
         'max_output_tokens': 8192,
         'temperature':     1.0,
     },
     'reasoning': {
-        'model_id':        'gemini-2.5-pro',   # stable (1000+ RPD) — was gemini-3.1-pro-preview (25-50 RPD)
+        'model_id':        'gemini-2.5-pro',           # fallback: balanced tier
         'thinking_budget': -1,
         'max_output_tokens': 16384,
         'temperature':     1.0,
     },
     # Legacy keys used by gemini_analyzer — map to the right tier
     'flash': {
-        'model_id':        'gemini-2.5-flash',
+        'model_id':        'gemini-3-flash-preview',   # fallback: gemini-2.5-flash
         'thinking_budget': 0,
         'max_output_tokens': 8192,
         'temperature':     0.4,
@@ -74,6 +74,9 @@ MODEL_CONFIG = {
         'temperature':     1.0,
     },
 }
+
+# Fallback model when primary flash tier is unavailable/quota-exhausted
+_FLASH_FALLBACK_MODEL = 'gemini-2.5-flash'
 
 # ── Quota tracking ─────────────────────────────────────────────────────────────
 _DB_PATH = Path(__file__).parent / 'trading_data' / 'trading_history.db'
@@ -482,14 +485,26 @@ def call(
         if result[0] is not None:
             _log_call(cfg['model_id'], model_key, caller, result[1], result[2])
             return result
-        # Quota exhausted on Pro/Reasoning? Auto-downgrade to balanced rather than silently failing.
-        # Matches both "TerminalQuotaError" (hard daily limit) and "No capacity available" (429 throttle).
-        _pro_model = MODEL_CONFIG['reasoning']['model_id']
+
+        _pro_model   = MODEL_CONFIG['reasoning']['model_id']
+        _flash_model = MODEL_CONFIG['fast']['model_id']          # gemini-3-flash-preview
         _is_quota_err = ('TerminalQuotaError' in _last_cli_error
                          or 'exhausted your capacity' in _last_cli_error
                          or 'No capacity available' in _last_cli_error
                          or ('"code": 429' in _last_cli_error or "'code': 429" in _last_cli_error))
-        if cfg['model_id'] == _pro_model and _is_quota_err:
+
+        # Flash 3 failed → fall back to Flash 2.5 (any failure, not just quota)
+        if cfg['model_id'] == _flash_model:
+            logger.warning(f"⚠️  {_flash_model} unavailable — falling back to {_FLASH_FALLBACK_MODEL}")
+            cfg = {**cfg, 'model_id': _FLASH_FALLBACK_MODEL}
+            downgraded = True
+            result = _call_via_cli(prompt, cfg)
+            if result[0] is not None:
+                _log_call(cfg['model_id'], model_key, caller, result[1], result[2], downgraded=True)
+                return result
+
+        # Pro/Reasoning quota exhausted → downgrade to balanced tier
+        elif cfg['model_id'] == _pro_model and _is_quota_err:
             logger.warning("⚠️  Reasoning quota exhausted — auto-downgrading to balanced tier")
             cfg = dict(MODEL_CONFIG['balanced'])
             downgraded = True
@@ -497,6 +512,7 @@ def call(
             if result[0] is not None:
                 _log_call(cfg['model_id'], model_key, caller, result[1], result[2], downgraded=True)
                 return result
+
         # CLI call failed for another reason — fall through to REST API
         logger.warning("CLI call failed, falling back to REST API")
 
