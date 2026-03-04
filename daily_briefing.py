@@ -36,27 +36,27 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
 
 # ── Model tiers ────────────────────────────────────────────────────────────────
-#  Tier        Model                  Thinking  Purpose
-#  ──────────  ─────────────────────  ────────  ──────────────────────────────
-#  fast        gemini-2.5-flash            0    Pattern check, low cost
-#  balanced    gemini-2.5-flash        8,000    Reasons before answering
-#  reasoning   gemini-3.1-pro-preview     -1    Full chain-of-thought, best signal
-#  grok        grok-4-1-fast-reasoning    Yes   X-powered second opinion
+#  Tier        Model                    Thinking  Purpose
+#  ──────────  ───────────────────────  ────────  ──────────────────────────────
+#  fast        gemini-3-flash-preview        0    Pattern check, low cost
+#  balanced    gemini-3-flash-preview    8,000    Reasons before answering
+#  reasoning   gemini-3.1-pro-preview       -1    Full chain-of-thought, best signal
+#  grok        grok-4-1-fast-reasoning      Yes   X-powered second opinion
 # ──────────────────────────────────────────────────────────────────────────────
 MODEL_CONFIG = {
     'fast': {
-        'model_id':        'gemini-2.5-flash',
+        'model_id':        'gemini-3-flash-preview',
         'thinking_budget': 0,
         'max_output_tokens': 8192,
         'temperature':     0.4,
-        'label':           '⚡ Flash 2.5 (Fast)',
+        'label':           '⚡ Flash 3 (Fast)',
     },
     'balanced': {
-        'model_id':        'gemini-2.5-flash',
+        'model_id':        'gemini-3-flash-preview',
         'thinking_budget': 8000,
         'max_output_tokens': 8192,
         'temperature':     0.7,
-        'label':           '🧠 Flash 2.5 (Thinking)',
+        'label':           '🧠 Flash 3 (Thinking)',
     },
     'reasoning': {
         'model_id':        'gemini-3.1-pro-preview',

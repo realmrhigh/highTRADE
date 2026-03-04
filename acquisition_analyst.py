@@ -503,7 +503,7 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection) -> Opt
 
     result = _parse_analyst_response(text)
     result['_ticker']        = ticker
-    result['_model']         = 'gemini-3-pro-preview'
+    result['_model']         = 'gemini-3.1-pro-preview'
     result['_input_tokens']  = in_tok
     result['_output_tokens'] = out_tok
 
@@ -699,9 +699,8 @@ def run_analyst_cycle() -> List[Dict]:
         result = analyze_ticker(ticker, research, conn)
         if result:
             results.append(result)
-        # Brief pause between calls — stay within 60-120 RPM limit
-        if i < len(ready) - 1:
-            import time as _t; _t.sleep(2)
+        # RPM pacing is now handled automatically inside gemini_client._call_via_cli
+        # via _throttle_for_rpm() — no manual sleep needed here.
 
     conn.close()
     logger.info(f"✅ Analyst cycle complete: {len(results)}/{len(ready)} analyzed")

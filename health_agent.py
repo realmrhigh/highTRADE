@@ -42,9 +42,9 @@ GAP_WINDOW_DAYS = 14
 
 # Gemini + Grok models we're currently running
 CURRENT_MODELS = {
-    'gemini-2.5-flash',
+    'gemini-3-flash-preview',
     'gemini-3.1-pro-preview',
-    'grok-3',
+    'gemini-2.5-pro',
     'grok-4-1-fast-reasoning',
 }
 
@@ -118,7 +118,7 @@ def _check_apis(fred_api_key: Optional[str]) -> Tuple[List[str], List[str]]:
     # --- Gemini CLI ---
     try:
         result = subprocess.run(
-            ['gemini', '-p', 'ping', '--model', 'gemini-2.5-flash'],
+            ['gemini', '-p', 'ping', '--model', 'gemini-3-flash-preview'],
             capture_output=True, text=True, timeout=20
         )
         if result.returncode == 0:

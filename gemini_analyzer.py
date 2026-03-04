@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 FLASH_MODEL = "gemini-3-flash-preview"
 PRO_MODEL   = "gemini-3.1-pro-preview"
-GROK_MODEL  = "grok-3"
+GROK_MODEL  = "grok-4-1-fast-reasoning"
 
 # Trigger Pro/Grok analysis when score exceeds this
 PRO_TRIGGER_SCORE = 40.0

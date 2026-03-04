@@ -23,6 +23,7 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import time
 import requests
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -255,6 +256,58 @@ def get_reset_aligned_usage() -> dict:
     except Exception:
         pass
     return result
+
+
+def _throttle_for_rpm(model_id: str) -> None:
+    """
+    Proactively pace Gemini calls to stay within RPM limits.
+
+    Looks up the last call timestamp for this model in gemini_call_log,
+    then sleeps for however long is needed before the next call is safe.
+    DB-backed so pacing works correctly across multiple processes
+    (orchestrator, acquisition analyst, broker agent all sharing the same DB).
+
+    Minimum inter-call intervals (from QUOTA_RPM_LIMITS):
+        gemini-3.1-pro-preview  →  30.0 s  (2 RPM)
+        gemini-2.5-pro          →  12.0 s  (5 RPM)
+        gemini-3-flash-preview  →   4.0 s  (15 RPM)
+
+    Silent on any DB error — never blocks a caller.
+    """
+    rpm = QUOTA_RPM_LIMITS.get(model_id)
+    if not rpm:
+        return  # unknown model — don't throttle
+
+    min_interval_s = 60.0 / rpm   # 30s / 12s / 4s
+
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+        _ensure_call_log(conn)
+        row = conn.execute(
+            "SELECT created_at FROM gemini_call_log WHERE model_id = ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (model_id,)
+        ).fetchone()
+        conn.close()
+
+        if not row:
+            return  # no prior calls — go immediately
+
+        # SQLite stores CURRENT_TIMESTAMP as 'YYYY-MM-DD HH:MM:SS' in UTC
+        last_call = datetime.strptime(row[0][:19], '%Y-%m-%d %H:%M:%S')
+        elapsed   = (datetime.utcnow() - last_call).total_seconds()
+        wait      = min_interval_s - elapsed
+
+        if wait > 0:
+            logger.info(
+                f"⏱️  RPM throttle [{model_id}]: "
+                f"last call {elapsed:.1f}s ago, need {min_interval_s:.0f}s — "
+                f"sleeping {wait:.1f}s"
+            )
+            time.sleep(wait)
+
+    except Exception:
+        pass  # throttle must never crash a caller
 
 
 def check_quota(model_key: str) -> str:
@@ -530,6 +583,7 @@ def call(
 
 def _call_via_cli(prompt: str, cfg: dict) -> Tuple[Optional[str], int, int]:
     """Call via `gemini -p ... --output-format json`. OAuth is used automatically."""
+    _throttle_for_rpm(cfg['model_id'])   # proactive RPM pacing — sleep if needed
     try:
         cmd = [
             _cli_path or 'gemini',
@@ -585,9 +639,28 @@ def _call_via_cli(prompt: str, cfg: dict) -> Tuple[Optional[str], int, int]:
 
 # ── REST API path ──────────────────────────────────────────────────────────────
 
+def _build_thinking_config(model_id: str, thinking_budget: int) -> dict:
+    """Return the correct thinkingConfig dict for the model generation.
+
+    Gemini 3.x uses thinkingLevel ('minimal' | 'low' | 'medium' | 'high').
+    Gemini 2.x and older use the legacy thinkingBudget integer.
+    Mixing the two in the same request causes a 400 error.
+    """
+    if model_id.startswith('gemini-3'):
+        # thinking_budget=0 → no thinking; anything else → full dynamic thinking
+        level = 'minimal' if thinking_budget == 0 else 'high'
+        return {'thinkingLevel': level}
+    else:
+        # Legacy Gemini 2.x: numeric budget (0 = no thinking, -1 = dynamic)
+        if thinking_budget != 0:
+            return {'thinkingBudget': thinking_budget}
+        return {}
+
+
 def _call_via_api(prompt: str, cfg: dict) -> Tuple[Optional[str], int, int]:
     """Call via REST API with API key. Supports thinkingConfig.
     Only used as fallback if CLI is unavailable. Primary auth is OAuth via Gemini CLI."""
+    _throttle_for_rpm(cfg['model_id'])   # proactive RPM pacing — same limits apply on REST
     if not GEMINI_API_KEY:
         logger.debug("REST API skipped — no GEMINI_API_KEY set (OAuth-only mode)")
         return None, 0, 0
@@ -598,8 +671,9 @@ def _call_via_api(prompt: str, cfg: dict) -> Tuple[Optional[str], int, int]:
         'temperature':     cfg['temperature'],
         'maxOutputTokens': cfg['max_output_tokens'],
     }
-    if cfg.get('thinking_budget', 0) != 0:
-        gen_config['thinkingConfig'] = {'thinkingBudget': cfg['thinking_budget']}
+    thinking_cfg = _build_thinking_config(model_id, cfg.get('thinking_budget', 0))
+    if thinking_cfg:
+        gen_config['thinkingConfig'] = thinking_cfg
 
     payload = {
         'contents': [{'parts': [{'text': prompt}]}],

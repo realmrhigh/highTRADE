@@ -1343,8 +1343,8 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
         <div style="display:flex;gap:10px;margin-bottom:10px;">
           <select id="model-select" style="background:#1a1a2e;color:#ddd;border:1px solid var(--border);padding:5px;border-radius:4px;">
             <option value="reasoning">Gemini 3.1 Pro (Reasoning)</option>
-            <option value="balanced">Gemini 2.5 Flash (Balanced)</option>
-            <option value="fast">Gemini 2.5 Flash (Fast)</option>
+            <option value="balanced">Gemini 3 Flash (Balanced)</option>
+            <option value="fast">Gemini 3 Flash (Fast)</option>
             <option value="grok">Grok 4.1 (X-Powered)</option>
           </select>
           <input type="text" id="custom-prompt" placeholder="Ask AI about the market, positions, or specific tickers..."
@@ -1903,7 +1903,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
       <div class="stat">
         <div class="stat-label">Gemini 3 Flash Preview &mdash; Fast Tier ★ PRIMARY &amp; Step-1 Fallback</div>
         <div style="color:#00ff88;font-size:11px;">&#9679; gemini-3-flash-preview &middot; thinking=8k &middot; OAuth</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Per-cycle news triage &middot; 🌅 9:30 AM morning briefing &middot; ☀️ 12:00 PM midday briefing &middot; acquisition verifier &middot; auto-activates when 3.1 Pro is unavailable</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Per-cycle news triage (thinking=8k) &middot; 🌅 9:30 AM morning briefing &middot; ☀️ 12:00 PM midday briefing &middot; acquisition verifier &middot; Step-1 fallback when 3.1 Pro is unavailable</div>
       </div>
       <div class="stat">
         <div class="stat-label">Gemini 2.5 Pro &mdash; Final Fallback</div>
