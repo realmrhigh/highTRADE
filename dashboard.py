@@ -120,11 +120,24 @@ def fetch_acquisition_watchlist():
         return [dict(r) for r in rows]
 
 def fetch_signal_history():
-    """Last 48 monitoring cycles for sparkline charts"""
+    """Last 48 monitoring cycles for sparkline charts.
+
+    news_score falls back to the nearest news_signals row when signal_monitoring
+    has a zero (pre-fix historical data or cycles where news wasn't fetched).
+    """
     with _conn() as db:
         rows = db.execute("""
-            SELECT defcon_level, signal_score, vix_close, news_score, created_at
-            FROM signal_monitoring ORDER BY created_at DESC LIMIT 48
+            SELECT sm.defcon_level, sm.signal_score, sm.vix_close,
+                   COALESCE(
+                       NULLIF(sm.news_score, 0.0),
+                       (SELECT ns.news_score FROM news_signals ns
+                        WHERE ns.created_at <= sm.created_at
+                        ORDER BY ns.created_at DESC LIMIT 1),
+                       0
+                   ) as news_score,
+                   sm.created_at
+            FROM signal_monitoring sm
+            ORDER BY sm.created_at DESC LIMIT 48
         """).fetchall()
         return list(reversed([dict(r) for r in rows]))
 

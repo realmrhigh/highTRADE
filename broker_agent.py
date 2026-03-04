@@ -629,12 +629,13 @@ class BrokerDecisionEngine:
 
     def _should_trade(self, defcon_level: int, signal_score: float) -> bool:
         """Determine if we should execute a trade"""
-        # Don't trade during DEFCON 5 (peaceful times)
-        if defcon_level > 2:
+        # DEFCON 1-3: buy the dip and crisis entries. DEFCON 4-5: hold cash.
+        if defcon_level > 3:
             return False
 
-        # Don't trade if signal score too low
-        if signal_score < 60:
+        # Require minimum composite signal confirmation (prevents buying on DEFCON 3
+        # from a pure market-drop with no corroborating news/VIX/yield signal)
+        if signal_score < 20:
             return False
 
         return True

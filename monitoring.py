@@ -127,28 +127,33 @@ class SignalMonitor:
             'market_data': {'sp500': 5000, 'change_pct': round(sp500_pct, 2)}
         }
 
-    def calculate_signal_scores(self, yield_data, vix_data, market_data):
-        """Calculate composite signal scores based on current conditions"""
+    def calculate_signal_scores(self, yield_data, vix_data, market_data, news_score=0):
+        """Calculate composite signal scores based on current conditions.
+
+        All components score gradually from a baseline — no cliff-edge zeros.
+        news_score is blended in as a 4th component so moderate stress environments
+        (elevated VIX, mild drawdown, bearish news) accumulate into a meaningful score.
+        """
         scores = {}
 
-        # Bond yield spike detection (40+ bps in 3 days = alert)
-        if yield_data and yield_data['yield'] > 4.0:
-            # Simulating 3-day change; in production would query historical data
-            scores['bond_yield_spike'] = min(100, (yield_data['yield'] - 3.5) * 10)
-        else:
-            scores['bond_yield_spike'] = 0
+        # Bond yield: score proportionally from 3.5% baseline (no cliff at 4.0)
+        # At 3.8% → 6, at 4.0% → 10, at 4.5% → 20, at 5.5% → 40
+        bond_yield = yield_data['yield'] if yield_data else 0
+        scores['bond_yield_spike'] = min(100, max(0, (bond_yield - 3.5) * 20))
 
-        # VIX spike detection (>25 is elevated, >40 is extreme)
-        if vix_data and vix_data['vix'] > 25:
-            scores['vix_spike'] = min(100, (vix_data['vix'] - 15) * 2)
-        else:
-            scores['vix_spike'] = 0
+        # VIX: score proportionally from 15 baseline (no cliff at 25)
+        # At 18 → 6, at 20 → 10, at 25 → 20, at 35 → 40, at 40 → 50
+        vix = vix_data['vix'] if vix_data else 0
+        scores['vix_spike'] = min(100, max(0, (vix - 15) * 2))
 
-        # Market drawdown detection (>4% = crisis mode)
-        if market_data and market_data['change_pct'] < -4:
-            scores['market_drawdown'] = min(100, abs(market_data['change_pct']) * 5)
-        else:
-            scores['market_drawdown'] = 0
+        # Market drawdown: score proportionally from 0% (no cliff at -4%)
+        # At -1% → 10, at -2% → 20, at -4% → 40, at -6% → 60
+        change_pct = market_data['change_pct'] if market_data else 0
+        scores['market_drawdown'] = min(100, max(0, abs(change_pct) * 10)) if change_pct < 0 else 0
+
+        # News score: direct blend of pipeline output (already 0-100)
+        # Captures sentiment, geopolitical risk, and keyword signals not in quant data
+        scores['news_signal'] = min(100, max(0, news_score))
 
         self.signal_scores = scores
         return scores
@@ -160,17 +165,19 @@ class SignalMonitor:
 
         market_drop = market_data['change_pct'] if market_data else 0
 
-        # Calculate base DEFCON from quantitative signals
-        if composite_score >= 80 and market_drop < -4:
-            base_defcon = 1  # EXECUTE
-        elif composite_score >= 60 or market_drop < -4:
-            base_defcon = 2  # PRE-BOTTOM
-        elif composite_score >= 40 or market_drop < -2:
-            base_defcon = 3  # CRISIS
-        elif composite_score >= 20 or market_drop < -1:
-            base_defcon = 4  # ELEVATED
+        # Calculate base DEFCON from quantitative signals.
+        # Thresholds recalibrated for 4-component gradual scoring (composite peaks ~50-60 in crises).
+        # Moderate stress (VIX ~20, market -1.5%, news ~48) → composite ~20 → DEFCON 3 (buy the dip).
+        if composite_score >= 50 and market_drop < -4:
+            base_defcon = 1  # EXECUTE — deep crisis, all signals screaming
+        elif composite_score >= 35 or market_drop < -4:
+            base_defcon = 2  # PRE-BOTTOM — strong multi-signal stress
+        elif composite_score >= 20 or market_drop < -2:
+            base_defcon = 3  # DIP — moderate stress, buy the dip
+        elif composite_score >= 10 or market_drop < -1:
+            base_defcon = 4  # ELEVATED — mild stress, hold cash
         else:
-            base_defcon = 5  # PEACETIME
+            base_defcon = 5  # PEACETIME — no stress
 
         # ── Soft nudges from macro environment and flash DEFCON forecast ────────
         # Each source contributes at most ±1. Combined nudge is clamped to ±1.
@@ -307,7 +314,8 @@ class SignalMonitor:
 
             # Use provided values or calculate them
             if defcon_level is None or signal_score is None:
-                signal_scores = self.calculate_signal_scores(yield_data, vix_data, market_data)
+                _news_score = news_signal.get('news_score', 0) if news_signal else 0
+                signal_scores = self.calculate_signal_scores(yield_data, vix_data, market_data, news_score=_news_score)
                 defcon_level, composite_score = self.calculate_defcon_level(
                     signal_scores,
                     market_data,

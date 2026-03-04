@@ -496,10 +496,11 @@ class HighTradeOrchestrator:
                         if components:
                             logger.info(f"  📊 Components: sentiment={components.get('sentiment_net',0):.1f} concentration={components.get('signal_concentration',0):.1f} urgency={components.get('urgency_premium',0):.1f}")
 
-                        # If fresh news has breaking override, use it instead
+                        # Always use fresh news signal so news_score flows to signal calc + recording.
+                        # calculate_defcon_level guards breaking override internally.
+                        news_signal = fresh_news_signal
                         if fresh_news_signal['breaking_news_override']:
                             logger.warning(f"  🚨 BREAKING NEWS DETECTED: {fresh_news_signal['crisis_description']}")
-                            news_signal = fresh_news_signal
 
                         # Detect new articles BEFORE Gemini — skip LLM when 0 new articles
                         new_count, latest_articles = self._detect_new_news(fresh_news_signal)
@@ -780,7 +781,8 @@ class HighTradeOrchestrator:
 
             # Calculate and record
             logger.info("📈 Calculating signal scores...")
-            signal_scores = self.monitor.calculate_signal_scores(yield_data, vix_data, market_data)
+            _news_score = news_signal.get('news_score', 0) if news_signal else 0
+            signal_scores = self.monitor.calculate_signal_scores(yield_data, vix_data, market_data, news_score=_news_score)
             current_defcon, signal_score = self.monitor.calculate_defcon_level(
                 signal_scores, market_data, news_signal,
                 flash_forecast=getattr(self, '_last_flash_forecast', None),
@@ -790,6 +792,7 @@ class HighTradeOrchestrator:
             logger.info(f"  📊 Bond Yield Spike Score: {signal_scores.get('bond_yield_spike', 0):.1f}")
             logger.info(f"  📊 VIX Spike Score: {signal_scores.get('vix_spike', 0):.1f}")
             logger.info(f"  📊 Market Drawdown Score: {signal_scores.get('market_drawdown', 0):.1f}")
+            logger.info(f"  📊 News Signal Score: {signal_scores.get('news_signal', 0):.1f}")
             logger.info(f"  📊 Composite Score: {signal_score:.1f}/100")
 
             # Record to database
@@ -853,10 +856,10 @@ Check dashboard for detailed analysis.
                     'signal_score': signal_score
                 })
 
-                # NEW: Broker agent decides on trades (DEFCON 1-2 only)
+                # Broker agent decides on trades (DEFCON 1-3: crisis + dip buying)
                 if self.cmd_processor.should_skip_trades:
                     logger.warning("⏸️  Trading on HOLD — skipping trade execution")
-                elif current_defcon <= 2:
+                elif current_defcon <= 3:
                     crisis_desc = f"DEFCON {current_defcon} escalation - Signal Score: {signal_score:.1f}"
                     market_conditions = {'vix': vix} if vix else {}
 
