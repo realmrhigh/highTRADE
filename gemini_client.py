@@ -490,20 +490,27 @@ def call(
                          or 'No capacity available' in _last_cli_error
                          or ('"code": 429' in _last_cli_error or "'code': 429" in _last_cli_error))
 
-        # Flash 3 failed → fall back to 2.5-pro with thinking
-        if cfg['model_id'] == _flash_model:
-            logger.warning(f"⚠️  {_flash_model} unavailable — falling back to {_FLASH_FALLBACK_MODEL}")
-            cfg = {**cfg, 'model_id': _FLASH_FALLBACK_MODEL, 'thinking_budget': 8000}
+        # 3.1 Pro failed → step 1: try 3 Flash Preview
+        if cfg['model_id'] == _pro_model:
+            logger.warning(f"⚠️  {_pro_model} unavailable — stepping down to {_flash_model}")
+            cfg = {**cfg, 'model_id': _flash_model, 'thinking_budget': 8000, 'max_output_tokens': 8192}
             downgraded = True
             result = _call_via_cli(prompt, cfg)
             if result[0] is not None:
                 _log_call(cfg['model_id'], model_key, caller, result[1], result[2], downgraded=True)
                 return result
+            # step 2: 3 Flash also failed → 2.5 Pro
+            logger.warning(f"⚠️  {_flash_model} also unavailable — falling back to {_PRO_FALLBACK_MODEL}")
+            cfg = {**cfg, 'model_id': _PRO_FALLBACK_MODEL, 'thinking_budget': 8000}
+            result = _call_via_cli(prompt, cfg)
+            if result[0] is not None:
+                _log_call(cfg['model_id'], model_key, caller, result[1], result[2], downgraded=True)
+                return result
 
-        # 3.1-pro failed → fall back to 2.5-pro
-        elif cfg['model_id'] == _pro_model:
-            logger.warning(f"⚠️  {_pro_model} unavailable — falling back to {_PRO_FALLBACK_MODEL}")
-            cfg = {**cfg, 'model_id': _PRO_FALLBACK_MODEL}
+        # 3 Flash failed → fall back to 2.5 Pro with thinking
+        elif cfg['model_id'] == _flash_model:
+            logger.warning(f"⚠️  {_flash_model} unavailable — falling back to {_FLASH_FALLBACK_MODEL}")
+            cfg = {**cfg, 'model_id': _FLASH_FALLBACK_MODEL, 'thinking_budget': 8000}
             downgraded = True
             result = _call_via_cli(prompt, cfg)
             if result[0] is not None:

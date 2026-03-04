@@ -1881,7 +1881,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
       <div class="stat">
         <div class="stat-label">Acquisition Pipeline</div>
         <div style="color:#00ff88;font-size:11px;">&#9679; ACTIVE &mdash; hourly verifier &middot; DEFCON 1-2: every 15 min</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Researcher &rarr; Analyst (Pro 3) &rarr; Verifier (Flash · hourly / 15-min at DEFCON 1-2) &rarr; Conditionals &middot; deep checks: 9 AM · 12:30 PM · 4:30 PM</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Researcher &rarr; Analyst (3.1 Pro → 3 Flash → 2.5 Pro) &rarr; Verifier (Flash · hourly / 15-min at DEFCON 1-2) &rarr; Conditionals &middot; deep checks: 9 AM · 12:30 PM · 4:30 PM</div>
       </div>
       <div class="stat">
         <div class="stat-label">🦮 Grok Hound &mdash; Alpha Scanner</div>
@@ -1898,17 +1898,17 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
       <div class="stat">
         <div class="stat-label">Gemini 3.1 Pro Preview &mdash; Reasoning Tier ★ PRIMARY</div>
         <div style="color:#00ff88;font-size:11px;">&#9679; gemini-3.1-pro-preview &middot; thinking=-1 (dynamic) &middot; OAuth</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">📋 4:30 PM deep daily briefing &middot; acquisition analyst &middot; pre-purchase gate &middot; 16k output tokens &middot; full reasoning budget</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">4:30 PM deep daily briefing &middot; acquisition analyst &middot; pre-purchase &amp; exit gates &middot; 16k output &middot; full dynamic reasoning budget</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Gemini 3 Flash Preview &mdash; Fast / Balanced Tier ★ PRIMARY</div>
+        <div class="stat-label">Gemini 3 Flash Preview &mdash; Fast Tier ★ PRIMARY &amp; Step-1 Fallback</div>
         <div style="color:#00ff88;font-size:11px;">&#9679; gemini-3-flash-preview &middot; thinking=8k &middot; OAuth</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Per-cycle news triage &middot; 🌅 9:30 AM morning briefing &middot; ☀️ 12:00 PM midday briefing &middot; acquisition verifier &middot; elevated signal analysis</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Per-cycle news triage &middot; 🌅 9:30 AM morning briefing &middot; ☀️ 12:00 PM midday briefing &middot; acquisition verifier &middot; auto-activates when 3.1 Pro is unavailable</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Gemini 2.5 Pro &mdash; Fallback Tier</div>
-        <div style="color:#ffb300;font-size:11px;">&#9679; gemini-2.5-pro &middot; thinking=8k / -1 &middot; OAuth &middot; auto-activates on primary failure</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Backup for both 3.1 Pro and 3 Flash &middot; 100/d quota &middot; 5 RPM &middot; full reasoning capable</div>
+        <div class="stat-label">Gemini 2.5 Pro &mdash; Final Fallback</div>
+        <div style="color:#ffb300;font-size:11px;">&#9679; gemini-2.5-pro &middot; thinking=8k &middot; OAuth &middot; last resort for both tiers</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Activates only when both 3.1 Pro and 3 Flash are unavailable &middot; 100/d quota &middot; 5 RPM &middot; full reasoning capable</div>
       </div>
       <div class="stat">
         <div class="stat-label">Grok 4.1 &mdash; Parallel Analyst</div>
@@ -1918,8 +1918,8 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
 {gemini_quota_html}
       <div class="stat">
         <div class="stat-label">Auth &amp; Token Efficiency</div>
-        <div style="color:#7eb8f7;font-size:11px;">&#128274; OAuth-only &middot; Gemini CLI 0.29.2 &middot; auto-downgrade at 95% soft limit</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">No API key &middot; dedup gate skips calls on zero new articles &middot; fallback chain: 3.1 Pro → 2.5 Pro &middot; 3 Flash → 2.5 Pro</div>
+        <div style="color:#7eb8f7;font-size:11px;">&#128274; OAuth-only &middot; Gemini CLI 0.29.2 &middot; auto-downgrade at 90% soft limit</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">No API key &middot; dedup gate skips calls on zero new articles &middot; fallback chain: 3.1 Pro &rarr; 3 Flash &rarr; 2.5 Pro</div>
       </div>
     </div>
   </div>
