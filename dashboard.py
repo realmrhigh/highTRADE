@@ -940,18 +940,14 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
     _quota_color = {'ok': '#00ff88', 'warn': '#ffb300', 'block': '#ff4444'}
     _quota_label = {'ok': 'OK', 'warn': 'WARN', 'block': '⚠ NEAR LIMIT'}
     _model_short = {
-        'gemini-3.1-pro-preview': '3.1 Pro Preview (Reasoning — 50/d, 2 RPM)',
-        'gemini-2.5-pro':         '2.5 Pro (Reasoning — 100/d, 5 RPM)',
-        'gemini-3-flash-preview': '3 Flash Preview ★ PRIMARY (Fast/Balanced — 1500/d, 15 RPM)',
-        'gemini-2.5-flash':       '2.5 Flash ↩ FALLBACK (Fast/Balanced — 1500/d, 15 RPM)',
-        'gemini-2.0-flash-lite':  '2.0 Flash Lite (Ultra-fast — 2000/d, 30 RPM)',
+        'gemini-3.1-pro-preview': '3.1 Pro Preview ★ PRIMARY (Reasoning — 50/d, 2 RPM)',
+        'gemini-3-flash-preview': '3 Flash Preview ★ FAST/BALANCED (Thinking — 1500/d, 15 RPM)',
+        'gemini-2.5-pro':         '2.5 Pro ↩ FALLBACK (Thinking — 100/d, 5 RPM)',
     }
     _model_order = [
         'gemini-3.1-pro-preview',
-        'gemini-2.5-pro',
         'gemini-3-flash-preview',
-        'gemini-2.5-flash',
-        'gemini-2.0-flash-lite',
+        'gemini-2.5-pro',
     ]
     gemini_usage = gemini_usage or {}
     _quota_rows  = ''
@@ -1900,19 +1896,19 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
     <div class="panel-title">&#129504; Intelligence Layer</div>
     <div style="display:flex;flex-direction:column;gap:8px;">
       <div class="stat">
-        <div class="stat-label">Gemini Flash &mdash; Fast Tier</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; gemini-2.5-flash &middot; thinking=0 &middot; OAuth</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Per-cycle news triage &middot; 🌅 9:30 AM morning briefing &middot; ☀️ 12:00 PM midday briefing &middot; acquisition verifier</div>
+        <div class="stat-label">Gemini 3.1 Pro Preview &mdash; Reasoning Tier ★ PRIMARY</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; gemini-3.1-pro-preview &middot; thinking=-1 (dynamic) &middot; OAuth</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">📋 4:30 PM deep daily briefing &middot; acquisition analyst &middot; pre-purchase gate &middot; 16k output tokens &middot; full reasoning budget</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Gemini Flash &mdash; Balanced Tier</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; gemini-2.5-flash &middot; thinking=8k &middot; OAuth</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Elevated signal analysis &middot; broader reasoning on breaking news &middot; secondary daily review</div>
+        <div class="stat-label">Gemini 3 Flash Preview &mdash; Fast / Balanced Tier ★ PRIMARY</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; gemini-3-flash-preview &middot; thinking=8k &middot; OAuth</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Per-cycle news triage &middot; 🌅 9:30 AM morning briefing &middot; ☀️ 12:00 PM midday briefing &middot; acquisition verifier &middot; elevated signal analysis</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Gemini Pro 2.5 &mdash; Reasoning Tier</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; gemini-2.5-pro &middot; thinking=-1 &middot; OAuth</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">📋 4:30 PM deep daily briefing &middot; acquisition analyst &middot; pre-purchase gate &middot; 16k output tokens &middot; dynamic thinking budget</div>
+        <div class="stat-label">Gemini 2.5 Pro &mdash; Fallback Tier</div>
+        <div style="color:#ffb300;font-size:11px;">&#9679; gemini-2.5-pro &middot; thinking=8k / -1 &middot; OAuth &middot; auto-activates on primary failure</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Backup for both 3.1 Pro and 3 Flash &middot; 100/d quota &middot; 5 RPM &middot; full reasoning capable</div>
       </div>
       <div class="stat">
         <div class="stat-label">Grok 4.1 &mdash; Parallel Analyst</div>
@@ -1923,7 +1919,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
       <div class="stat">
         <div class="stat-label">Auth &amp; Token Efficiency</div>
         <div style="color:#7eb8f7;font-size:11px;">&#128274; OAuth-only &middot; Gemini CLI 0.29.2 &middot; auto-downgrade at 95% soft limit</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">No API key &middot; dedup gate skips Flash+Pro on zero new articles &middot; soft limits: Pro 800/day · Flash 700/day</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">No API key &middot; dedup gate skips calls on zero new articles &middot; fallback chain: 3.1 Pro → 2.5 Pro &middot; 3 Flash → 2.5 Pro</div>
       </div>
     </div>
   </div>

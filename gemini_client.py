@@ -43,40 +43,43 @@ GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 # ── Model tiers ────────────────────────────────────────────────────────────────
 MODEL_CONFIG = {
     'fast': {
-        'model_id':        'gemini-3-flash-preview',   # fallback: gemini-2.5-flash
-        'thinking_budget': 0,
+        'model_id':        'gemini-3-flash-preview',   # fallback: gemini-2.5-pro
+        'thinking_budget': 8000,
         'max_output_tokens': 8192,
         'temperature':     0.4,
     },
     'balanced': {
-        'model_id':        'gemini-3-flash-preview',   # fallback: gemini-2.5-flash
+        'model_id':        'gemini-3-flash-preview',   # fallback: gemini-2.5-pro
         'thinking_budget': 8000,
         'max_output_tokens': 8192,
         'temperature':     1.0,
     },
     'reasoning': {
-        'model_id':        'gemini-2.5-pro',           # fallback: balanced tier
+        'model_id':        'gemini-3.1-pro-preview',   # fallback: gemini-2.5-pro
         'thinking_budget': -1,
         'max_output_tokens': 16384,
         'temperature':     1.0,
     },
     # Legacy keys used by gemini_analyzer — map to the right tier
     'flash': {
-        'model_id':        'gemini-3-flash-preview',   # fallback: gemini-2.5-flash
-        'thinking_budget': 0,
+        'model_id':        'gemini-3-flash-preview',   # fallback: gemini-2.5-pro
+        'thinking_budget': 8000,
         'max_output_tokens': 8192,
         'temperature':     0.4,
     },
     'pro': {
-        'model_id':        'gemini-2.5-pro',
+        'model_id':        'gemini-3.1-pro-preview',   # fallback: gemini-2.5-pro
         'thinking_budget': -1,
         'max_output_tokens': 16384,
         'temperature':     1.0,
     },
 }
 
-# Fallback model when primary flash tier is unavailable/quota-exhausted
-_FLASH_FALLBACK_MODEL = 'gemini-2.5-flash'
+# Fallback chain:
+#   reasoning/pro:  3.1-pro-preview  →  2.5-pro
+#   fast/balanced/flash: 3-flash-preview  →  2.5-pro (flash thinking)
+_PRO_FALLBACK_MODEL   = 'gemini-2.5-pro'
+_FLASH_FALLBACK_MODEL = 'gemini-2.5-pro'   # retired 2.5-flash; use pro thinking as backup
 
 # ── Quota tracking ─────────────────────────────────────────────────────────────
 _DB_PATH = Path(__file__).parent / 'trading_data' / 'trading_history.db'
@@ -86,18 +89,14 @@ _DB_PATH = Path(__file__).parent / 'trading_data' / 'trading_history.db'
 QUOTA_DAILY_LIMITS = {
     'gemini-3.1-pro-preview':  50,     # 2 RPM,  50 RPD,  32K TPM
     'gemini-2.5-pro':          100,    # 5 RPM, 100 RPD, 250K TPM
-    'gemini-2.5-flash':        1500,   # 15 RPM, 1,500 RPD, 1M TPM
     'gemini-3-flash-preview':  1500,   # 15 RPM, 1,500 RPD, 1M TPM
-    'gemini-2.0-flash-lite':   2000,   # 30 RPM, 2,000 RPD, 4M TPM
 }
 
 # Actual Google free-tier RPM limits per model
 QUOTA_RPM_LIMITS = {
     'gemini-3.1-pro-preview':  2,
     'gemini-2.5-pro':          5,
-    'gemini-2.5-flash':        15,
     'gemini-3-flash-preview':  15,
-    'gemini-2.0-flash-lite':   30,
 }
 
 # Backward-compat alias — dashboard.py and acquisition_analyst.py reference this name
@@ -111,9 +110,7 @@ QUOTA_BLOCK_PCT = 0.90   # downgrade/block at 90% — leaves 10% headroom for ma
 # Flash family resets at 08:45 UTC; Pro family resets at 14:30 UTC.
 # Update these if Google changes the reset schedule.
 QUOTA_RESET_UTC = {
-    'gemini-2.5-flash':        (8,  45),
     'gemini-3-flash-preview':  (8,  45),
-    'gemini-2.0-flash-lite':   (8,  45),
     'gemini-2.5-pro':          (14, 30),
     'gemini-3.1-pro-preview':  (14, 30),
 }
@@ -486,27 +483,27 @@ def call(
             _log_call(cfg['model_id'], model_key, caller, result[1], result[2])
             return result
 
-        _pro_model   = MODEL_CONFIG['reasoning']['model_id']
-        _flash_model = MODEL_CONFIG['fast']['model_id']          # gemini-3-flash-preview
+        _pro_model   = MODEL_CONFIG['reasoning']['model_id']   # gemini-3.1-pro-preview
+        _flash_model = MODEL_CONFIG['fast']['model_id']         # gemini-3-flash-preview
         _is_quota_err = ('TerminalQuotaError' in _last_cli_error
                          or 'exhausted your capacity' in _last_cli_error
                          or 'No capacity available' in _last_cli_error
                          or ('"code": 429' in _last_cli_error or "'code': 429" in _last_cli_error))
 
-        # Flash 3 failed → fall back to Flash 2.5 (any failure, not just quota)
+        # Flash 3 failed → fall back to 2.5-pro with thinking
         if cfg['model_id'] == _flash_model:
             logger.warning(f"⚠️  {_flash_model} unavailable — falling back to {_FLASH_FALLBACK_MODEL}")
-            cfg = {**cfg, 'model_id': _FLASH_FALLBACK_MODEL}
+            cfg = {**cfg, 'model_id': _FLASH_FALLBACK_MODEL, 'thinking_budget': 8000}
             downgraded = True
             result = _call_via_cli(prompt, cfg)
             if result[0] is not None:
                 _log_call(cfg['model_id'], model_key, caller, result[1], result[2], downgraded=True)
                 return result
 
-        # Pro/Reasoning quota exhausted → downgrade to balanced tier
-        elif cfg['model_id'] == _pro_model and _is_quota_err:
-            logger.warning("⚠️  Reasoning quota exhausted — auto-downgrading to balanced tier")
-            cfg = dict(MODEL_CONFIG['balanced'])
+        # 3.1-pro failed → fall back to 2.5-pro
+        elif cfg['model_id'] == _pro_model:
+            logger.warning(f"⚠️  {_pro_model} unavailable — falling back to {_PRO_FALLBACK_MODEL}")
+            cfg = {**cfg, 'model_id': _PRO_FALLBACK_MODEL}
             downgraded = True
             result = _call_via_cli(prompt, cfg)
             if result[0] is not None:
