@@ -143,7 +143,7 @@ def _get_hound_context(ticker: str, conn: sqlite3.Connection) -> Optional[Dict]:
         if not row:
             return None
         hound_row = conn.execute("""
-            SELECT alpha_score, why_next, signals, action_suggestion
+            SELECT alpha_score, why_next, signals, risks, action_suggestion
             FROM grok_hound_candidates
             WHERE UPPER(ticker) = UPPER(?)
             ORDER BY created_at DESC LIMIT 1
@@ -155,7 +155,8 @@ def _get_hound_context(ticker: str, conn: sqlite3.Connection) -> Optional[Dict]:
             'alpha_score':       hound_row[0],
             'why_next':          hound_row[1],
             'signals':           json.loads(hound_row[2]) if hound_row[2] else [],
-            'action_suggestion': hound_row[3],
+            'risks':             json.loads(hound_row[3]) if hound_row[3] else [],
+            'action_suggestion': hound_row[4],
         }
     except Exception as e:
         logger.debug(f"Could not load hound context for {ticker}: {e}")
@@ -347,6 +348,7 @@ def _build_analyst_prompt(ticker: str, research: Dict,
         _alpha          = hound_context.get('alpha_score', 'N/A')
         _why_next       = hound_context.get('why_next', 'N/A')
         _sigs           = hound_context.get('signals', [])
+        _risks          = hound_context.get('risks', [])
         _hound_block = (
             f"══════════════════════════════════════════════════════\n"
             f"GROK HOUND INTELLIGENCE — SOURCE OF THIS LEAD\n"
@@ -354,7 +356,10 @@ def _build_analyst_prompt(ticker: str, research: Dict,
             f"  Action suggestion: {_action_display}\n"
             f"  Alpha score:       {_alpha}/100\n"
             f"  Hound thesis:      {_why_next}\n"
-            f"  X signals:         {', '.join(_sigs) if _sigs else 'N/A'}\n\n"
+            f"  X signals:         {', '.join(_sigs) if _sigs else 'N/A'}\n"
+            f"  Hound risks/events:{' '.join(f'[{r}]' for r in _risks) if _risks else ' N/A'}\n"
+            f"  ↑ Check risks above for any product releases, earnings dates, or catalyst windows\n"
+            f"    and populate catalyst_event / catalyst_window_hours / catalyst_spike_pct / catalyst_failure_pct accordingly.\n\n"
             f"⚡ HOUND STRATEGY FRAME — read this before you start:\n"
             f"  This is a SHORT-TERM SPECULATIVE setup, NOT a long-term value acquisition.\n"
             f"  Do NOT over-anchor on P/E ratios, analyst price targets, or earnings dates.\n"

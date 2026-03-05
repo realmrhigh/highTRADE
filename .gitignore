@@ -77,3 +77,5 @@ alert_config.json
 trading_data/health_state.json
 trading_data/trading_history.db-shm
 trading_data/trading_history.db-wal
+trading_data/trading_history.db-shm
+.gitignore
