@@ -516,7 +516,7 @@ def build_closed_rows(closed):
 def build_exit_queue_rows(positions):
     """Build exit queue table rows for all open positions."""
     if not positions:
-        return '<tr><td colspan="9" style="color:#555;text-align:center;padding:20px;">No open positions</td></tr>'
+        return '<tr><td colspan="10" style="color:#555;text-align:center;padding:20px;">No open positions</td></tr>'
 
     from datetime import datetime as _dt
     rows = []
@@ -531,6 +531,25 @@ def build_exit_queue_rows(positions):
         tp2      = p.get('take_profit_2')
         has_fw   = bool(p.get('has_framework'))
         watch_tag = p.get('watch_tag') or ''
+
+        # ── Thesis / popup (mirrors entry queue pattern) ──────────────────
+        thesis_full  = p.get('thesis_summary') or '—'
+        thesis_short = thesis_full[:160]
+        stop_rat     = p.get('stop_loss_rationale') or ''
+        tp_rat       = p.get('take_profit_rationale') or ''
+        inv_cond     = p.get('invalidation_conditions_json') or ''
+
+        def _esc(s):
+            return s.replace('&', '&amp;').replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
+        exit_popup_lines = [thesis_full]
+        if stop and stop_rat:
+            exit_popup_lines.append(f'\n🛑 STOP   ${float(stop):.2f}\n{stop_rat}')
+        if tp1 and tp_rat:
+            exit_popup_lines.append(f'\n🎯 TP1    ${float(tp1):.2f}\n{tp_rat}')
+        if inv_cond:
+            exit_popup_lines.append(f'\n⚠️ INVALIDATION\n{inv_cond}')
+        exit_popup_full = '\n'.join(exit_popup_lines)
+        exit_popup_attr = _esc(exit_popup_full)
 
         # ── Hold time ─────────────────────────────────────────────────────
         hold_str = '—'
@@ -634,6 +653,9 @@ def build_exit_queue_rows(positions):
             f'<td>{tp1_cell}</td>'
             f'<td>{tp2_cell}</td>'
             f'<td style="color:#666;font-size:11px;">{hold_str}</td>'
+            f'<td class="has-thesis" style="color:#888;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" '
+            f'data-thesis="{exit_popup_attr}" data-ticker="{sym}">'
+            f'{thesis_short}{"…" if len(thesis_full) > 160 else ""}</td>'
             f'<td>{fw_badge}</td>'
             '</tr>'
         )
@@ -1843,7 +1865,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
         <thead><tr>
           <th>Symbol</th><th>Entry → Current</th><th>Unrealized P&amp;L</th>
           <th>Stop Loss</th><th>TP1</th><th>TP2</th>
-          <th>Hold</th><th>Framework</th>
+          <th>Hold</th><th>Thesis</th><th>Framework</th>
         </tr></thead>
         <tbody>{exit_queue_rows}</tbody>
       </table>
