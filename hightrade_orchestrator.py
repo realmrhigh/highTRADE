@@ -1104,6 +1104,23 @@ Check dashboard for detailed analysis.
             if not past_window or already_ran:
                 continue
 
+            # DB guard: survive orchestrator restarts — don't re-fire if already in DB today
+            if not already_ran:
+                try:
+                    import sqlite3 as _sq2
+                    _c = _sq2.connect(str(DB_PATH))
+                    _hit = _c.execute(
+                        "SELECT 1 FROM daily_briefings WHERE date=? AND model_key=? LIMIT 1",
+                        (today, f'{label}_flash')
+                    ).fetchone()
+                    _c.close()
+                    if _hit:
+                        setattr(self, attr, today)  # stamp in-memory
+                        logger.debug(f"  ⏭️  {emoji} flash briefing already in DB for {today} — skipping")
+                        continue
+                except Exception:
+                    pass  # If DB check fails, fall through and let the normal guard handle it
+
             logger.info(f"📊 {emoji} Flash briefing firing ({tgt_hour:02d}:{tgt_min:02d})...")
             try:
                 self._run_flash_briefing(label, emoji)
@@ -1785,6 +1802,23 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
 
             if not force and (not after_close or self._daily_briefing_date == today):
                 return
+
+            # DB guard: survive orchestrator restarts — don't re-fire if reasoning briefing already in DB today
+            if not force and self._daily_briefing_date != today:
+                try:
+                    import sqlite3 as _sq2
+                    _c = _sq2.connect(str(DB_PATH))
+                    _hit = _c.execute(
+                        "SELECT 1 FROM daily_briefings WHERE date=? AND model_key='reasoning' LIMIT 1",
+                        (today,)
+                    ).fetchone()
+                    _c.close()
+                    if _hit:
+                        self._daily_briefing_date = today  # stamp in-memory
+                        logger.debug(f"  ⏭️  Daily briefing already in DB for {today} — skipping")
+                        return
+                except Exception:
+                    pass  # If DB check fails, proceed normally
 
             logger.info("📋 Triggering daily market briefing (Gemini 3 Pro, deep reasoning)...")
             self._daily_briefing_date = today

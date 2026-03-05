@@ -186,6 +186,7 @@ def get_rolling_usage(hours: int = 24) -> dict:
                    MIN(created_at) AS oldest_call_at
             FROM gemini_call_log
             WHERE created_at >= datetime('now', ?)
+              AND tokens_in >= 0   -- exclude throttle reservation rows
             GROUP BY model_id
         """, (f'-{hours} hours',)).fetchall()
         conn.close()
@@ -207,6 +208,7 @@ def get_rolling_usage_seconds(seconds: int = 60) -> dict:
             SELECT model_id, COUNT(*) AS calls
             FROM gemini_call_log
             WHERE created_at >= datetime('now', ?)
+              AND tokens_in >= 0   -- exclude throttle reservation rows
             GROUP BY model_id
         """, (f'-{seconds} seconds',)).fetchall()
         conn.close()
@@ -237,6 +239,7 @@ def get_reset_aligned_usage() -> dict:
                        SUM(tokens_out) AS tokens_out
                 FROM gemini_call_log
                 WHERE model_id = ? AND created_at >= ?
+                  AND tokens_in >= 0   -- exclude throttle reservation rows
             """, (model_id, since_str)).fetchone()
             calls    = row['calls']    or 0
             tok_in   = row['tokens_in']  or 0
@@ -272,6 +275,9 @@ def _throttle_for_rpm(model_id: str) -> None:
         gemini-2.5-pro          →  12.0 s  (5 RPM)
         gemini-3-flash-preview  →   4.0 s  (15 RPM)
 
+    Uses an exclusive SQLite lock via BEGIN EXCLUSIVE to prevent race conditions
+    where two concurrent callers both see "slot free" and both fire simultaneously,
+    which would exceed the RPM ceiling and trigger fallback to 2.5-pro.
     Silent on any DB error — never blocks a caller.
     """
     rpm = QUOTA_RPM_LIMITS.get(model_id)
@@ -281,30 +287,51 @@ def _throttle_for_rpm(model_id: str) -> None:
     min_interval_s = 60.0 / rpm   # 30s / 12s / 4s
 
     try:
-        conn = sqlite3.connect(str(_DB_PATH))
+        conn = sqlite3.connect(str(_DB_PATH), timeout=10)
         _ensure_call_log(conn)
+
+        # BEGIN EXCLUSIVE prevents two processes from reading the "last call" row
+        # simultaneously and both concluding it's safe to proceed right now.
+        conn.execute("BEGIN EXCLUSIVE")
         row = conn.execute(
             "SELECT created_at FROM gemini_call_log WHERE model_id = ? "
             "ORDER BY created_at DESC LIMIT 1",
             (model_id,)
         ).fetchone()
-        conn.close()
-
-        if not row:
-            return  # no prior calls — go immediately
-
-        # SQLite stores CURRENT_TIMESTAMP as 'YYYY-MM-DD HH:MM:SS' in UTC
-        last_call = datetime.strptime(row[0][:19], '%Y-%m-%d %H:%M:%S')
-        elapsed   = (datetime.utcnow() - last_call).total_seconds()
-        wait      = min_interval_s - elapsed
+        wait = 0.0
+        if row:
+            # SQLite stores CURRENT_TIMESTAMP as 'YYYY-MM-DD HH:MM:SS' in UTC
+            last_call = datetime.strptime(row[0][:19], '%Y-%m-%d %H:%M:%S')
+            elapsed   = (datetime.utcnow() - last_call).total_seconds()
+            wait      = min_interval_s - elapsed
 
         if wait > 0:
+            # Write a reservation row NOW (inside the lock) so any other process
+            # that tries to throttle will see this slot as occupied and wait.
+            # tokens_in=-1 flags this as a reservation (not a real call).
+            conn.execute(
+                "INSERT INTO gemini_call_log (model_id, model_key, caller, tokens_in, tokens_out, downgraded) "
+                "VALUES (?, 'reserved', 'throttle', -1, 0, 0)",
+                (model_id,)
+            )
+            conn.commit()
+            conn.close()
+
             logger.info(
                 f"⏱️  RPM throttle [{model_id}]: "
                 f"last call {elapsed:.1f}s ago, need {min_interval_s:.0f}s — "
                 f"sleeping {wait:.1f}s"
             )
             time.sleep(wait)
+        else:
+            # Write reservation even when we don't need to wait, to claim the slot
+            conn.execute(
+                "INSERT INTO gemini_call_log (model_id, model_key, caller, tokens_in, tokens_out, downgraded) "
+                "VALUES (?, 'reserved', 'throttle', -1, 0, 0)",
+                (model_id,)
+            )
+            conn.commit()
+            conn.close()
 
     except Exception:
         pass  # throttle must never crash a caller
@@ -320,15 +347,25 @@ def check_quota(model_key: str) -> str:
     model_id = MODEL_CONFIG.get(model_key, {}).get('model_id', '')
 
     # ── RPM gate (last 60 seconds) ─────────────────────────────────────────
+    # RPM overages are transient — sleep to respect the limit rather than
+    # triggering an immediate model downgrade, which consumes 2.5-pro quota.
     rpm_limit = QUOTA_RPM_LIMITS.get(model_id)
     if rpm_limit:
         usage_1m = get_rolling_usage_seconds(60)
         calls_1m = usage_1m.get(model_id, {}).get('calls', 0)
         if calls_1m >= rpm_limit:
+            # Calculate how long until the oldest call in the window ages out
+            wait_s = max(4.0, 60.0 / rpm_limit)
             logger.warning(
-                f"⚡ {model_id}: RPM limit hit ({calls_1m}/{rpm_limit} calls in last 60s) — blocking"
+                f"⚡ {model_id}: RPM limit hit ({calls_1m}/{rpm_limit} calls in last 60s) — "
+                f"waiting {wait_s:.0f}s before retry (no model downgrade)"
             )
-            return 'block'
+            time.sleep(wait_s)
+            # Re-check after waiting — if still at limit, return warn (not block)
+            usage_1m = get_rolling_usage_seconds(60)
+            calls_1m = usage_1m.get(model_id, {}).get('calls', 0)
+            if calls_1m >= rpm_limit:
+                return 'warn'   # still busy — caller can proceed but model may still rate-limit
 
     # ── Daily gate (rolling 24h) ────────────────────────────────────────────
     daily_limit = QUOTA_DAILY_LIMITS.get(model_id)

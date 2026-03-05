@@ -67,6 +67,12 @@ def _ensure_log_table(conn: sqlite3.Connection):
         )
     """)
     conn.commit()
+    # Idempotent migration: add data_gaps_json column if absent
+    try:
+        conn.execute("ALTER TABLE exit_analyst_log ADD COLUMN data_gaps_json TEXT")
+        conn.commit()
+    except Exception:
+        pass  # Column already exists
 
 
 def _already_ran_today(conn: sqlite3.Connection, trade_id: int) -> bool:
@@ -216,7 +222,8 @@ Output STRICT JSON only — no prose, no markdown:
   "catalyst_event": "<event description or null>",
   "catalyst_window_hours": <integer or null>,
   "catalyst_spike_pct": <float or null>,
-  "catalyst_failure_pct": <float — must be negative, e.g. -2.0 — or null>
+  "catalyst_failure_pct": <float — must be negative, e.g. -2.0 — or null>,
+  "data_gaps": ["<specific data that was absent or stale and would have sharpened exit levels — e.g. 'live short interest', 'next earnings date not confirmed', 'options IV not available'>"]
 }}
 """
     return prompt
@@ -354,12 +361,15 @@ def run_exit_analysis(
               trade_id))
 
         # Log to guard table
+        exit_gaps = result.get('data_gaps') or []
         conn.execute("""
             INSERT INTO exit_analyst_log
-            (trade_id, ticker, stop_loss, take_profit_1, take_profit_2, rationale, tokens_in, tokens_out)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (trade_id, ticker, stop_loss, take_profit_1, take_profit_2, rationale,
+             tokens_in, tokens_out, data_gaps_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (trade_id, ticker, stop, tp1, tp2,
-              f"Stop: {stop_r} | TP: {tp_r}", tok_in, tok_out))
+              f"Stop: {stop_r} | TP: {tp_r}", tok_in, tok_out,
+              json.dumps(exit_gaps) if exit_gaps else None))
 
         conn.commit()
 

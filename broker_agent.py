@@ -980,6 +980,26 @@ class BrokerDecisionEngine:
                 gate_gaps = gate.get('data_gaps', [])
                 if gate_gaps:
                     logger.info(f"  🔍 Gate data gaps ({ticker}): {' | '.join(gate_gaps)}")
+                    # Persist gate data_gaps into conditional_tracking (merge with existing)
+                    try:
+                        existing_row = conn.execute(
+                            "SELECT data_gaps_json FROM conditional_tracking WHERE id=?", (cond_id,)
+                        ).fetchone()
+                        existing_gaps = json.loads((existing_row or {}).get('data_gaps_json') or '[]') \
+                            if existing_row else []
+                        seen = {g.lower().strip() for g in existing_gaps}
+                        merged_gaps = list(existing_gaps)
+                        for g in gate_gaps:
+                            if g.lower().strip() not in seen:
+                                merged_gaps.append(g)
+                                seen.add(g.lower().strip())
+                        merged_gaps = merged_gaps[-20:]
+                        conn.execute(
+                            "UPDATE conditional_tracking SET data_gaps_json=?, updated_at=? WHERE id=?",
+                            (json.dumps(merged_gaps), now.isoformat(), cond_id)
+                        )
+                    except Exception as _ge:
+                        logger.warning(f"  ⚠️  Failed to persist gate data_gaps for {ticker}: {_ge}")
 
                 decision = {
                     'timestamp':      now.isoformat(),

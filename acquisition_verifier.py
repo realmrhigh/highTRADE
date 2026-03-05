@@ -55,6 +55,12 @@ LOW_PRIORITY_COOLDOWN_DAYS   = 3      # low_priority items re-checked every 3 da
                                       # (re-engages fast when market recovers)
 MAX_INVALIDATIONS_BEFORE_ARCHIVE = 2  # archive after this many invalidations with conf < 0.25
 
+# Per-cycle caps — prevent a single verifier run from consuming the entire Flash RPM budget.
+# At 15 RPM with 4s spacing, 10 actives = ~40s + 3 LP = ~12s = ~52s per cycle.
+# Remaining RPM headroom is preserved for analyst, broker, briefing calls.
+MAX_ACTIVE_PER_CYCLE = 10   # top-N active conditionals processed per orchestrator cycle
+MAX_LP_PER_CYCLE     = 3    # low-priority conditionals checked per orchestrator cycle
+
 _VERIFIER_JSON_TEMPLATE = """{
   "verdict": "confirm",
   "confidence_adjustment": 0.0,
@@ -71,7 +77,8 @@ _VERIFIER_JSON_TEMPLATE = """{
   "terminal_reason": "",
   "updated_thesis": "",
   "price_still_valid": true,
-  "reasoning": "brief explanation"
+  "reasoning": "brief explanation",
+  "data_gaps": ["<data absent today that would have made this verification sharper — e.g. 'no recent earnings transcript', 'short interest data stale', 'options flow unavailable'>"]
 }"""
 
 
@@ -219,6 +226,31 @@ def _parse_verifier_response(text: str) -> Dict:
         return {'verdict': 'confirm', 'reasoning': 'parse_failed', '_parse_failed': True}
 
 
+def _merge_and_store_data_gaps(conn: sqlite3.Connection, cond_id: int,
+                                new_gaps: List[str], existing_json: Optional[str]) -> None:
+    """Merge verifier data_gaps with existing analyst gaps and write back to conditional_tracking."""
+    if not new_gaps:
+        return
+    try:
+        existing: List[str] = json.loads(existing_json) if existing_json else []
+        # Deduplicate by lowercased text (keep insertion order, new gaps last)
+        seen = {g.lower().strip() for g in existing}
+        merged = list(existing)
+        for g in new_gaps:
+            if g.lower().strip() not in seen:
+                merged.append(g)
+                seen.add(g.lower().strip())
+        # Keep at most 20 gaps
+        merged = merged[-20:]
+        conn.execute(
+            "UPDATE conditional_tracking SET data_gaps_json=?, updated_at=? WHERE id=?",
+            (json.dumps(merged), datetime.now().isoformat(), cond_id)
+        )
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"  ⚠️  Failed to merge data_gaps for cond_id={cond_id}: {e}")
+
+
 def _write_corrected_levels(conn: sqlite3.Connection, cond_id: int, result: Dict,
                              new_status: str, now_iso: str, new_conf: float,
                              new_inval_count: int, new_flag_count: int,
@@ -301,31 +333,35 @@ def run_verification_cycle() -> Dict:
     }
 
     try:
-        # Active conditionals — checked every run
+        # Active conditionals — capped to MAX_ACTIVE_PER_CYCLE per run, sorted by priority
         active_rows = conn.execute("""
             SELECT id, ticker, date_created, entry_price_target, stop_loss,
                    take_profit_1, take_profit_2, thesis_summary, research_confidence,
                    entry_conditions_json, invalidation_conditions_json,
                    verification_count, time_horizon_days,
-                   invalidation_count, flag_count, priority, last_verified
+                   invalidation_count, flag_count, priority, last_verified,
+                   data_gaps_json
             FROM conditional_tracking
             WHERE status = 'active'
             ORDER BY COALESCE(attention_score, 0) DESC, research_confidence DESC
-        """).fetchall()
+            LIMIT ?
+        """, (MAX_ACTIVE_PER_CYCLE,)).fetchall()
 
-        # Low-priority — only if not verified in the last 7 days
+        # Low-priority — only if not verified in the last 3 days, capped to MAX_LP_PER_CYCLE
         lp_cutoff = (datetime.now() - timedelta(days=LOW_PRIORITY_COOLDOWN_DAYS)).isoformat()
         lp_rows = conn.execute("""
             SELECT id, ticker, date_created, entry_price_target, stop_loss,
                    take_profit_1, take_profit_2, thesis_summary, research_confidence,
                    entry_conditions_json, invalidation_conditions_json,
                    verification_count, time_horizon_days,
-                   invalidation_count, flag_count, priority, last_verified
+                   invalidation_count, flag_count, priority, last_verified,
+                   data_gaps_json
             FROM conditional_tracking
             WHERE status = 'low_priority'
               AND (last_verified IS NULL OR last_verified < ?)
             ORDER BY research_confidence DESC
-        """, (lp_cutoff,)).fetchall()
+            LIMIT ?
+        """, (lp_cutoff, MAX_LP_PER_CYCLE)).fetchall()
 
         actives = [dict(r) for r in active_rows]
         lp_list = [dict(r) for r in lp_rows]
@@ -567,6 +603,11 @@ def run_verification_cycle() -> Dict:
                 """, (now_iso, new_ver_count, now_iso, cond_id))
                 logger.info(f"  ✅ {ticker} unknown verdict '{verdict}' → treated as confirm")
                 summary['confirmed'] += 1
+
+            # Persist any data gaps the verifier identified (merge with existing analyst gaps)
+            verifier_gaps = result.get('data_gaps') or []
+            if verifier_gaps:
+                _merge_and_store_data_gaps(conn, cond_id, verifier_gaps, cond.get('data_gaps_json'))
 
             conn.commit()
 

@@ -131,7 +131,8 @@ never significantly wider. High-volatility names require SMALLER SIZE, not a big
 """
 
 
-def _build_analyst_prompt(ticker: str, research: Dict) -> str:
+def _build_analyst_prompt(ticker: str, research: Dict,
+                           prior_gaps: Optional[List[str]] = None) -> str:
     """Build the Gemini 3 Pro prompt from gathered research data."""
 
     # Price context
@@ -384,7 +385,15 @@ def _build_analyst_prompt(ticker: str, research: Dict) -> str:
         f"     If NOT event-driven, set all catalyst fields to null.\n\n"
         f"Set research_confidence as a float 0.0–1.0 based on how convinced you are.\n"
         f"Only set should_enter=true if research_confidence >= {CONFIDENCE_THRESHOLD:.1f}.\n\n"
-        f"⚠️  NUMERIC CONSISTENCY RULE — enforced before submission:\n"
+        + (
+            f"📋 PREVIOUSLY IDENTIFIED DATA GAPS — from prior research passes on {ticker}:\n"
+            + ''.join(f"  • {g}\n" for g in (prior_gaps or []))
+            + f"These gaps caused reduced confidence in earlier analyses. "
+              f"If the current research package fills any of these, explicitly note it in your reasoning. "
+              f"If they remain unresolved, include them again in data_gaps.\n\n"
+            if prior_gaps else ""
+        )
+        + f"⚠️  NUMERIC CONSISTENCY RULE — enforced before submission:\n"
         f"  The dollar value in 'stop_loss' MUST appear verbatim in 'stop_loss_rationale'.\n"
         f"  The dollar value in 'entry_price_target' MUST appear verbatim in 'entry_price_rationale'.\n"
         f"  The dollar value in 'take_profit_1' MUST appear verbatim in 'take_profit_rationale'.\n"
@@ -496,7 +505,23 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection) -> Opt
     date_str = datetime.now().strftime('%Y-%m-%d')
     logger.info(f"  🧠 Analyzing {ticker} with Gemini 3 Pro (dynamic thinking)...")
 
-    prompt = _build_analyst_prompt(ticker, research)
+    # Pull any previously identified data gaps for this ticker (closed-loop feedback)
+    prior_gaps: List[str] = []
+    try:
+        gap_row = conn.execute("""
+            SELECT data_gaps_json FROM conditional_tracking
+            WHERE UPPER(ticker) = UPPER(?) AND data_gaps_json IS NOT NULL
+            ORDER BY updated_at DESC LIMIT 1
+        """, (ticker,)).fetchone()
+        if gap_row and gap_row[0]:
+            raw = json.loads(gap_row[0])
+            prior_gaps = [g for g in (raw or []) if isinstance(g, str) and g.strip()]
+        if prior_gaps:
+            logger.info(f"  🔁 Feeding {len(prior_gaps)} prior data gap(s) back into prompt for {ticker}")
+    except Exception as _pge:
+        logger.debug(f"  ⚠️  Could not load prior data gaps for {ticker}: {_pge}")
+
+    prompt = _build_analyst_prompt(ticker, research, prior_gaps=prior_gaps or None)
 
     # ── Quota pre-check: downgrade to balanced if Pro is near its soft limit ──
     quota_status = gemini_client.check_quota('reasoning')

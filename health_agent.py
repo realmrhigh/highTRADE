@@ -240,6 +240,42 @@ def _collect_recent_gaps(window_days: int = GAP_WINDOW_DAYS) -> Counter:
     except Exception:
         pass
 
+    # gemini_analysis (Flash + Pro cycle-level gaps)
+    try:
+        rows = conn.execute("""
+            SELECT data_gaps_json FROM gemini_analysis
+            WHERE created_at >= ? AND data_gaps_json IS NOT NULL
+        """, (cutoff,)).fetchall()
+        for row in rows:
+            try:
+                gaps = json.loads(row[0])
+                if isinstance(gaps, list):
+                    for g in gaps:
+                        if g and str(g).lower() not in ('none', ''):
+                            gap_counter[g.strip().lower()] += 1
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # exit_analyst_log (per-position exit gaps)
+    try:
+        rows = conn.execute("""
+            SELECT data_gaps_json FROM exit_analyst_log
+            WHERE ran_at >= ? AND data_gaps_json IS NOT NULL
+        """, (cutoff,)).fetchall()
+        for row in rows:
+            try:
+                gaps = json.loads(row[0])
+                if isinstance(gaps, list):
+                    for g in gaps:
+                        if g and str(g).lower() not in ('none', ''):
+                            gap_counter[g.strip().lower()] += 1
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     conn.close()
     return gap_counter
 

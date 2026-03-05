@@ -440,13 +440,21 @@ Provide a comprehensive trading risk analysis. Respond with ONLY valid JSON:
         try:
             conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
-            
+
+            # Idempotent migration: add data_gaps_json column if absent
+            try:
+                cursor.execute("ALTER TABLE gemini_analysis ADD COLUMN data_gaps_json TEXT")
+                conn.commit()
+            except Exception:
+                pass  # Column already exists
+
             cursor.execute("""
                 INSERT INTO gemini_analysis
                 (news_signal_id, model_used, trigger_type, narrative_coherence,
                  hidden_risks, contrarian_signals, market_context, confidence_in_signal,
-                 recommended_action, reasoning, input_tokens, output_tokens)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 recommended_action, reasoning, input_tokens, output_tokens,
+                 data_gaps_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 news_signal_id,
                 analysis.get('model', ''),
@@ -459,7 +467,8 @@ Provide a comprehensive trading risk analysis. Respond with ONLY valid JSON:
                 analysis.get('recommended_action', 'WAIT'),
                 analysis.get('reasoning', ''),
                 analysis.get('input_tokens', 0),
-                analysis.get('output_tokens', 0)
+                analysis.get('output_tokens', 0),
+                json.dumps(analysis.get('data_gaps', [])),
             ))
             
             conn.commit()
