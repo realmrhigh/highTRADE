@@ -393,17 +393,18 @@ class HighTradeOrchestrator:
                     # Also fix position_size_dollars to true cost basis (entry * shares)
                     p['position_size_dollars'] = round(cost_basis, 2)
 
-                    # Persist to DB
+                    # Persist to DB — also advance peak_price (high-watermark for trailing stop)
                     try:
                         conn = _sqlite3.connect(str(self.paper_trading.db_path))
                         conn.execute("""
                             UPDATE trade_records
                             SET current_price = ?, unrealized_pnl_dollars = ?,
                                 unrealized_pnl_percent = ?, last_price_updated = ?,
-                                position_size_dollars = entry_price * shares
+                                position_size_dollars = entry_price * shares,
+                                peak_price = MAX(COALESCE(peak_price, entry_price), ?)
                             WHERE trade_id = ? AND status = 'open'
                         """, (current_price, upnl_dollars, upnl_pct,
-                              _dt.now().isoformat(), p.get('trade_id')))
+                              _dt.now().isoformat(), current_price, p.get('trade_id')))
                         conn.commit()
                         conn.close()
                     except Exception:

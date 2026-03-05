@@ -25,6 +25,11 @@ DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
 
 logger = logging.getLogger(__name__)
 
+# Trailing stop: exit if current_price drops more than this % below the position's peak price.
+# Primary exit mechanism — replaces the old fixed entry-based stop.
+# Analyst's stop_loss field is now the THESIS FLOOR (immediate exit, no gate).
+TRAILING_STOP_PCT = 0.03   # 3% from peak — matches paper_trading.STOP_LOSS default
+
 
 # ─── Rebound Watchlist ────────────────────────────────────────────────────────
 
@@ -130,6 +135,7 @@ class BrokerDecisionEngine:
         self.alerts = AlertSystem()
         self.quick_money = QuickMoneyResearch()
         self.decision_history = []
+        self._ensure_peak_price_column()
         # Pre-exit gate: track how many times each position's stop has been vetoed
         # this session. After MAX_STOP_VETOES, the gate no longer blocks (force exit).
         self._stop_veto_count: Dict[str, int] = {}
@@ -322,6 +328,24 @@ class BrokerDecisionEngine:
             logger.warning(f"  ⚠️  Pre-exit gate failed for {ticker}: {e} — approving exit (fail-open)")
             return {"approve_exit": True, "hold_rationale": f"gate_error: {e}", "concerns": []}
 
+    def _ensure_peak_price_column(self) -> None:
+        """Add peak_price column to trade_records if not present (idempotent migration)."""
+        try:
+            conn = sqlite3.connect(str(DB_PATH))
+            conn.execute("ALTER TABLE trade_records ADD COLUMN peak_price REAL")
+            conn.commit()
+            # Seed existing open trades so they start with a valid high-watermark
+            conn.execute("""
+                UPDATE trade_records
+                SET peak_price = MAX(COALESCE(entry_price, 0), COALESCE(current_price, 0))
+                WHERE status = 'open' AND peak_price IS NULL
+            """)
+            conn.commit()
+            conn.close()
+            logger.info("Migrated trade_records: added peak_price column")
+        except Exception:
+            pass  # Column already exists or DB unavailable — both are fine
+
     def analyze_positions_for_exits(self) -> List[Dict]:
         """
         Analyze all open positions and decide which ones to exit
@@ -336,6 +360,7 @@ class BrokerDecisionEngine:
             self.paper_trading.cursor.execute('''
             SELECT trade_id, asset_symbol, entry_price, position_size_dollars,
                    defcon_at_entry, shares, entry_date, stop_loss, take_profit_1,
+                   peak_price,
                    catalyst_event, catalyst_window_end,
                    catalyst_spike_pct, catalyst_failure_pct
             FROM trade_records
@@ -357,12 +382,19 @@ class BrokerDecisionEngine:
             profit_loss_dollars = profit_loss_pct * trade['position_size_dollars']
 
             # Per-position exit levels (from analyst); fall back to global constants if not set
-            tp1_price  = trade.get('take_profit_1')
-            stop_price = trade.get('stop_loss')
-            tp_threshold = ((tp1_price - entry_price) / entry_price) if tp1_price else self.paper_trading.PROFIT_TARGET
-            sl_threshold = ((stop_price - entry_price) / entry_price) if stop_price else self.paper_trading.STOP_LOSS
-            tp_src  = f"${tp1_price:.2f}" if tp1_price else f"{self.paper_trading.PROFIT_TARGET*100:.0f}% (default)"
-            sl_src  = f"${stop_price:.2f}" if stop_price else f"{abs(self.paper_trading.STOP_LOSS*100):.0f}% (default)"
+            tp1_price     = trade.get('take_profit_1')
+            thesis_floor  = trade.get('stop_loss')        # analyst's hard invalidation floor
+            tp_threshold  = ((tp1_price - entry_price) / entry_price) if tp1_price else self.paper_trading.PROFIT_TARGET
+            tp_src        = f"${tp1_price:.2f}" if tp1_price else f"{self.paper_trading.PROFIT_TARGET*100:.0f}% (default)"
+
+            # Trailing stop — 3% below peak price (high watermark since entry)
+            peak_price         = trade.get('peak_price') or entry_price   # fallback: entry if never updated
+            trailing_stop_px   = round(peak_price * (1 - TRAILING_STOP_PCT), 4)
+            peak_gain_pct      = (peak_price - entry_price) / entry_price  # how much we're up from entry to peak
+            trailing_stop_src  = (
+                f"trailing -3% from peak ${peak_price:.2f} "
+                f"({'at entry' if peak_gain_pct < 0.001 else f'+{peak_gain_pct*100:.1f}% gain locked'})"
+            )
 
             # ── Catalyst exit check (runs BEFORE normal stop/TP) ─────────────
             # If this position was entered on a specific event catalyst, apply
@@ -465,34 +497,59 @@ class BrokerDecisionEngine:
                 exit_decisions.append(decision)
                 logger.info(f"📈 EXIT: {trade['asset_symbol']} - Profit target hit ({tp_src})! +{profit_loss_pct*100:.2f}%")
 
-            # Decision 2: Hit stop loss?
-            elif profit_loss_pct <= sl_threshold:
-                logger.warning(f"🛑 EXIT: {trade['asset_symbol']} - Stop loss ({sl_src})! {profit_loss_pct*100:.2f}%")
+            # Decision 2a: Thesis floor breached — immediate exit, no gate
+            # Analyst's stop_loss is a hard invalidation level: "if price drops here, the thesis is dead."
+            # This fires before the trailing stop and bypasses the pre-exit gate.
+            elif thesis_floor and current_price < thesis_floor:
+                logger.warning(
+                    f"🚨 EXIT: {trade['asset_symbol']} - Thesis floor breached "
+                    f"${current_price:.2f} < floor ${thesis_floor:.2f} | "
+                    f"{profit_loss_pct*100:.2f}%"
+                )
+                decision = {
+                    'trade_id':            trade['trade_id'],
+                    'asset_symbol':        trade['asset_symbol'],
+                    'decision_type':       'SELL_THESIS_FLOOR',
+                    'entry_price':         entry_price,
+                    'current_price':       current_price,
+                    'profit_loss_pct':     profit_loss_pct,
+                    'profit_loss_dollars': profit_loss_dollars,
+                    'reason':              f"Thesis floor breached: ${current_price:.2f} < ${thesis_floor:.2f} (analyst invalidation)",
+                    'confidence':          100,
+                }
+                exit_decisions.append(decision)
+
+            # Decision 2b: Trailing stop — 3% below peak price
+            # Normal exit mechanism. Goes through pre-exit gate in case it's noise.
+            elif current_price < trailing_stop_px:
+                logger.warning(
+                    f"🛑 EXIT: {trade['asset_symbol']} - Trailing stop "
+                    f"${current_price:.2f} < ${trailing_stop_px:.2f} ({trailing_stop_src})"
+                )
 
                 # ── Pre-exit deep-dive gate ───────────────────────────────────
                 gate = self._run_pre_exit_gate(
                     trade, current_price,
-                    stop_price=trade.get('stop_loss') or entry_price * (1 + sl_threshold),
+                    stop_price=trailing_stop_px,
                     loss_pct=profit_loss_pct,
                 )
                 if not gate.get('approve_exit', True):
-                    # Gate vetoed — skip exit this cycle, will re-evaluate next cycle
                     logger.warning(
-                        f"  ⏸️  Stop-loss exit for {trade['asset_symbol']} HELD by exit gate: "
+                        f"  ⏸️  Trailing stop for {trade['asset_symbol']} HELD by exit gate: "
                         f"{gate.get('hold_rationale','')[:80]}"
                     )
                     continue
 
                 decision = {
-                    'trade_id': trade['trade_id'],
-                    'asset_symbol': trade['asset_symbol'],
-                    'decision_type': 'SELL_STOP_LOSS',
-                    'entry_price': entry_price,
-                    'current_price': current_price,
-                    'profit_loss_pct': profit_loss_pct,
+                    'trade_id':            trade['trade_id'],
+                    'asset_symbol':        trade['asset_symbol'],
+                    'decision_type':       'SELL_TRAILING_STOP',
+                    'entry_price':         entry_price,
+                    'current_price':       current_price,
+                    'profit_loss_pct':     profit_loss_pct,
                     'profit_loss_dollars': profit_loss_dollars,
-                    'reason': f"Stop loss triggered ({sl_src}): {profit_loss_pct*100:.2f}%",
-                    'confidence': 100
+                    'reason':              f"Trailing stop: {trailing_stop_src} → floor ${trailing_stop_px:.2f}",
+                    'confidence':          100,
                 }
                 exit_decisions.append(decision)
 
@@ -1140,10 +1197,11 @@ class AutonomousBroker:
                 # Valid reasons: profit_target, stop_loss, manual, invalidation
                 _reason_map = {
                     'SELL_PROFIT_TARGET':    'profit_target',
-                    'SELL_STOP_LOSS':        'stop_loss',
+                    'SELL_STOP_LOSS':        'stop_loss',       # legacy (kept for safety)
+                    'SELL_TRAILING_STOP':    'stop_loss',       # -3% from peak
+                    'SELL_THESIS_FLOOR':     'invalidation',    # analyst hard floor breached
                     'SELL_EARLY_PROFIT':     'profit_target',
                     'SELL_MANUAL':           'manual',
-                    'SELL_TRAILING_STOP':    'stop_loss',
                     'SELL_TIME_LIMIT':       'manual',
                     'SELL_DEFCON_REVERT':    'manual',
                     'SELL_CATALYST_SPIKE':   'profit_target',   # sold into strength

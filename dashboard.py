@@ -299,6 +299,7 @@ def fetch_active_conditionals():
             rows = db.execute("""
                 SELECT ticker, entry_price_target, stop_loss, take_profit_1,
                        research_confidence, watch_tag, thesis_summary,
+                       entry_price_rationale, stop_loss_rationale, take_profit_rationale,
                        attention_score, verification_count, date_created
                 FROM conditional_tracking
                 WHERE status = 'active'
@@ -637,16 +638,19 @@ def build_wl_rows(watchlist):
         stat_c = {'pending': '#ffd700', 'active': '#00ff88', 'invalidated': '#ff4444'}.get(stat, '#888')
         raw_cond = w.get('entry_conditions') or '—'
         cond   = raw_cond[:250]
+        cond_attr = raw_cond.replace('&', '&amp;').replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
         src    = w.get('source', 'daily_briefing')
+        wl_ticker = w.get('ticker', '?')
         # Color-code thesis cell by status: analyst_pass=dimmer, conditional_set=brighter
         cond_c = '#888' if stat == 'analyst_pass' else '#aaa'
         rows.append(
             '<tr class="trow">'
-            f'<td class="sym" onclick="showChart(\'{w.get("ticker", "?")}\')">{w.get("ticker", "?")}</td>'
+            f'<td class="sym" onclick="showChart(\'{wl_ticker}\')">{wl_ticker}</td>'
             f'<td>{source_badge(src)}</td>'
             f'<td><span style="color:{conf_c};font-weight:700;">{conf:.0%}</span></td>'
             f'<td>{regime_badge(w.get("market_regime"))}</td>'
-            f'<td style="color:{cond_c};font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;">'
+            f'<td class="has-thesis" style="color:{cond_c};font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" '
+            f'data-thesis="{cond_attr}" data-ticker="{wl_ticker}">'
             f'{cond}{"…" if len(raw_cond)>250 else ""}</td>'
             f'<td><span style="color:{stat_c};font-size:11px;text-transform:uppercase;">{stat}</span></td>'
             f'<td style="color:#666;font-size:11px;">{w.get("date_added", "—")}</td>'
@@ -678,8 +682,26 @@ def build_conditional_rows(conditionals):
         tp1      = c.get('take_profit_1')
         ticker   = c.get('ticker', '?')
         tag      = (c.get('watch_tag') or 'untagged').replace('-', ' ').title()
-        thesis   = (c.get('thesis_summary') or '—')[:160]
-        verif    = int(c.get('verification_count') or 0)
+        thesis_full  = c.get('thesis_summary') or '—'
+        thesis       = thesis_full[:160]
+        entry_rat    = c.get('entry_price_rationale') or ''
+        stop_rat     = c.get('stop_loss_rationale') or ''
+        tp_rat       = c.get('take_profit_rationale') or ''
+        verif        = int(c.get('verification_count') or 0)
+
+        # Build the structured popup body (newlines become visible in pre-wrap)
+        def _esc(s):
+            return s.replace('&', '&amp;').replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
+        popup_lines = [thesis_full]
+        if target and entry_rat:
+            popup_lines.append(f'\n📍 ENTRY  ${target:.2f}\n{entry_rat}')
+        if stop and stop_rat:
+            popup_lines.append(f'\n🛑 STOP   ${stop:.2f}\n{stop_rat}')
+        if tp1 and tp_rat:
+            popup_lines.append(f'\n🎯 TP1    ${tp1:.2f}\n{tp_rat}')
+        popup_full = '\n'.join(popup_lines)
+        popup_attr = _esc(popup_full)
+
         rows.append(
             '<tr class="trow">'
             f'<td class="sym" onclick="showChart(\'{ticker}\')">{badge} {ticker}</td>'
@@ -689,8 +711,9 @@ def build_conditional_rows(conditionals):
             f'<td style="color:#ff8c00;font-size:11px;">{f"${stop:.2f}" if stop else "—"}</td>'
             f'<td style="color:#7fff00;font-size:11px;">{f"${tp1:.2f}" if tp1 else "—"}</td>'
             f'<td style="color:#888;font-size:10px;">{tag}</td>'
-            f'<td style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;">'
-            f'{thesis}{"…" if len(c.get("thesis_summary") or "") > 160 else ""}</td>'
+            f'<td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" '
+            f'data-thesis="{popup_attr}" data-ticker="{ticker}">'
+            f'{thesis}{"…" if len(thesis_full) > 160 else ""}</td>'
             '</tr>'
         )
     return ''.join(rows)
@@ -1309,6 +1332,26 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
   padding: 6px 14px 6px 18px;
   will-change: transform;
 }
+
+/* ── Thesis hover popup ── */
+#thesis-popup {
+  position:fixed; z-index:9999; display:none;
+  background:#0d0e1a; border:1px solid #00d4ff44;
+  border-radius:8px; padding:14px 16px;
+  max-width:440px; min-width:180px;
+  box-shadow:0 8px 32px rgba(0,0,0,0.85), 0 0 0 1px #00d4ff18;
+  pointer-events:none;
+}
+#thesis-popup .tp-header {
+  font-size:9px; letter-spacing:2px; color:#00d4ff;
+  text-transform:uppercase; margin-bottom:8px; font-weight:700;
+}
+#thesis-popup .tp-body {
+  font-size:12px; color:#ccc; line-height:1.65;
+  white-space:pre-wrap; word-break:break-word;
+}
+.has-thesis { cursor:default; }
+.has-thesis:hover { color:#ddd !important; }
 </style>
 </head>
 <body>
@@ -2079,6 +2122,48 @@ async function sendPrompt() {{
         }}
     }} catch (e) {{ output.innerText = '❌ Connection failed'; }}
 }}
+
+// ── Thesis hover popup ──────────────────────────────────────────────────────
+(function() {{
+  var popup = document.createElement('div');
+  popup.id = 'thesis-popup';
+  popup.innerHTML = '<div class="tp-header"></div><div class="tp-body"></div>';
+  document.body.appendChild(popup);
+
+  var tpHead = popup.querySelector('.tp-header');
+  var tpBody = popup.querySelector('.tp-body');
+
+  document.addEventListener('mouseover', function(e) {{
+    var cell = e.target.closest('[data-thesis]');
+    if (!cell) {{ popup.style.display = 'none'; return; }}
+    var text = cell.dataset.thesis;
+    if (!text || text === '\u2014' || text === '') {{ return; }}
+    var ticker = cell.dataset.ticker || '';
+    tpHead.textContent = ticker ? ticker + ' \u2014 THESIS' : 'THESIS';
+    tpBody.textContent = text;
+    popup.style.display = 'block';
+  }});
+
+  document.addEventListener('mousemove', function(e) {{
+    if (popup.style.display === 'none') return;
+    var x = e.clientX + 18;
+    var y = e.clientY + 14;
+    var pw = popup.offsetWidth;
+    var ph = popup.offsetHeight;
+    var vw = window.innerWidth;
+    var vh = window.innerHeight;
+    if (x + pw > vw - 12) x = e.clientX - pw - 18;
+    if (y + ph > vh - 12) y = e.clientY - ph - 14;
+    popup.style.left = x + 'px';
+    popup.style.top  = y + 'px';
+  }});
+
+  document.addEventListener('mouseout', function(e) {{
+    var from = e.target.closest('[data-thesis]');
+    var to   = e.relatedTarget && e.relatedTarget.closest ? e.relatedTarget.closest('[data-thesis]') : null;
+    if (from && !to) popup.style.display = 'none';
+  }});
+}})();
 
 </script>
 </body>

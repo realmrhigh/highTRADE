@@ -71,36 +71,62 @@ _ANALYST_JSON_TEMPLATE = """{
   "catalyst_failure_pct": null
 }"""
 
+# Maximum stop loss % per watch tag (hard ceiling enforced in code + prompt)
+STOP_MAX_PCT = {
+    'breakout':       0.07,   #  7% — tight; if it breaks out, it shouldn't retreat
+    'mean-reversion': 0.08,   #  8% — a bit more room for support to hold
+    'momentum':       0.07,   #  7% — trend should stay intact, no deep retrace
+    'defensive-hedge':0.06,   #  6% — insurance, not a gamble; small size, tight stop
+    'macro-hedge':    0.06,   #  6% — hedges are directional bets; control the loss
+    'earnings-play':  0.10,   # 10% — some event volatility tolerance, still bounded
+    'rebound':        0.06,   #  6% — re-entry on a broken name; tight by design
+}
+_DEFAULT_STOP_MAX_PCT = 0.08  # fallback for unknown tags
+
 # Watch tag definitions injected into every analyst prompt
 _WATCH_TAG_DEFINITIONS = """
 ══════════════════════════════════════════════════════
 WATCH TAGS — assign exactly ONE to this trade
 ══════════════════════════════════════════════════════
 Choose the tag that best describes the SETUP TYPE. It shapes your entry, sizing, and conditions.
+STOP LOSS HARD CAPS (enforced by the trading system — do NOT exceed these):
+  breakout        max  7% below entry
+  mean-reversion  max  8% below entry
+  momentum        max  7% below entry
+  defensive-hedge max  6% below entry
+  macro-hedge     max  6% below entry
+  earnings-play   max 10% below entry   ← for high-vol events only; tighter is better
+  rebound         max  6% below entry
+If you cannot find a technically meaningful stop within these bands, REDUCE position size instead
+of widening the stop. The system default stop is -3% — your stop should be tighter or match it,
+never significantly wider. High-volatility names require SMALLER SIZE, not a bigger stop cushion.
 
   breakout       — Price testing or clearing a key resistance level (52w high, prior pivot).
-                   Entry: above resistance. Stop: tight below breakout. Conditions: volume + momentum confirmation.
+                   Entry: above resistance. Stop: ≤7% below entry, just under the breakout base.
+                   Conditions: volume + momentum confirmation.
 
   mean-reversion — Overextended pullback to known support; expecting bounce back to mean.
-                   Entry: at support. Stop: wider (below support). Conditions: oversold signal, no trend breakdown.
+                   Entry: at support. Stop: ≤8% below entry, just below that support level.
+                   Conditions: oversold signal, no trend breakdown.
 
   momentum       — Strong established trend; adding on a healthy pullback.
-                   Entry: near moving average or recent base. Stop: momentum-based. Conditions: trend intact.
+                   Entry: near moving average or recent base. Stop: ≤7% below entry, momentum-based.
+                   Conditions: trend intact.
 
   defensive-hedge — Risk-off asset (TLT, GLD, utilities) held during macro uncertainty.
-                   Entry: any weakness. Stop: wide. Size: small (portfolio insurance, not profit center).
+                   Entry: any weakness. Stop: ≤6% below entry. Size: small (portfolio insurance).
                    Conditions: macro score, VIX environment.
 
   macro-hedge    — Inverse or volatility instrument (SQQQ, VIX products, short ETFs).
                    Entry: strict — only when VIX > threshold AND DEFCON elevated.
-                   Stop: tight. Size: smaller. Conditions: must include specific VIX/DEFCON gate.
+                   Stop: ≤6% below entry. Size: smaller.
 
   earnings-play  — Setup driven by an upcoming earnings catalyst.
-                   Entry: before event date. Stop: wider. Conditions: earnings date, consensus vs expected.
-                   Time horizon: short (exit after announcement).
+                   Entry: before event date. Stop: ≤10% below entry (catalyst failure level).
+                   Time horizon: short (exit after announcement or catalyst window).
 
   rebound        — Post-stop-loss recovery attempt on a previously held ticker.
-                   Entry: on bottoming signal. Stop: tight. Size: reduced (half of normal).
+                   Entry: on bottoming signal. Stop: ≤6% below entry. Size: reduced (half of normal).
                    Conditions: must see exhaustion of selling before re-entry.
 """
 
@@ -358,6 +384,12 @@ def _build_analyst_prompt(ticker: str, research: Dict) -> str:
         f"     If NOT event-driven, set all catalyst fields to null.\n\n"
         f"Set research_confidence as a float 0.0–1.0 based on how convinced you are.\n"
         f"Only set should_enter=true if research_confidence >= {CONFIDENCE_THRESHOLD:.1f}.\n\n"
+        f"⚠️  NUMERIC CONSISTENCY RULE — enforced before submission:\n"
+        f"  The dollar value in 'stop_loss' MUST appear verbatim in 'stop_loss_rationale'.\n"
+        f"  The dollar value in 'entry_price_target' MUST appear verbatim in 'entry_price_rationale'.\n"
+        f"  The dollar value in 'take_profit_1' MUST appear verbatim in 'take_profit_rationale'.\n"
+        f"  If your rationale text says '$85' but your JSON field says 85.5 — fix one to match.\n"
+        f"  Do NOT write a different number in the text than in the JSON field. They must be identical.\n\n"
         f"Respond in this EXACT JSON format (no other text):\n"
         f"{_ANALYST_JSON_TEMPLATE}"
     )
@@ -506,6 +538,30 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection) -> Opt
     result['_model']         = 'gemini-3.1-pro-preview'
     result['_input_tokens']  = in_tok
     result['_output_tokens'] = out_tok
+
+    # ── Hard-cap stop loss to strategy limits ────────────────────────────
+    # The system default stop is -3%.  Analyst stops must stay within the per-tag
+    # cap defined in STOP_MAX_PCT.  Wide stops defeat the strategy — use smaller
+    # size instead of wider stops for high-volatility names.
+    _entry = result.get('entry_price_target')
+    _stop  = result.get('stop_loss')
+    _tag   = result.get('watch_tag', '')
+    if _entry and _stop and _entry > 0:
+        _actual_pct = (_stop - _entry) / _entry           # negative number
+        _max_pct    = -STOP_MAX_PCT.get(_tag, _DEFAULT_STOP_MAX_PCT)
+        if _actual_pct < _max_pct:                        # stop is wider than the cap
+            _capped_stop = round(_entry * (1 + _max_pct), 2)
+            logger.warning(
+                f"  ⚠️  [{ticker}] Stop {_stop:.2f} ({_actual_pct*100:.1f}%) exceeds "
+                f"{_tag or 'default'} cap ({_max_pct*100:.0f}%) — "
+                f"capping to {_capped_stop:.2f}"
+            )
+            result['stop_loss'] = _capped_stop
+            result['stop_loss_rationale'] = (
+                f"[AUTO-CAPPED from ${_stop:.2f} to ${_capped_stop:.2f}] "
+                f"Original stop exceeded the {abs(_max_pct*100):.0f}% strategy limit for '{_tag}' setups. "
+                + (result.get('stop_loss_rationale') or '')
+            )
 
     confidence   = float(result.get('research_confidence', 0.0))
     should_enter = result.get('should_enter', False)

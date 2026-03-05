@@ -474,6 +474,8 @@ class AlertSystem:
                 catalyst_event = data.get('catalyst_event', '')
 
                 decision_type_map = {
+                    'SELL_TRAILING_STOP':    ('🛑', 'Trailing Stop — -3% From Peak'),
+                    'SELL_THESIS_FLOOR':     ('🚨', 'Thesis Floor Breached — Immediate Exit'),
                     'SELL_CATALYST_SPIKE':   ('🚀', 'Catalyst Spike — Sold Into Strength'),
                     'SELL_CATALYST_FAILED':  ('💥', 'Catalyst Failed — Event Went Wrong Direction'),
                     'SELL_CATALYST_EXPIRED': ('⏰', 'Catalyst Expired — No Move Materialized'),
@@ -662,6 +664,8 @@ class AlertSystem:
                 catalyst_event = data.get('catalyst_event', '')
 
                 decision_type_map = {
+                    'SELL_TRAILING_STOP':    ('🛑', 'Trailing Stop — -3% From Peak'),
+                    'SELL_THESIS_FLOOR':     ('🚨', 'Thesis Floor Breached — Immediate Exit'),
                     'SELL_CATALYST_SPIKE':   ('🚀', 'Catalyst Spike — Sold Into Strength'),
                     'SELL_CATALYST_FAILED':  ('💥', 'Catalyst Failed — Event Went Wrong Direction'),
                     'SELL_CATALYST_EXPIRED': ('⏰', 'Catalyst Expired — No Move Materialized'),
