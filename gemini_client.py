@@ -38,8 +38,27 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # ── API key (fallback only — loaded from .env, never hardcoded) ───────────────
-GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
+# Lazy-loaded via _get_api_key() so a restart isn't required after adding the key.
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+
+def _get_api_key() -> str:
+    """Re-read GEMINI_API_KEY from environment + .env on every call so the running
+    process picks it up without a restart after the key is first added to .env."""
+    # Try dotenv first
+    try:
+        from dotenv import load_dotenv as _ld
+        _ld(Path(__file__).parent / ".env", override=True)
+    except ImportError:
+        # dotenv not installed — parse .env manually
+        env_path = Path(__file__).parent / ".env"
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                line = line.strip()
+                if line.startswith('GEMINI_API_KEY=') and not line.startswith('#'):
+                    val = line.split('=', 1)[1].strip()
+                    if val:
+                        os.environ['GEMINI_API_KEY'] = val
+    return os.environ.get("GEMINI_API_KEY", "")
 
 # ── Model tiers ────────────────────────────────────────────────────────────────
 MODEL_CONFIG = {
@@ -82,22 +101,28 @@ MODEL_CONFIG = {
 _PRO_FALLBACK_MODEL   = 'gemini-2.5-pro'
 _FLASH_FALLBACK_MODEL = 'gemini-2.5-pro'   # retired 2.5-flash; use pro thinking as backup
 
+# REST API fallback model — uses API key quota (separate pool from OAuth CLI).
+# gemini-3.1-flash-lite-preview: faster + cheaper than 3-flash, confirmed working via API key.
+_REST_FALLBACK_MODEL = 'gemini-3.1-flash-lite-preview'
+
 # ── Quota tracking ─────────────────────────────────────────────────────────────
 _DB_PATH = Path(__file__).parent / 'trading_data' / 'trading_history.db'
 
 # Actual Google free-tier daily request limits (RPD) — updated 2026-03
 # These are the real hard limits, not conservative guesses.
 QUOTA_DAILY_LIMITS = {
-    'gemini-3.1-pro-preview':  50,     # 2 RPM,  50 RPD,  32K TPM
-    'gemini-2.5-pro':          100,    # 5 RPM, 100 RPD, 250K TPM
-    'gemini-3-flash-preview':  1500,   # 15 RPM, 1,500 RPD, 1M TPM
+    'gemini-3.1-pro-preview':       50,    # 2 RPM,  50 RPD,  32K TPM
+    'gemini-2.5-pro':               100,   # 5 RPM, 100 RPD, 250K TPM
+    'gemini-3-flash-preview':       1500,  # 15 RPM, 1,500 RPD, 1M TPM
+    'gemini-3.1-flash-lite-preview': 1500, # 30 RPM, 1,500 RPD — REST API key quota
 }
 
 # Actual Google free-tier RPM limits per model
 QUOTA_RPM_LIMITS = {
-    'gemini-3.1-pro-preview':  2,
-    'gemini-2.5-pro':          5,
-    'gemini-3-flash-preview':  15,
+    'gemini-3.1-pro-preview':        2,
+    'gemini-2.5-pro':                5,
+    'gemini-3-flash-preview':        15,
+    'gemini-3.1-flash-lite-preview': 30,   # higher RPM on lite
 }
 
 # Backward-compat alias — dashboard.py and acquisition_analyst.py reference this name
@@ -263,75 +288,47 @@ def get_reset_aligned_usage() -> dict:
 
 def _throttle_for_rpm(model_id: str) -> None:
     """
-    Proactively pace Gemini calls to stay within RPM limits.
+    Proactively pace calls to stay within RPM limits.
+    Reads the last REAL call timestamp (tokens_in >= 0) and sleeps only if
+    we're within the minimum inter-call interval.
 
-    Looks up the last call timestamp for this model in gemini_call_log,
-    then sleeps for however long is needed before the next call is safe.
-    DB-backed so pacing works correctly across multiple processes
-    (orchestrator, acquisition analyst, broker agent all sharing the same DB).
-
-    Minimum inter-call intervals (from QUOTA_RPM_LIMITS):
-        gemini-3.1-pro-preview  →  30.0 s  (2 RPM)
-        gemini-2.5-pro          →  12.0 s  (5 RPM)
-        gemini-3-flash-preview  →   4.0 s  (15 RPM)
-
-    Uses an exclusive SQLite lock via BEGIN EXCLUSIVE to prevent race conditions
-    where two concurrent callers both see "slot free" and both fire simultaneously,
-    which would exceed the RPM ceiling and trigger fallback to 2.5-pro.
-    Silent on any DB error — never blocks a caller.
+    Intervals:
+        gemini-3.1-pro-preview       → 30.0 s  (2 RPM)
+        gemini-2.5-pro               → 12.0 s  (5 RPM)
+        gemini-3-flash-preview       →  4.0 s  (15 RPM)
+        gemini-3.1-flash-lite-preview →  2.0 s  (30 RPM)
     """
     rpm = QUOTA_RPM_LIMITS.get(model_id)
     if not rpm:
-        return  # unknown model — don't throttle
+        return
 
-    min_interval_s = 60.0 / rpm   # 30s / 12s / 4s
+    min_interval_s = 60.0 / rpm
 
     try:
-        conn = sqlite3.connect(str(_DB_PATH), timeout=10)
+        conn = sqlite3.connect(str(_DB_PATH), timeout=5)
         _ensure_call_log(conn)
-
-        # BEGIN EXCLUSIVE prevents two processes from reading the "last call" row
-        # simultaneously and both concluding it's safe to proceed right now.
-        conn.execute("BEGIN EXCLUSIVE")
         row = conn.execute(
-            "SELECT created_at FROM gemini_call_log WHERE model_id = ? "
+            "SELECT created_at FROM gemini_call_log "
+            "WHERE model_id = ? AND tokens_in >= 0 "
             "ORDER BY created_at DESC LIMIT 1",
             (model_id,)
         ).fetchone()
-        wait = 0.0
-        if row:
-            # SQLite stores CURRENT_TIMESTAMP as 'YYYY-MM-DD HH:MM:SS' in UTC
-            last_call = datetime.strptime(row[0][:19], '%Y-%m-%d %H:%M:%S')
-            elapsed   = (datetime.utcnow() - last_call).total_seconds()
-            wait      = min_interval_s - elapsed
+        conn.close()
+
+        if not row:
+            return  # no prior calls — go immediately
+
+        last_call = datetime.strptime(row[0][:19], '%Y-%m-%d %H:%M:%S')
+        elapsed   = (datetime.utcnow() - last_call).total_seconds()
+        wait      = min_interval_s - elapsed
 
         if wait > 0:
-            # Write a reservation row NOW (inside the lock) so any other process
-            # that tries to throttle will see this slot as occupied and wait.
-            # tokens_in=-1 flags this as a reservation (not a real call).
-            conn.execute(
-                "INSERT INTO gemini_call_log (model_id, model_key, caller, tokens_in, tokens_out, downgraded) "
-                "VALUES (?, 'reserved', 'throttle', -1, 0, 0)",
-                (model_id,)
-            )
-            conn.commit()
-            conn.close()
-
             logger.info(
                 f"⏱️  RPM throttle [{model_id}]: "
                 f"last call {elapsed:.1f}s ago, need {min_interval_s:.0f}s — "
                 f"sleeping {wait:.1f}s"
             )
             time.sleep(wait)
-        else:
-            # Write reservation even when we don't need to wait, to claim the slot
-            conn.execute(
-                "INSERT INTO gemini_call_log (model_id, model_key, caller, tokens_in, tokens_out, downgraded) "
-                "VALUES (?, 'reserved', 'throttle', -1, 0, 0)",
-                (model_id,)
-            )
-            conn.commit()
-            conn.close()
 
     except Exception:
         pass  # throttle must never crash a caller
@@ -497,6 +494,7 @@ def market_context_block(vix: Optional[float] = None) -> str:
 _cli_path: Optional[str] = None
 _cli_authenticated: Optional[bool] = None
 _last_cli_error: str = ''        # populated on CLI failure; inspected in call() for quota detection
+_cli_auth_retry_after: Optional[datetime] = None   # set on OAuth failure; cleared when timer expires
 
 def _get_cli_status() -> Tuple[bool, str]:
     """
@@ -505,7 +503,17 @@ def _get_cli_status() -> Tuple[bool, str]:
       - `gemini` binary is on PATH
       - ~/.gemini/oauth_creds.json exists with a refresh_token (survives restarts)
     """
-    global _cli_path, _cli_authenticated
+    global _cli_path, _cli_authenticated, _cli_auth_retry_after
+
+    # If CLI was disabled due to an OAuth failure, check whether the retry
+    # window has expired.  If it has, clear the flag and re-evaluate so the
+    # system automatically recovers when OAuth comes back without needing a
+    # process restart.
+    if _cli_authenticated is False and _cli_auth_retry_after is not None:
+        if datetime.now() >= _cli_auth_retry_after:
+            logger.info("🔐 OAuth retry window elapsed — re-checking CLI auth...")
+            _cli_authenticated = None
+            _cli_auth_retry_after = None
 
     if _cli_authenticated is not None:
         return _cli_authenticated, _cli_path or ''
@@ -516,20 +524,27 @@ def _get_cli_status() -> Tuple[bool, str]:
         logger.debug("Gemini CLI not found on PATH — using REST API")
         return False, 'CLI not installed'
 
-    creds_path = Path.home() / '.gemini' / 'oauth_creds.json'
-    if not creds_path.exists():
-        _cli_authenticated = False
-        logger.debug("No OAuth creds found — using REST API")
-        return False, 'Not authenticated'
+    # Support both old (oauth_creds.json) and new (mcp-oauth-tokens-v2.json) CLI auth formats.
+    _gemini_dir = Path.home() / '.gemini'
+    _creds_old  = _gemini_dir / 'oauth_creds.json'
+    _creds_new  = _gemini_dir / 'mcp-oauth-tokens-v2.json'
 
-    try:
-        creds = json.loads(creds_path.read_text())
-        if not creds.get('refresh_token'):
+    if _creds_new.exists():
+        # New CLI format — presence of file is sufficient; CLI manages token refresh internally.
+        pass
+    elif _creds_old.exists():
+        try:
+            creds = json.loads(_creds_old.read_text())
+            if not creds.get('refresh_token'):
+                _cli_authenticated = False
+                return False, 'No refresh token'
+        except Exception:
             _cli_authenticated = False
-            return False, 'No refresh token'
-    except Exception:
+            return False, 'Creds unreadable'
+    else:
         _cli_authenticated = False
-        return False, 'Creds unreadable'
+        logger.debug("No OAuth creds found (~/.gemini/oauth_creds.json or mcp-oauth-tokens-v2.json) — using REST API")
+        return False, 'Not authenticated'
 
     _cli_path = binary
     _cli_authenticated = True
@@ -575,44 +590,78 @@ def call(
 
         _pro_model   = MODEL_CONFIG['reasoning']['model_id']   # gemini-3.1-pro-preview
         _flash_model = MODEL_CONFIG['fast']['model_id']         # gemini-3-flash-preview
+
         _is_quota_err = ('TerminalQuotaError' in _last_cli_error
                          or 'exhausted your capacity' in _last_cli_error
                          or 'No capacity available' in _last_cli_error
-                         or ('"code": 429' in _last_cli_error or "'code': 429" in _last_cli_error))
+                         or '"code": 429' in _last_cli_error
+                         or "'code': 429" in _last_cli_error)
+
+        # Detect genuine OAuth/auth failures (not quota errors) and bust the CLI cache
+        # so future calls skip the CLI chain and go straight to REST.
+        # IMPORTANT: "Loaded cached credentials." appears in every CLI stderr as a
+        # startup message — do NOT match on "credentials" alone or we'd disable CLI
+        # on every call. Only match on hard auth-failure patterns.
+        _is_auth_err = any(pat in _last_cli_error for pat in (
+            'UNAUTHENTICATED', 'unauthenticated',
+            'invalid_grant', '401 Unauthorized',
+            'not authenticated', 'No refresh token',
+            'oauth_token invalid', 'Token has been expired',
+        ))
+        if _is_auth_err:
+            global _cli_authenticated, _cli_auth_retry_after
+            _cli_authenticated = False
+            _cli_auth_retry_after = datetime.now() + timedelta(minutes=10)
+            logger.warning(
+                "🔐 OAuth failure detected — switching to REST API. "
+                "Will retry CLI auth in 10 minutes."
+            )
 
         # 3.1 Pro failed → step 1: try 3 Flash Preview
         if cfg['model_id'] == _pro_model:
-            logger.warning(f"⚠️  {_pro_model} unavailable — stepping down to {_flash_model}")
-            cfg = {**cfg, 'model_id': _flash_model, 'thinking_budget': 8000, 'max_output_tokens': 8192}
-            downgraded = True
-            result = _call_via_cli(prompt, cfg)
-            if result[0] is not None:
-                _log_call(cfg['model_id'], model_key, caller, result[1], result[2], downgraded=True)
-                return result
-            # step 2: 3 Flash also failed → 2.5 Pro
-            logger.warning(f"⚠️  {_flash_model} also unavailable — falling back to {_PRO_FALLBACK_MODEL}")
-            cfg = {**cfg, 'model_id': _PRO_FALLBACK_MODEL, 'thinking_budget': 8000}
-            result = _call_via_cli(prompt, cfg)
-            if result[0] is not None:
-                _log_call(cfg['model_id'], model_key, caller, result[1], result[2], downgraded=True)
-                return result
+            if not _is_quota_err:
+                logger.warning(f"⚠️  {_pro_model} unavailable — stepping down to {_flash_model}")
+                cfg = {**cfg, 'model_id': _flash_model, 'thinking_budget': 8000, 'max_output_tokens': 8192}
+                downgraded = True
+                result = _call_via_cli(prompt, cfg)
+                if result[0] is not None:
+                    _log_call(cfg['model_id'], model_key, caller, result[1], result[2], downgraded=True)
+                    return result
+            else:
+                logger.warning(f"⚠️  {_pro_model} quota exhausted — skipping CLI chain, going to REST")
+            # Pro quota hit OR Flash also failed → skip 2.5-pro CLI (also over quota), go REST
 
-        # 3 Flash failed → fall back to 2.5 Pro with thinking
+        # 3 Flash failed → if quota error skip 2.5-pro CLI and go straight to REST
         elif cfg['model_id'] == _flash_model:
-            logger.warning(f"⚠️  {_flash_model} unavailable — falling back to {_FLASH_FALLBACK_MODEL}")
-            cfg = {**cfg, 'model_id': _FLASH_FALLBACK_MODEL, 'thinking_budget': 8000}
-            downgraded = True
-            result = _call_via_cli(prompt, cfg)
-            if result[0] is not None:
-                _log_call(cfg['model_id'], model_key, caller, result[1], result[2], downgraded=True)
-                return result
+            if not _is_quota_err:
+                logger.warning(f"⚠️  {_flash_model} unavailable — falling back to {_FLASH_FALLBACK_MODEL} CLI")
+                cfg = {**cfg, 'model_id': _FLASH_FALLBACK_MODEL, 'thinking_budget': 8000}
+                downgraded = True
+                result = _call_via_cli(prompt, cfg)
+                if result[0] is not None:
+                    _log_call(cfg['model_id'], model_key, caller, result[1], result[2], downgraded=True)
+                    return result
+            else:
+                logger.warning(f"⚠️  {_flash_model} quota exhausted — skipping CLI chain, going to REST")
 
         # CLI call failed for another reason — fall through to REST API
         logger.warning("CLI call failed, falling back to REST API")
 
-    result = _call_via_api(prompt, cfg)
+    # REST API uses gemini-3.1-flash-lite-preview — separate quota pool from OAuth CLI.
+    # Avoids burning 2.5-pro REST quota when the CLI chain is already exhausted.
+    rest_cfg = {**cfg, 'model_id': _REST_FALLBACK_MODEL, 'thinking_budget': 0, 'max_output_tokens': 8192}
+    logger.info(f"🌐 REST fallback → {_REST_FALLBACK_MODEL} (caller={caller})")
+    result = _call_via_api(prompt, rest_cfg)
     if result[0] is not None:
-        _log_call(cfg['model_id'], model_key, caller, result[1], result[2], downgraded)
+        _log_call(rest_cfg['model_id'], model_key, caller, result[1], result[2], downgraded=True)
+        return result
+
+    # Last resort — REST with 2.5-pro if flash-lite also fails on REST
+    logger.warning(f"🌐 REST flash-lite failed — last resort REST {_PRO_FALLBACK_MODEL} (caller={caller})")
+    last_cfg = {**cfg, 'model_id': _PRO_FALLBACK_MODEL, 'thinking_budget': 8000}
+    result = _call_via_api(prompt, last_cfg)
+    if result[0] is not None:
+        _log_call(last_cfg['model_id'], model_key, caller, result[1], result[2], downgraded=True)
     return result
 
 
@@ -681,8 +730,12 @@ def _build_thinking_config(model_id: str, thinking_budget: int) -> dict:
 
     Gemini 3.x uses thinkingLevel ('minimal' | 'low' | 'medium' | 'high').
     Gemini 2.x and older use the legacy thinkingBudget integer.
+    Lite models don't support thinking — omit thinkingConfig entirely.
     Mixing the two in the same request causes a 400 error.
     """
+    # Lite models have no thinking capability — skip thinkingConfig entirely
+    if 'lite' in model_id:
+        return {}
     if model_id.startswith('gemini-3'):
         # thinking_budget=0 → no thinking; anything else → full dynamic thinking
         level = 'minimal' if thinking_budget == 0 else 'high'
@@ -698,11 +751,12 @@ def _call_via_api(prompt: str, cfg: dict) -> Tuple[Optional[str], int, int]:
     """Call via REST API with API key. Supports thinkingConfig.
     Only used as fallback if CLI is unavailable. Primary auth is OAuth via Gemini CLI."""
     _throttle_for_rpm(cfg['model_id'])   # proactive RPM pacing — same limits apply on REST
-    if not GEMINI_API_KEY:
+    api_key = _get_api_key()
+    if not api_key:
         logger.debug("REST API skipped — no GEMINI_API_KEY set (OAuth-only mode)")
         return None, 0, 0
     model_id = cfg['model_id']
-    url = f"{GEMINI_API_BASE}/{model_id}:generateContent?key={GEMINI_API_KEY}"
+    url = f"{GEMINI_API_BASE}/{model_id}:generateContent?key={api_key}"
 
     gen_config: dict = {
         'temperature':     cfg['temperature'],
@@ -719,7 +773,21 @@ def _call_via_api(prompt: str, cfg: dict) -> Tuple[Optional[str], int, int]:
 
     try:
         resp = requests.post(url, json=payload, timeout=180)
-        resp.raise_for_status()
+        if not resp.ok:
+            # Log the actual Google error body before raising — essential for diagnosing
+            # model name issues, quota blocks, bad API key, etc.
+            try:
+                err_body = resp.json()
+                err_msg  = err_body.get('error', {}).get('message', resp.text[:300])
+                err_code = err_body.get('error', {}).get('code', resp.status_code)
+                err_status = err_body.get('error', {}).get('status', '')
+            except Exception:
+                err_msg, err_code, err_status = resp.text[:300], resp.status_code, ''
+            logger.error(
+                f"REST API HTTP {resp.status_code} ({model_id}): "
+                f"[{err_code}] {err_status} — {err_msg}"
+            )
+            resp.raise_for_status()
         data = resp.json()
 
         cand   = data.get('candidates', [{}])[0]
@@ -737,7 +805,7 @@ def _call_via_api(prompt: str, cfg: dict) -> Tuple[Optional[str], int, int]:
             logger.warning(f"API returned empty output | finish={cand.get('finishReason')} | thought={tht_tok}tok")
             return None, in_tok, out_tok
 
-        logger.debug(f"API ✅ {model_id} | in={in_tok} thought={tht_tok} out={out_tok}")
+        logger.info(f"API ✅ {model_id} | in={in_tok} thought={tht_tok} out={out_tok}")
         return text, in_tok, out_tok
 
     except Exception as e:
@@ -748,6 +816,7 @@ def _call_via_api(prompt: str, cfg: dict) -> Tuple[Optional[str], int, int]:
 # ── Convenience: reset cached CLI status (useful in tests) ────────────────────
 
 def reset_cli_cache():
-    global _cli_path, _cli_authenticated
+    global _cli_path, _cli_authenticated, _cli_auth_retry_after
     _cli_path = None
     _cli_authenticated = None
+    _cli_auth_retry_after = None
