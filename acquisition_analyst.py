@@ -30,8 +30,9 @@ logger = logging.getLogger(__name__)
 
 SCRIPT_DIR          = Path(__file__).parent.resolve()
 DB_PATH             = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
-CONFIDENCE_THRESHOLD = 0.70   # minimum to promote to broker
-MAX_POSITION_PCT    = 0.20    # hard cap: max 20% of capital in any single trade
+CONFIDENCE_THRESHOLD       = 0.70   # minimum to promote to broker (standard pipeline)
+HOUND_CONFIDENCE_THRESHOLD = 0.60   # lower bar for Grok Hound speculative picks
+MAX_POSITION_PCT           = 0.20   # hard cap: max 20% of capital in any single trade
 
 
 # ── Prompt template ────────────────────────────────────────────────────────────
@@ -131,8 +132,39 @@ never significantly wider. High-volatility names require SMALLER SIZE, not a big
 """
 
 
+def _get_hound_context(ticker: str, conn: sqlite3.Connection) -> Optional[Dict]:
+    """Return Grok Hound intel if this ticker was sourced from grok_hound_auto, else None."""
+    try:
+        row = conn.execute("""
+            SELECT source FROM acquisition_watchlist
+            WHERE UPPER(ticker) = UPPER(?) AND source = 'grok_hound_auto'
+            ORDER BY created_at DESC LIMIT 1
+        """, (ticker,)).fetchone()
+        if not row:
+            return None
+        hound_row = conn.execute("""
+            SELECT alpha_score, why_next, signals, action_suggestion
+            FROM grok_hound_candidates
+            WHERE UPPER(ticker) = UPPER(?)
+            ORDER BY created_at DESC LIMIT 1
+        """, (ticker,)).fetchone()
+        if not hound_row:
+            return {'source': 'grok_hound_auto'}
+        return {
+            'source':            'grok_hound_auto',
+            'alpha_score':       hound_row[0],
+            'why_next':          hound_row[1],
+            'signals':           json.loads(hound_row[2]) if hound_row[2] else [],
+            'action_suggestion': hound_row[3],
+        }
+    except Exception as e:
+        logger.debug(f"Could not load hound context for {ticker}: {e}")
+        return None
+
+
 def _build_analyst_prompt(ticker: str, research: Dict,
-                           prior_gaps: Optional[List[str]] = None) -> str:
+                           prior_gaps: Optional[List[str]] = None,
+                           hound_context: Optional[Dict] = None) -> str:
     """Build the Gemini 3 Pro prompt from gathered research data."""
 
     # Price context
@@ -308,6 +340,32 @@ def _build_analyst_prompt(ticker: str, research: Dict,
     import gemini_client as _gc
     _session_block = _gc.market_context_block()
 
+    # Build Hound intelligence block if this ticker came from Grok Hound
+    _hound_block = ""
+    if hound_context:
+        _action_display = (hound_context.get('action_suggestion') or 'monitor').upper().replace('_', ' ')
+        _alpha          = hound_context.get('alpha_score', 'N/A')
+        _why_next       = hound_context.get('why_next', 'N/A')
+        _sigs           = hound_context.get('signals', [])
+        _hound_block = (
+            f"══════════════════════════════════════════════════════\n"
+            f"GROK HOUND INTELLIGENCE — SOURCE OF THIS LEAD\n"
+            f"══════════════════════════════════════════════════════\n"
+            f"  Action suggestion: {_action_display}\n"
+            f"  Alpha score:       {_alpha}/100\n"
+            f"  Hound thesis:      {_why_next}\n"
+            f"  X signals:         {', '.join(_sigs) if _sigs else 'N/A'}\n\n"
+            f"⚡ HOUND STRATEGY FRAME — read this before you start:\n"
+            f"  This is a SHORT-TERM SPECULATIVE setup, NOT a long-term value acquisition.\n"
+            f"  Do NOT over-anchor on P/E ratios, analyst price targets, or earnings dates.\n"
+            f"  The edge here is the Hound's real-time signal (X velocity, short squeeze, rotation).\n"
+            f"  Position size: SMALL (3–7% of cash) — asymmetric bet, not a core position.\n"
+            f"  Time horizon: SHORT (5–15 days) — follow the catalyst window, then exit.\n"
+            f"  Preferred watch_tag: momentum or breakout.\n"
+            f"  Confidence threshold: 0.60 (lower bar applies — you are sizing small to match the risk).\n"
+            f"  Only set should_enter=true if research_confidence >= 0.60.\n\n"
+        )
+
     return (
         f"You are HighTrade's senior acquisition analyst. Today is {datetime.now().strftime('%Y-%m-%d')}.\n"
         f"You have been given comprehensive research on {ticker} gathered from multiple sources.\n"
@@ -315,6 +373,7 @@ def _build_analyst_prompt(ticker: str, research: Dict,
         f"This is a paper trading system. Be precise and specific — no vague answers.\n"
         f"If you recommend entering, every price level must be a real number.\n\n"
         f"{_session_block}\n"
+        f"{_hound_block}"
         f"══════════════════════════════════════════════════════\n"
         f"PRICE & TECHNICALS — {ticker}\n"
         f"══════════════════════════════════════════════════════\n"
@@ -384,7 +443,8 @@ def _build_analyst_prompt(ticker: str, research: Dict,
         f"     a 1.5% move is normal noise for those names. e.g. TSLA product reveal → spike=2.5-3.0.\n"
         f"     If NOT event-driven, set all catalyst fields to null.\n\n"
         f"Set research_confidence as a float 0.0–1.0 based on how convinced you are.\n"
-        f"Only set should_enter=true if research_confidence >= {CONFIDENCE_THRESHOLD:.1f}.\n\n"
+        f"Only set should_enter=true if research_confidence >= "
+        f"{'0.60' if hound_context else f'{CONFIDENCE_THRESHOLD:.2f}'}.\n\n"
         + (
             f"📋 PREVIOUSLY IDENTIFIED DATA GAPS — from prior research passes on {ticker}:\n"
             + ''.join(f"  • {g}\n" for g in (prior_gaps or []))
@@ -521,7 +581,14 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection) -> Opt
     except Exception as _pge:
         logger.debug(f"  ⚠️  Could not load prior data gaps for {ticker}: {_pge}")
 
-    prompt = _build_analyst_prompt(ticker, research, prior_gaps=prior_gaps or None)
+    # Pull Hound intel if this ticker originated from grok_hound_auto
+    hound_context = _get_hound_context(ticker, conn)
+    if hound_context:
+        logger.info(f"  🐕 {ticker} is a Hound pick (alpha={hound_context.get('alpha_score')}, "
+                    f"action={hound_context.get('action_suggestion')}) — applying Hound strategy frame")
+
+    prompt = _build_analyst_prompt(ticker, research, prior_gaps=prior_gaps or None,
+                                   hound_context=hound_context)
 
     # ── Quota pre-check: downgrade to balanced if Pro is near its soft limit ──
     quota_status = gemini_client.check_quota('reasoning')
@@ -597,7 +664,8 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection) -> Opt
     )
 
     # ── Write to conditional_tracking if above threshold ─────────────────
-    if should_enter and confidence >= CONFIDENCE_THRESHOLD:
+    _effective_threshold = HOUND_CONFIDENCE_THRESHOLD if hound_context else CONFIDENCE_THRESHOLD
+    if should_enter and confidence >= _effective_threshold:
         try:
             # Expire any prior active conditionals for this ticker before inserting new one
             conn.execute("""
@@ -688,8 +756,8 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection) -> Opt
 
     else:
         reason = (
-            f"confidence {confidence:.2f} < threshold {CONFIDENCE_THRESHOLD}"
-            if not should_enter or confidence < CONFIDENCE_THRESHOLD
+            f"confidence {confidence:.2f} < threshold {_effective_threshold}"
+            if not should_enter or confidence < _effective_threshold
             else "analyst_pass"
         )
         logger.info(f"  ⏭️  {ticker} skipped: {reason}")

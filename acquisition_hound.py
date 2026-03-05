@@ -206,8 +206,11 @@ class GrokHound:
             ))
 
             # --- AUTO-PROMOTION LOGIC ---
-            # If Alpha is high (>= 75), send straight to research pipeline
-            if score >= 75:
+            # Tiered: buy_small promotes at alpha >= 60 (short-term speculative);
+            # add_to_watch / monitor stay at >= 75 (full pipeline conviction).
+            _action_lower = (c.get('action_suggestion') or '').lower()
+            _promo_threshold = 60 if _action_lower == 'buy_small' else 75
+            if score >= _promo_threshold:
                 # Check if already in watchlist
                 cursor.execute("SELECT 1 FROM acquisition_watchlist WHERE ticker = ? AND status != 'archived'", (ticker,))
                 if not cursor.fetchone():
