@@ -141,6 +141,82 @@ class BrokerDecisionEngine:
         self._stop_veto_count: Dict[str, int] = {}
         self._MAX_STOP_VETOES = 2
 
+    # ── Holdings context for purchase gates ────────────────────────────────
+
+    def _get_holdings_context(self, tickers: List[str] = None) -> Tuple[dict, str]:
+        """
+        Query open positions from trade_records. Returns:
+          - holdings dict: {ticker: {shares, cost_basis, entry_date, unrealized_pnl_pct, ...}}
+          - formatted text block suitable for injection into Gemini prompts
+
+        If `tickers` is provided, only those are included. Otherwise all open.
+        """
+        holdings: dict = {}
+        try:
+            conn = sqlite3.connect(str(DB_PATH), timeout=5)
+            conn.row_factory = sqlite3.Row
+            query = """
+                SELECT asset_symbol, SUM(shares) as total_shares,
+                       SUM(position_size_dollars) as total_cost,
+                       AVG(entry_price) as avg_entry_price,
+                       MIN(entry_date) as first_entry,
+                       MAX(entry_date) as last_entry,
+                       COUNT(*) as lot_count,
+                       MAX(current_price) as current_price,
+                       SUM(unrealized_pnl_dollars) as unrealized_pnl_dollars
+                FROM trade_records
+                WHERE status = 'open'
+            """
+            if tickers:
+                placeholders = ','.join('?' for _ in tickers)
+                query += f" AND asset_symbol IN ({placeholders})"
+                query += " GROUP BY asset_symbol"
+                rows = conn.execute(query, [t.upper() for t in tickers]).fetchall()
+            else:
+                query += " GROUP BY asset_symbol"
+                rows = conn.execute(query).fetchall()
+            conn.close()
+
+            for r in rows:
+                ticker = r['asset_symbol']
+                total_cost = r['total_cost'] or 0
+                avg_entry  = r['avg_entry_price'] or 0
+                cur_price  = r['current_price'] or avg_entry
+                unrealized = r['unrealized_pnl_dollars'] or 0
+                pnl_pct    = ((cur_price - avg_entry) / avg_entry * 100) if avg_entry else 0
+                holdings[ticker] = {
+                    'total_shares':    r['total_shares'] or 0,
+                    'total_cost':      total_cost,
+                    'avg_entry_price': avg_entry,
+                    'current_price':   cur_price,
+                    'unrealized_pnl':  unrealized,
+                    'unrealized_pct':  pnl_pct,
+                    'first_entry':     r['first_entry'],
+                    'last_entry':      r['last_entry'],
+                    'lot_count':       r['lot_count'],
+                }
+        except Exception as e:
+            logger.warning(f"Holdings context query failed: {e}")
+
+        # Build text block
+        if not holdings:
+            text = "EXISTING HOLDINGS: None — no open positions in this ticker."
+        else:
+            lines = ["EXISTING HOLDINGS IN PORTFOLIO:"]
+            for tkr, h in holdings.items():
+                lines.append(
+                    f"  {tkr}: {h['total_shares']} shares, avg entry ${h['avg_entry_price']:.2f}, "
+                    f"current ${h['current_price']:.2f}, unrealized {h['unrealized_pct']:+.1f}% "
+                    f"(${h['unrealized_pnl']:+,.0f}), {h['lot_count']} lot(s) since {h['first_entry']}"
+                )
+            lines.append(
+                "  ⚠️  Consider whether adding more shares is warranted given existing exposure, "
+                "or if this would create excessive concentration risk."
+            )
+            text = '\n'.join(lines)
+
+        return holdings, text
+
     def analyze_market_for_trades(self, defcon_level: int, signal_score: float,
                                   crisis_description: str, market_data: Dict) -> Optional[Dict]:
         """
@@ -173,6 +249,22 @@ class BrokerDecisionEngine:
             logger.warning(f"⚠️  Portfolio exposure limit reached ({current_exposure + position_size:.0f})")
             return None
 
+        # Decision 5: Holdings awareness — log existing exposure in recommended tickers
+        rec_tickers = [
+            recommendations.get('primary_asset'),
+            recommendations.get('secondary_asset'),
+            recommendations.get('tertiary_asset'),
+        ]
+        rec_tickers = [t for t in rec_tickers if t]
+        holdings, holdings_text = self._get_holdings_context(rec_tickers)
+        if holdings:
+            logger.info(f"  📋 Existing holdings in recommended tickers: {list(holdings.keys())}")
+            for tkr, h in holdings.items():
+                logger.info(
+                    f"     {tkr}: {h['total_shares']} shares, avg ${h['avg_entry_price']:.2f}, "
+                    f"P&L {h['unrealized_pct']:+.1f}%"
+                )
+
         # Build trade decision
         decision = {
             'timestamp': datetime.now().isoformat(),
@@ -188,7 +280,9 @@ class BrokerDecisionEngine:
             'vix': vix,
             'defcon_level': defcon_level,
             'signal_score': signal_score,
-            'rationale': recommendations['rationale']
+            'rationale': recommendations['rationale'],
+            'existing_holdings': holdings,
+            'existing_holdings_text': holdings_text,
         }
 
         logger.info(f"✅ BUY DECISION: {crisis_type} - Size: ${position_size:,.0f}, Confidence: {decision['confidence']}%")
@@ -801,10 +895,14 @@ class BrokerDecisionEngine:
         import gemini_client as _gc
         _session_ctx = _gc.market_context_block(vix=float(vix) if vix else None)
 
+        # Fetch existing holdings for this ticker so the gate can see our exposure
+        holdings, holdings_text = self._get_holdings_context([ticker])
+
         prompt = (
             f"You are a pre-purchase risk gate for an automated paper trading system.\n"
             f"A conditional entry just triggered for {ticker} (watch_tag: {tag}).\n\n"
             f"{_session_ctx}\n"
+            f"{holdings_text}\n\n"
             f"ORIGINAL THESIS:\n{thesis}\n\n"
             f"TRADE LEVELS:\n"
             f"  Entry target: ${entry_tgt} | Current price: ${current_price:.2f}\n"
@@ -822,7 +920,11 @@ class BrokerDecisionEngine:
             f"1. Check each entry condition against the live state. Are they met?\n"
             f"2. Check each invalidation condition. Has any been triggered?\n"
             f"3. Given the watch_tag '{tag}', does this entry make sense right now?\n"
-            f"4. Approve or veto this purchase.\n\n"
+            f"4. If we ALREADY hold shares of {ticker}, evaluate whether adding more\n"
+            f"   is warranted (averaging down into strength, thesis reinforcement)\n"
+            f"   or creates excessive concentration risk. Factor existing exposure into\n"
+            f"   your approval/veto decision.\n"
+            f"5. Approve or veto this purchase.\n\n"
             f"Respond ONLY in this exact JSON (no other text):\n"
             f'{{\n'
             f'  "approve": true,\n'
@@ -1155,6 +1257,58 @@ class AutonomousBroker:
         # Execute if auto_execute enabled
         if self.auto_execute:
             logger.info("🤖 BROKER: Executing autonomous buy...")
+
+            # ── Holdings-aware check: skip tickers we already hold at full size ──
+            # The gate doesn't hard-block — it adjusts. If we already hold all 3
+            # tickers from a recent buy, there's no new exposure to add.
+            existing = trade_decision.get('existing_holdings', {})
+            planned_tickers = [
+                trade_decision['assets']['primary'],
+                trade_decision['assets']['secondary'],
+                trade_decision['assets']['tertiary'],
+            ]
+            already_held = [t for t in planned_tickers if t in existing]
+            if len(already_held) == len(planned_tickers):
+                total_existing = sum(existing[t]['total_cost'] for t in already_held)
+                logger.warning(
+                    f"  📋 All {len(already_held)} recommended tickers already held "
+                    f"(${total_existing:,.0f} exposure) — passing to AI gate for review"
+                )
+                # Run a quick Gemini gate to decide if adding more is warranted
+                import gemini_client
+                holdings_text = trade_decision.get('existing_holdings_text', '')
+                gate_prompt = (
+                    f"You are a portfolio risk gate for an automated paper trading system.\n"
+                    f"The broker wants to buy a 3-asset package but ALL tickers are already held:\n\n"
+                    f"{holdings_text}\n\n"
+                    f"PROPOSED PURCHASE:\n"
+                    f"  Tickers: {', '.join(planned_tickers)}\n"
+                    f"  New position size: ${trade_decision['position_size']:,.0f}\n"
+                    f"  Crisis type: {trade_decision['crisis_type']}\n"
+                    f"  DEFCON: {trade_decision['defcon_level']}/5\n"
+                    f"  Signal score: {trade_decision['signal_score']:.1f}/100\n"
+                    f"  Rationale: {trade_decision['rationale']}\n\n"
+                    f"Should the system add MORE shares to these existing positions?\n"
+                    f"Consider: Is this a genuine new signal (averaging down into confirmed weakness)\n"
+                    f"or a redundant trigger (same conditions, same day, duplicate buy)?\n\n"
+                    f'Respond ONLY in this exact JSON:\n'
+                    f'{{"approve": true/false, "reason": "brief explanation"}}'
+                )
+                try:
+                    gate_text, _, _ = gemini_client.call(
+                        prompt=gate_prompt, model_key='balanced', caller='broker_gate'
+                    )
+                    if gate_text:
+                        if "```" in gate_text:
+                            gate_text = gate_text.split("```json")[-1].split("```")[0].strip() if "```json" in gate_text else gate_text.split("```")[1].split("```")[0].strip()
+                        gate_result = json.loads(gate_text.strip())
+                        if not gate_result.get('approve', True):
+                            logger.info(f"  🚫 Holdings gate VETOED additional buy: {gate_result.get('reason', 'no reason')}")
+                            self.decision_engine.record_decision(trade_decision, executed=False, result="VETOED_HOLDINGS")
+                            return False
+                        logger.info(f"  ✅ Holdings gate APPROVED additional buy: {gate_result.get('reason', '')}")
+                except Exception as e:
+                    logger.warning(f"  ⚠️  Holdings gate failed ({e}) — proceeding with buy (fail-open)")
 
             # Build alert for execution
             alert = {

@@ -179,7 +179,7 @@ class HighTradeOrchestrator:
             self.fred = None
             self.fred_enabled = False
 
-        self.previous_defcon = 5
+        self.previous_defcon = self._load_last_defcon()
         self.monitoring_cycles = 0
         self.alerts_sent = 0
         self.pending_trade_alerts = []
@@ -202,6 +202,28 @@ class HighTradeOrchestrator:
         logger.info(f"🤖 Broker Mode: {broker_mode.upper()}")
         logger.info(f"📰 News Monitoring: {'ENABLED' if self.news_enabled else 'DISABLED'}")
         logger.info(f"📡 Slash commands: python3 hightrade_cmd.py /help")
+
+    # ── DEFCON persistence across restarts ────────────────────────────────
+    def _load_last_defcon(self) -> int:
+        """Load last known DEFCON from DB so restarts don't trigger phantom buys.
+        Falls back to 5 (safe/no-trade) if no history exists."""
+        try:
+            import sqlite3
+            conn = sqlite3.connect(str(DB_PATH), timeout=5)
+            # Most recent monitoring point has the current DEFCON
+            row = conn.execute(
+                "SELECT defcon_level FROM signal_monitoring "
+                "ORDER BY monitor_id DESC LIMIT 1"
+            ).fetchone()
+            conn.close()
+            if row and row[0] is not None:
+                level = int(row[0])
+                logger.info(f"📋 Restored previous DEFCON from DB: {level}")
+                return level
+        except Exception as e:
+            logger.warning(f"⚠️  Could not load last DEFCON: {e}")
+        logger.info("📋 No prior DEFCON found — defaulting to 5 (safe)")
+        return 5
 
     def check_system_health(self):
         """Verify database and configuration are ready"""
