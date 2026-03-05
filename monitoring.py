@@ -159,7 +159,8 @@ class SignalMonitor:
         return scores
 
     def calculate_defcon_level(self, signal_scores, market_data, news_signal=None,
-                               flash_forecast=None, macro_modifier=None):
+                               flash_forecast=None, macro_modifier=None,
+                               briefing_signal_quality=None):
         """Determine DEFCON level based on signal clustering, news override, and Claude analysis"""
         composite_score = sum(signal_scores.values()) / len(signal_scores) if signal_scores else 0
 
@@ -201,13 +202,22 @@ class SignalMonitor:
                         _nudge += 1   # flash analysis more bearish than quant signals
             except (TypeError, ValueError):
                 pass
+        # Briefing signal quality nudge: noisy signals → more defensive,
+        # strong signals → more willing to act
+        if briefing_signal_quality:
+            _sq = briefing_signal_quality.lower()
+            if any(w in _sq for w in ('noise', 'low quality', 'unreliable', 'conflicting')):
+                _nudge += 1   # more defensive
+            elif any(w in _sq for w in ('strong', 'high quality', 'consistent', 'actionable')):
+                _nudge -= 1   # more willing to act
         _nudge = max(-1, min(1, _nudge))   # clamp combined nudge to ±1
         base_defcon = max(1, min(5, base_defcon + _nudge))
         if _nudge != 0:
             import logging as _logging
             _logging.getLogger(__name__).info(
                 f"  💡 Soft nudge applied: {'+' if _nudge > 0 else ''}{_nudge} "
-                f"(macro_modifier={macro_modifier}, flash_forecast={flash_forecast})"
+                f"(macro_modifier={macro_modifier}, flash_forecast={flash_forecast}, "
+                f"signal_quality={'yes' if briefing_signal_quality else 'no'})"
                 f" → base DEFCON {base_defcon}"
             )
 

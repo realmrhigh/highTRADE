@@ -14,9 +14,39 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from pathlib import Path
 
-_ET = ZoneInfo('America/New_York')
+_ET = ZoneInfo('America/New_York')       # trading schedule — always Eastern
+_LOCAL_TZ = None                          # display timezone — auto-detected below
+
+# Detect system timezone via macOS /etc/localtime symlink
+try:
+    _p = Path('/etc/localtime')
+    if _p.is_symlink():
+        _link = str(_p.resolve())
+        _idx = _link.find('zoneinfo/')
+        if _idx >= 0:
+            _LOCAL_TZ = ZoneInfo(_link[_idx + 9:])
+except Exception:
+    pass
+if _LOCAL_TZ is None:
+    _LOCAL_TZ = _ET  # fallback to ET if detection fails
+
 def _et_now() -> datetime:
+    """Current time in ET — used for trading schedule logic."""
     return datetime.now(_ET)
+
+def _local_now() -> datetime:
+    """Current time in local timezone — used for dashboard display."""
+    return datetime.now(_LOCAL_TZ)
+
+def _utc_to_local(utc_str: str) -> str:
+    """Convert a UTC datetime string to local-tz 'YYYY-MM-DD HH:MM:SS TZ' string."""
+    try:
+        dt_utc = datetime.fromisoformat(utc_str.replace('T', ' ')[:19]).replace(
+            tzinfo=ZoneInfo('UTC'))
+        dt_local = dt_utc.astimezone(_LOCAL_TZ)
+        return dt_local.strftime('%Y-%m-%d %H:%M:%S ') + dt_local.tzname()
+    except Exception:
+        return utc_str or '—'
 
 SCRIPT_DIR = Path(__file__).parent
 DB_PATH    = SCRIPT_DIR / "trading_data" / "trading_history.db"
@@ -209,21 +239,21 @@ def fetch_hound_last_run():
 
 def fetch_gemini_usage():
     """
-    Return rolling-24h Gemini usage from gemini_call_log for all tracked models.
+    Return Gemini usage since midnight UTC for all tracked models.
     Returns dict keyed by model_id:
       {
         'gemini-2.5-pro': {
             'calls': 42, 'tokens_in': 210000, 'tokens_out': 18000,
-            'daily_limit': 100, 'rpm_limit': 5,
-            'pct': 0.42, 'status': 'warn',
-            'resets_in_s': 51420,   # seconds until rolling window resets (approx)
+            'daily_limit': 1500, 'rpm_limit': 120,
+            'pct': 0.028, 'status': 'ok',
+            'resets_in_s': 51420,   # seconds until midnight UTC
         }, ...
       }
     """
     try:
         import gemini_client
-        # Use reset-aligned counts — synced to Google's actual daily reset times
-        # (not a rolling 24h window) so percentages and "resets in" match the Gemini CLI.
+        # Use reset-aligned counts — tallied since midnight UTC
+        # so percentages and "resets in" are consistent.
         usage = gemini_client.get_reset_aligned_usage()
         result = {}
         for model_id, data in usage.items():
@@ -719,13 +749,13 @@ def build_conditional_rows(conditionals):
     return ''.join(rows)
 
 def _utc_to_et_str(utc_str: str) -> str:
-    """Convert a UTC datetime string ('2026-03-01 05:50:55') to ET 'MM/DD HH:MM' label."""
+    """Convert a UTC datetime string ('2026-03-01 05:50:55') to local-tz 'MM/DD HH:MM AM/PM' label."""
     try:
         from datetime import timezone
         _UTC = timezone.utc
         dt_utc = datetime.fromisoformat(utc_str.replace('T', ' ')[:19]).replace(tzinfo=_UTC)
-        dt_et  = dt_utc.astimezone(_ET)
-        return dt_et.strftime('%m/%d %I:%M %p').lstrip('0')
+        dt_local = dt_utc.astimezone(_LOCAL_TZ)
+        return dt_local.strftime('%m/%d %I:%M %p').lstrip('0')
     except Exception:
         return (utc_str or '—')[11:16]
 
@@ -943,17 +973,19 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
                sig_history, news, cong_clusters, cong_trades, hound_candidates, hound_last_run=None,
                conditionals=None, gemini_usage=None, exit_queue=None):
 
-    now_str    = _et_now().strftime('%Y-%m-%d %H:%M:%S ET')
-    last_cycle = status.get('created_at', '—')
+    _ln = _local_now()
+    now_str    = _ln.strftime('%Y-%m-%d %H:%M:%S ') + _ln.tzname()
+    last_cycle = _utc_to_local(status.get('created_at', '—'))
 
     # Hound last-run display
     if hound_last_run:
         try:
-            from datetime import timezone
             lr = datetime.fromisoformat(str(hound_last_run).replace('Z', ''))
-            delta = datetime.now() - lr
+            # hound timestamps are stored in UTC; convert to local for display
+            lr_local = lr.replace(tzinfo=ZoneInfo('UTC')).astimezone(_LOCAL_TZ)
+            delta = _local_now() - lr_local
             mins = int(delta.total_seconds() // 60)
-            hound_last_str = f"{lr.strftime('%m/%d %H:%M')} ({mins}m ago)" if mins < 120 else lr.strftime('%m/%d %H:%M')
+            hound_last_str = f"{lr_local.strftime('%m/%d %I:%M %p')} ({mins}m ago)" if mins < 120 else lr_local.strftime('%m/%d %I:%M %p')
         except Exception:
             hound_last_str = str(hound_last_run)[:16]
     else:
@@ -964,10 +996,10 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
     _quota_label = {'ok': 'OK', 'warn': 'WARN', 'block': '⚠ NEAR LIMIT'}
     _auth_icon   = {'cli': '🔐', 'rest': '🔑', 'unknown': '❓'}
     _model_short = {
-        'gemini-3.1-pro-preview':      '3.1 Pro Preview ★ REASONING (50/d, 2 RPM)',
-        'gemini-3-flash-preview':      '3 Flash Preview ★ FAST (1500/d, 15 RPM)',
-        'gemini-2.5-pro':              '2.5 Pro ↩ CLI FALLBACK (100/d, 5 RPM)',
-        'gemini-3.1-flash-lite-preview': '3.1 Flash Lite ↩ REST FALLBACK (1500/d, 30 RPM)',
+        'gemini-3.1-pro-preview':      '3.1 Pro Preview ★ REASONING (250/d, 25 RPM)',
+        'gemini-3-flash-preview':      '3 Flash ★ FAST (1500/d, 120 RPM)',
+        'gemini-2.5-pro':              '2.5 Pro ↩ CLI FALLBACK (1500/d, 120 RPM)',
+        'gemini-3.1-flash-lite-preview': '3.1 Flash Lite ↩ REST FALLBACK (1500/d, 120 RPM)',
     }
     _model_order = [
         'gemini-3.1-pro-preview',
@@ -1000,15 +1032,15 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
             _auth_str = ' &middot; '.join(_auth_parts)
         else:
             _auth_str = 'no calls'
-        # Resets-in string
+        # Resets-in string (midnight UTC)
         _rs = _d.get('resets_in_s', 0)
         if _rs > 0:
             _rh, _rm = divmod(_rs // 60, 60)
-            _reset_str = f'resets in {_rh}h {_rm}m'
+            _reset_str = f'resets at midnight UTC ({_rh}h {_rm}m)'
         elif _calls == 0:
-            _reset_str = 'no calls this window'
+            _reset_str = 'no calls today'
         else:
-            _reset_str = 'window expired'
+            _reset_str = 'resets at midnight UTC'
         _quota_rows += f"""
         <div style="margin-bottom:8px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
@@ -1024,7 +1056,7 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
         _quota_rows = '<div style="color:#555;font-size:10px;">No calls logged yet</div>'
     gemini_quota_html = f"""
       <div class="stat">
-        <div class="stat-label">&#128200; Gemini Quota &mdash; Since Last Reset</div>
+        <div class="stat-label">&#128200; Gemini Quota &mdash; Since Midnight UTC</div>
         {_quota_rows}
       </div>"""
 
@@ -1954,22 +1986,22 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
       <div class="stat">
         <div class="stat-label">Gemini 3.1 Pro Preview &mdash; Reasoning Tier ★ PRIMARY</div>
         <div style="color:#00ff88;font-size:11px;">&#9679; gemini-3.1-pro-preview &middot; thinking=-1 (dynamic) &middot; OAuth CLI</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">4:30 PM deep daily briefing &middot; acquisition analyst &middot; pre-purchase &amp; exit gates &middot; 16k output &middot; 50/d &middot; 2 RPM</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">4:30 PM deep daily briefing &middot; acquisition analyst &middot; pre-purchase &amp; exit gates &middot; 16k output &middot; 250/d &middot; 25 RPM</div>
       </div>
       <div class="stat">
         <div class="stat-label">Gemini 3 Flash Preview &mdash; Fast Tier ★ PRIMARY</div>
         <div style="color:#00ff88;font-size:11px;">&#9679; gemini-3-flash-preview &middot; thinking=8k &middot; OAuth CLI</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Per-cycle news triage &middot; briefings &middot; verifier &middot; Step-1 fallback for Pro &middot; 1500/d &middot; 15 RPM</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Per-cycle news triage &middot; briefings &middot; verifier &middot; Step-1 fallback for Pro &middot; 1500/d &middot; 120 RPM</div>
       </div>
       <div class="stat">
         <div class="stat-label">Gemini 2.5 Pro &mdash; CLI Fallback</div>
         <div style="color:#ffb300;font-size:11px;">&#9679; gemini-2.5-pro &middot; thinking=8k &middot; OAuth CLI &middot; Step-2 fallback</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Activates when Flash unavailable via CLI &middot; 100/d &middot; 5 RPM</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Activates when Flash unavailable via CLI &middot; 1500/d &middot; 120 RPM</div>
       </div>
       <div class="stat">
         <div class="stat-label">Gemini 3.1 Flash Lite &mdash; REST Fallback</div>
         <div style="color:#7eb8f7;font-size:11px;">&#9679; gemini-3.1-flash-lite-preview &middot; no thinking &middot; API Key (REST)</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Catches all CLI failures &middot; separate quota pool from OAuth &middot; 1500/d &middot; 30 RPM</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Catches all CLI failures &middot; separate quota pool from OAuth &middot; 1500/d &middot; 120 RPM</div>
       </div>
       <div class="stat">
         <div class="stat-label">Grok 4.1 &mdash; Parallel Analyst</div>

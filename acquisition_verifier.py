@@ -56,7 +56,7 @@ LOW_PRIORITY_COOLDOWN_DAYS   = 3      # low_priority items re-checked every 3 da
 MAX_INVALIDATIONS_BEFORE_ARCHIVE = 2  # archive after this many invalidations with conf < 0.25
 
 # Per-cycle caps — prevent a single verifier run from consuming the entire Flash RPM budget.
-# At 15 RPM with 4s spacing, 10 actives = ~40s + 3 LP = ~12s = ~52s per cycle.
+# At 120 RPM with 0.5s spacing, 10 actives = ~5s + 3 LP = ~1.5s = ~6.5s per cycle.
 # Remaining RPM headroom is preserved for analyst, broker, briefing calls.
 MAX_ACTIVE_PER_CYCLE = 10   # top-N active conditionals processed per orchestrator cycle
 MAX_LP_PER_CYCLE     = 3    # low-priority conditionals checked per orchestrator cycle

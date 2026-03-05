@@ -251,7 +251,8 @@ Respond with ONLY valid JSON in this exact structure:
                            flash_analysis: Optional[Dict], current_defcon: int,
                            positions: Optional[List] = None,
                            sector_rotation: Optional[Dict] = None,
-                           vix_term_structure: Optional[Dict] = None) -> str:
+                           vix_term_structure: Optional[Dict] = None,
+                           briefing_context: Optional[str] = None) -> str:
         """Build deep analysis prompt for Pro model"""
         
         # All articles with full description
@@ -313,6 +314,8 @@ SYSTEM STATE:
 
 MACRO & SECTOR CONTEXT:
 {macro_text}
+
+{briefing_context or ''}
 
 SCORE COMPONENTS:
 {json.dumps(score_components, indent=2)}
@@ -384,17 +387,18 @@ Provide a comprehensive trading risk analysis. Respond with ONLY valid JSON:
                          flash_analysis: Optional[Dict], current_defcon: int,
                          positions: Optional[List] = None,
                          sector_rotation: Optional[Dict] = None,
-                         vix_term_structure: Optional[Dict] = None) -> Optional[Dict]:
+                         vix_term_structure: Optional[Dict] = None,
+                         briefing_context: Optional[str] = None) -> Optional[Dict]:
         """
         Run Gemini Pro deep analysis - triggered on elevated signals.
         Thorough, full context, influences DEFCON decisions.
         """
         logger.info(f"  🧠 Running Gemini Pro DEEP analysis (score={news_score:.1f}, defcon={current_defcon})...")
-        
+
         prompt = self._build_pro_prompt(
             articles, score_components, sentiment_summary, crisis_type,
             news_score, flash_analysis, current_defcon, positions,
-            sector_rotation, vix_term_structure
+            sector_rotation, vix_term_structure, briefing_context
         )
         
         # Pro gets full reasoning budget via gemini_client

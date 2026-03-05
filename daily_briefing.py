@@ -268,6 +268,9 @@ _JSON_TEMPLATE = """{
   "macro_alignment": "how macro data aligns with or contradicts news signals",
   "congressional_alpha": "any actionable intelligence from political trading data",
   "portfolio_assessment": "assessment of current open positions given today's data",
+  "position_actions": [
+    {"ticker": "SYMBOL", "action": "tighten_stop | hold | take_profit | add | exit", "adjusted_stop_pct": -2.5, "adjusted_tp_pct": null, "urgency": "immediate | watch | routine", "reasoning": "one sentence why"}
+  ],
   "watchlist_tomorrow": ["TICKER1", "TICKER2", "TICKER3"],
   "entry_conditions_tomorrow": "specific conditions that would trigger a buy signal",
   "defcon_forecast": "expected DEFCON level tomorrow if current trends continue",
@@ -443,6 +446,11 @@ def _build_daily_prompt(ctx: Dict) -> str:
         "IMPORTANT: You MUST populate every single field in the JSON. "
         "Do not leave any field as a placeholder or empty string. "
         "regime_confidence and model_confidence must be actual numbers 0.0-1.0.\n\n"
+        "For position_actions: produce one entry per open position with a specific recommendation. "
+        "adjusted_stop_pct is the stop as a percentage below current price (negative number, "
+        "e.g. -2.5 means stop at 2.5% below current price). adjusted_tp_pct is the target as a "
+        "percentage above current price. Use null for any level you would not change. "
+        "If there are no open positions, use an empty array [].\n\n"
         "Respond in this exact JSON format:\n"
     )
     return body + _JSON_TEMPLATE
@@ -657,6 +665,73 @@ def _save_to_db(date_str: str, ctx: Dict, results: Dict):
 
     # Reverify all active acquisition conditionals with Flash
     _run_acquisition_verification()
+
+    # Trigger exit re-analysis for positions flagged by the briefing
+    _trigger_exit_reanalysis(results)
+
+
+def _trigger_exit_reanalysis(results: Dict):
+    """
+    After a daily briefing, check if any position_actions recommend tightening
+    stops or exiting with urgency=immediate. For those, clear the exit_analyst_log
+    guard so the next monitoring cycle re-runs exit analysis on those positions.
+    """
+    # Find the reasoning tier result (most authoritative)
+    reasoning = results.get('reasoning', {})
+    if not reasoning:
+        return
+
+    position_actions = reasoning.get('position_actions', [])
+    if not position_actions:
+        return
+
+    # Filter to urgent actions that warrant re-analysis
+    flagged_tickers = []
+    for action in position_actions:
+        if not isinstance(action, dict):
+            continue
+        act = action.get('action', '')
+        urgency = action.get('urgency', 'routine')
+        ticker = (action.get('ticker') or '').upper().strip()
+        if ticker and act in ('tighten_stop', 'exit') and urgency == 'immediate':
+            flagged_tickers.append(ticker)
+
+    if not flagged_tickers:
+        return
+
+    try:
+        import sqlite3 as _sq
+        _db = Path(__file__).parent / 'trading_data' / 'trading_history.db'
+        conn = _sq.connect(str(_db), timeout=5)
+        conn.execute("PRAGMA journal_mode=WAL")
+
+        for ticker in flagged_tickers:
+            # Find open trade_ids for this ticker
+            trade_ids = conn.execute("""
+                SELECT trade_id FROM trade_records
+                WHERE asset_symbol = ? AND status = 'open'
+            """, (ticker,)).fetchall()
+
+            for (trade_id,) in trade_ids:
+                # Delete the most recent exit_analyst_log entry to bypass the 20-hour guard
+                conn.execute("""
+                    DELETE FROM exit_analyst_log
+                    WHERE trade_id = ? AND id = (
+                        SELECT id FROM exit_analyst_log
+                        WHERE trade_id = ?
+                        ORDER BY created_at DESC LIMIT 1
+                    )
+                """, (trade_id, trade_id))
+                logger.info(
+                    f"  🔄 Briefing flagged {ticker} (trade {trade_id}) for exit re-analysis"
+                )
+
+        conn.commit()
+        conn.close()
+        logger.info(f"  📋 Exit re-analysis triggered for: {', '.join(flagged_tickers)}")
+
+    except Exception as e:
+        logger.warning(f"Exit reanalysis trigger failed: {e}")
 
 
 def _queue_acquisition_watchlist(date_str: str, results: Dict):

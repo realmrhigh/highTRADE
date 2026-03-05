@@ -76,8 +76,7 @@ def _get_api_key() -> str:
 # Each model has exactly one set of parameters and limits.
 MODELS = {
     'gemini-3.1-pro-preview': {
-        'rpm':  2,   'rpd':  50,   'tpm':  32_000,
-        'reset_utc': (14, 30),
+        'rpm': 25,   'rpd':  250,  'tpm': 1_000_000,
         'thinking_budget': -1,
         'max_output_tokens': 16384,
         'temperature': 1.0,
@@ -86,18 +85,16 @@ MODELS = {
         'role': 'reasoning',
     },
     'gemini-3-flash-preview': {
-        'rpm': 15,   'rpd': 1500,  'tpm': 1_000_000,
-        'reset_utc': (8, 45),
+        'rpm': 120,  'rpd': 1500,  'tpm': 1_000_000,
         'thinking_budget': 8000,
         'max_output_tokens': 8192,
         'temperature': 0.4,
         'auth': 'cli',
-        'label': '3 Flash Preview',
+        'label': '3 Flash',
         'role': 'fast',
     },
     'gemini-2.5-pro': {
-        'rpm':  5,   'rpd':  100,  'tpm': 250_000,
-        'reset_utc': (14, 30),
+        'rpm': 120,  'rpd': 1500,  'tpm': 2_000_000,
         'thinking_budget': 8000,
         'max_output_tokens': 16384,
         'temperature': 1.0,
@@ -106,8 +103,7 @@ MODELS = {
         'role': 'fallback-cli',
     },
     'gemini-3.1-flash-lite-preview': {
-        'rpm': 30,   'rpd': 1500,  'tpm': 1_000_000,
-        'reset_utc': (8, 45),
+        'rpm': 120,  'rpd': 1500,  'tpm': 4_000_000,
         'thinking_budget': 0,
         'max_output_tokens': 8192,
         'temperature': 0.4,
@@ -264,10 +260,10 @@ class QuotaTracker:
         API/CLI call. This is the ONLY place RPM is enforced.
 
         Intervals (60/RPM):
-            3.1-pro-preview        -> 30.0s  (2 RPM)
-            2.5-pro                -> 12.0s  (5 RPM)
-            3-flash-preview        ->  4.0s  (15 RPM)
-            3.1-flash-lite-preview ->  2.0s  (30 RPM)
+            3.1-pro-preview        ->  2.4s  (25 RPM)
+            2.5-pro                ->  0.5s  (120 RPM)
+            3-flash-preview        ->  0.5s  (120 RPM)
+            3.1-flash-lite-preview ->  0.5s  (120 RPM)
         """
         model = MODELS.get(model_id)
         if not model:
@@ -367,16 +363,9 @@ class QuotaTracker:
 
     @staticmethod
     def _last_reset_utc(model_id: str) -> datetime:
-        """Most recent Google quota reset datetime (UTC naive) for this model."""
-        model = MODELS.get(model_id)
-        if not model or 'reset_utc' not in model:
-            return datetime.utcnow() - timedelta(hours=24)
-        h, m = model['reset_utc']
+        """Most recent midnight UTC — quota tallies reset at 00:00 UTC daily."""
         now = datetime.utcnow()
-        reset_today = now.replace(hour=h, minute=m, second=0, microsecond=0)
-        if reset_today > now:
-            reset_today -= timedelta(days=1)
-        return reset_today
+        return now.replace(hour=0, minute=0, second=0, microsecond=0)
 
     @staticmethod
     def _next_reset_utc(model_id: str) -> datetime:
@@ -521,8 +510,8 @@ def check_quota(model_key: str) -> str:
         return 'ok'
     return QuotaTracker.check_daily_quota(model_id)
 
-# Backward-compat reset-time helpers
-QUOTA_RESET_UTC = {mid: m['reset_utc'] for mid, m in MODELS.items() if 'reset_utc' in m}
+# Backward-compat reset-time helpers — all models now reset at midnight UTC
+QUOTA_RESET_UTC = {mid: (0, 0) for mid in MODELS}
 
 def _last_reset_utc(model_id: str) -> datetime:
     return QuotaTracker._last_reset_utc(model_id)

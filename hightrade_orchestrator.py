@@ -567,6 +567,14 @@ class HighTradeOrchestrator:
                                 open_positions = self.paper_trading.get_open_positions()
                                 
                                 # 1. Gemini Pro (Standard Tier)
+                                # Inject latest briefing intelligence into Pro context
+                                _pro_briefing_ctx = None
+                                try:
+                                    from broker_agent import get_latest_briefing_context
+                                    _, _pro_briefing_ctx = get_latest_briefing_context(scope='risk')
+                                except Exception:
+                                    pass
+
                                 gemini_pro_result = self.gemini.run_pro_analysis(
                                     articles_for_gemini,
                                     score_components=components,
@@ -577,7 +585,8 @@ class HighTradeOrchestrator:
                                     current_defcon=self.previous_defcon,
                                     positions=open_positions,
                                     sector_rotation=sector_result,
-                                    vix_term_structure=vix_result
+                                    vix_term_structure=vix_result,
+                                    briefing_context=_pro_briefing_ctx,
                                 )
                                 
                                 # 2. Grok Second Opinion (X.com Analysis)
@@ -806,10 +815,20 @@ class HighTradeOrchestrator:
             logger.info("📈 Calculating signal scores...")
             _news_score = news_signal.get('news_score', 0) if news_signal else 0
             signal_scores = self.monitor.calculate_signal_scores(yield_data, vix_data, market_data, news_score=_news_score)
+            # Fetch briefing signal quality for DEFCON nudge
+            _briefing_sq = None
+            try:
+                from broker_agent import get_latest_briefing_context
+                _br, _ = get_latest_briefing_context(scope='risk')
+                _briefing_sq = _br.get('signal_quality')
+            except Exception:
+                pass
+
             current_defcon, signal_score = self.monitor.calculate_defcon_level(
                 signal_scores, market_data, news_signal,
                 flash_forecast=getattr(self, '_last_flash_forecast', None),
                 macro_modifier=macro_result.get('defcon_modifier') if macro_result else None,
+                briefing_signal_quality=_briefing_sq,
             )
 
             logger.info(f"  📊 Bond Yield Spike Score: {signal_scores.get('bond_yield_spike', 0):.1f}")
@@ -1460,6 +1479,9 @@ Check dashboard for detailed analysis.
   "macro_alignment": "how FRED macro (yield curve, credit spreads, etc.) aligns with today's setup",
   "congressional_alpha": "actionable intelligence from recent congressional trading, or 'none notable'",
   "portfolio_assessment": "position-by-position: stop/TP proximity, thesis status, risk to each",
+  "position_actions": [
+    {"ticker": "SYMBOL", "action": "tighten_stop | hold | take_profit | add | exit", "adjusted_stop_pct": -2.5, "adjusted_tp_pct": null, "urgency": "immediate | watch | routine", "reasoning": "one sentence why"}
+  ],
   "positions_at_risk": ["TICKER: stop within X% because reason — or empty list"],
   "conditionals_to_watch": [{"ticker": "SYMBOL", "urgency": "high|medium|low", "reason": "one sentence"}],
   "defcon_forecast": "expected DEFCON level through end of session and why",
@@ -1482,6 +1504,9 @@ Check dashboard for detailed analysis.
   "macro_alignment": "how FRED macro aligns with today's intraday price action",
   "congressional_alpha": "actionable intelligence from congressional trading, or 'none notable'",
   "portfolio_assessment": "P&L update and momentum direction for each position — any thesis changes?",
+  "position_actions": [
+    {"ticker": "SYMBOL", "action": "tighten_stop | hold | take_profit | add | exit", "adjusted_stop_pct": -2.5, "adjusted_tp_pct": null, "urgency": "immediate | watch | routine", "reasoning": "one sentence why"}
+  ],
   "positions_at_risk": ["TICKER: stop within X% because reason — or empty list"],
   "conditionals_to_watch": [{"ticker": "SYMBOL", "urgency": "high|medium|low", "reason": "one sentence"}],
   "defcon_forecast": "expected DEFCON level for the afternoon session and into close",
@@ -1565,6 +1590,7 @@ YOUR TASK: {session_label}
 Synthesize ALL of the above into a structured briefing.
 Populate EVERY field. regime_confidence and model_confidence must be actual numbers 0.0–1.0.
 conditionals_to_watch must only contain tickers from SECTION 3 above.
+For position_actions: produce one entry per open position. adjusted_stop_pct is the stop as a percentage below current price (negative, e.g. -2.5). Use null for levels you would not change. Empty array [] if no positions.
 Respond in this EXACT JSON format — no prose, no markdown, no code fences:
 {json_template}"""
 
@@ -1707,6 +1733,14 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
         self._last_flash_forecast = defcon_forecast
         if defcon_forecast:
             logger.info(f"  🧭 Flash DEFCON forecast stored: {defcon_forecast}/5")
+
+        # Apply position_actions from flash briefing (tighten stops, adjust TPs)
+        try:
+            adjusted = self.broker.decision_engine.apply_briefing_position_actions()
+            if adjusted > 0:
+                logger.info(f"  🔧 Briefing position actions: {adjusted} stop/TP adjustment(s) applied")
+        except Exception as _bpa_e:
+            logger.warning(f"  ⚠️  Briefing position actions failed: {_bpa_e}")
 
         # Update per-ticker attention scores from conditionals_to_watch list
         # (convert to the format _update_attention_scores expects)
@@ -1856,6 +1890,14 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
                         f"confidence={r.get('model_confidence',0):.2f} | "
                         f"{r.get('_input_tokens',0)}→{r.get('_output_tokens',0)} tokens"
                     )
+
+            # Apply position_actions from close briefing
+            try:
+                adjusted = self.broker.decision_engine.apply_briefing_position_actions()
+                if adjusted > 0:
+                    logger.info(f"  🔧 Close briefing position actions: {adjusted} adjustment(s) applied")
+            except Exception as _bpa_e:
+                logger.warning(f"  ⚠️  Close briefing position actions failed: {_bpa_e}")
 
             # Trigger acquisition pipeline after briefing (researcher then analyst)
             # This handles the "at close" requirement.

@@ -126,6 +126,135 @@ def _queue_rebound_watchlist(exit: dict) -> None:
         logger.warning(f"Rebound watchlist insert failed for {ticker}: {e}")
 
 
+# ─── Briefing Context Retrieval (module-level) ──────────────────────────────
+
+def get_latest_briefing_context(db_path: str = None, scope: str = 'all') -> Tuple[dict, str]:
+    """
+    Fetch the latest daily briefing intelligence from daily_briefings.
+
+    Returns (briefing_dict, formatted_text_block).
+    Used by broker_agent, exit_analyst, monitoring, and orchestrator.
+
+    scope:
+      'all'       — full context
+      'risk'      — regime / risk / opportunity / signal quality
+      'positions' — position_actions + positions_at_risk
+    """
+    _db = db_path or str(DB_PATH)
+    briefing: dict = {}
+    today = _et_now().strftime('%Y-%m-%d')
+    yesterday = (_et_now() - timedelta(days=1)).strftime('%Y-%m-%d')
+
+    try:
+        conn = sqlite3.connect(_db, timeout=5)
+        conn.row_factory = sqlite3.Row
+
+        # Most recent briefing (any type) from today or yesterday
+        row = conn.execute("""
+            SELECT model_key, date, market_regime, regime_confidence,
+                   headline_summary, biggest_risk, biggest_opportunity,
+                   signal_quality, macro_alignment, congressional_alpha,
+                   portfolio_assessment, entry_conditions, defcon_forecast,
+                   model_confidence, full_response_json
+            FROM daily_briefings
+            WHERE date IN (?, ?)
+            ORDER BY created_at DESC LIMIT 1
+        """, (today, yesterday)).fetchone()
+
+        if not row:
+            conn.close()
+            return {}, "BRIEFING CONTEXT: No recent briefing available."
+
+        briefing = dict(row)
+        briefing_date = briefing.get('date', '')
+
+        # Staleness guard: if >1 day old, mark it
+        is_stale = briefing_date < yesterday
+
+        # Parse full_response_json for structured fields
+        full_json = {}
+        try:
+            raw = briefing.get('full_response_json', '')
+            if raw:
+                full_json = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        # Extract structured arrays from full_response_json
+        briefing['position_actions'] = full_json.get('position_actions', [])
+        briefing['positions_at_risk'] = full_json.get('positions_at_risk', [])
+        briefing['conditionals_to_watch'] = full_json.get('conditionals_to_watch', [])
+        briefing['key_themes'] = full_json.get('key_themes', [])
+
+        # Also fetch latest reasoning briefing if the most recent was a flash
+        if briefing.get('model_key') in ('morning_flash', 'midday_flash'):
+            reasoning_row = conn.execute("""
+                SELECT market_regime, biggest_risk, biggest_opportunity,
+                       portfolio_assessment, entry_conditions, signal_quality,
+                       macro_alignment, model_confidence, full_response_json
+                FROM daily_briefings
+                WHERE date IN (?, ?) AND model_key = 'reasoning'
+                ORDER BY created_at DESC LIMIT 1
+            """, (today, yesterday)).fetchone()
+            if reasoning_row:
+                reasoning = dict(reasoning_row)
+                # Merge reasoning fields as fallbacks (flash takes precedence)
+                for key in ('biggest_risk', 'biggest_opportunity', 'entry_conditions',
+                            'signal_quality', 'macro_alignment', 'portfolio_assessment'):
+                    if not briefing.get(key) and reasoning.get(key):
+                        briefing[key] = reasoning[key]
+                # Parse reasoning's position_actions as fallback
+                if not briefing['position_actions']:
+                    try:
+                        r_json = json.loads(reasoning.get('full_response_json', '{}'))
+                        briefing['position_actions'] = r_json.get('position_actions', [])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+        conn.close()
+
+        # Build formatted text block based on scope
+        if is_stale:
+            return briefing, "BRIEFING CONTEXT: Latest briefing is stale (>1 day old) — using with caution."
+
+        lines = [f"LATEST BRIEFING ({briefing.get('model_key', '?')} — {briefing_date}):"]
+
+        if scope in ('all', 'risk'):
+            lines.append(f"  Market regime: {briefing.get('market_regime', '?')} "
+                         f"(confidence: {briefing.get('regime_confidence', '?')})")
+            lines.append(f"  Biggest risk: {briefing.get('biggest_risk', 'N/A')}")
+            lines.append(f"  Biggest opportunity: {briefing.get('biggest_opportunity', 'N/A')}")
+            lines.append(f"  Signal quality: {briefing.get('signal_quality', 'N/A')}")
+            if scope == 'all':
+                lines.append(f"  Macro alignment: {briefing.get('macro_alignment', 'N/A')}")
+                lines.append(f"  Entry conditions: {briefing.get('entry_conditions', 'N/A')}")
+                lines.append(f"  DEFCON forecast: {briefing.get('defcon_forecast', 'N/A')}")
+                lines.append(f"  Portfolio assessment: {briefing.get('portfolio_assessment', 'N/A')}")
+
+        if scope in ('all', 'positions'):
+            pa = briefing.get('position_actions', [])
+            if pa:
+                lines.append("  Position actions:")
+                for a in pa:
+                    if isinstance(a, dict):
+                        lines.append(
+                            f"    {a.get('ticker', '?')}: {a.get('action', '?')} "
+                            f"(urgency: {a.get('urgency', '?')}) — {a.get('reasoning', '')}"
+                        )
+            par = briefing.get('positions_at_risk', [])
+            if par:
+                lines.append("  Positions at risk:")
+                for r in par:
+                    lines.append(f"    {r}" if isinstance(r, str) else f"    {r}")
+
+        text = '\n'.join(lines)
+        return briefing, text
+
+    except Exception as e:
+        logger.warning(f"Briefing context query failed: {e}")
+        return {}, "BRIEFING CONTEXT: Query failed — no briefing data available."
+
+
 class BrokerDecisionEngine:
     """Makes autonomous trading decisions"""
 
@@ -216,6 +345,119 @@ class BrokerDecisionEngine:
             text = '\n'.join(lines)
 
         return holdings, text
+
+    # ── Briefing context for decision gates ─────────────────────────────────
+
+    def _get_briefing_context(self, scope: str = 'all') -> Tuple[dict, str]:
+        """
+        Query the latest daily briefing intelligence from daily_briefings.
+        Returns:
+          - briefing dict: structured fields from the most recent briefing
+          - formatted text block suitable for injection into Gemini prompts
+
+        scope options:
+          'all'       — full context (for exit gates, pre-purchase gates)
+          'risk'      — regime / risk / opportunity / signal quality only
+          'positions' — position_actions + positions_at_risk only
+        """
+        return get_latest_briefing_context(str(DB_PATH), scope)
+
+    def apply_briefing_position_actions(self) -> int:
+        """
+        Read position_actions from the latest briefing and apply stop/TP adjustments
+        to trade_records. Only tightens stops (never loosens). Returns count of
+        positions adjusted.
+        """
+        briefing, _ = self._get_briefing_context(scope='positions')
+        actions = briefing.get('position_actions', [])
+        if not actions:
+            return 0
+
+        adjusted = 0
+        try:
+            import yfinance as _yf
+            conn = sqlite3.connect(str(DB_PATH), timeout=5)
+            conn.execute("PRAGMA journal_mode=WAL")
+
+            for action in actions:
+                if not isinstance(action, dict):
+                    continue
+                ticker = (action.get('ticker') or '').upper().strip()
+                act = action.get('action', '')
+                urgency = action.get('urgency', 'routine')
+                reasoning = action.get('reasoning', '')
+
+                if not ticker:
+                    continue
+
+                # Fetch open trades for this ticker
+                trades = conn.execute("""
+                    SELECT trade_id, entry_price, stop_loss, take_profit_1, current_price
+                    FROM trade_records
+                    WHERE asset_symbol = ? AND status = 'open'
+                """, (ticker,)).fetchall()
+
+                if not trades:
+                    continue
+
+                # Get live price for stop calculation
+                try:
+                    stock = _yf.Ticker(ticker)
+                    live_price = stock.fast_info.get('lastPrice') or stock.info.get('currentPrice')
+                except Exception:
+                    live_price = None
+
+                for trade in trades:
+                    trade_id = trade[0]
+                    current_stop = trade[2]  # stop_loss
+                    current_tp = trade[3]    # take_profit_1
+                    price = live_price or trade[4] or trade[1]  # live > current > entry
+
+                    if act == 'tighten_stop':
+                        stop_pct = action.get('adjusted_stop_pct')
+                        if stop_pct is not None and price:
+                            new_stop = price * (1 + stop_pct / 100)  # stop_pct is negative
+                            # Only tighten: new stop must be HIGHER than existing
+                            if current_stop is None or new_stop > current_stop:
+                                conn.execute(
+                                    "UPDATE trade_records SET stop_loss = ? WHERE trade_id = ?",
+                                    (round(new_stop, 2), trade_id)
+                                )
+                                logger.info(
+                                    f"  🔧 Briefing tightened stop: {ticker} "
+                                    f"${current_stop or 0:.2f} → ${new_stop:.2f} "
+                                    f"({stop_pct}%) — {reasoning}"
+                                )
+                                adjusted += 1
+
+                    elif act == 'take_profit':
+                        tp_pct = action.get('adjusted_tp_pct')
+                        if tp_pct is not None and price:
+                            new_tp = price * (1 + tp_pct / 100)
+                            conn.execute(
+                                "UPDATE trade_records SET take_profit_1 = ? WHERE trade_id = ?",
+                                (round(new_tp, 2), trade_id)
+                            )
+                            logger.info(
+                                f"  🎯 Briefing adjusted TP: {ticker} → ${new_tp:.2f} "
+                                f"({tp_pct}%) — {reasoning}"
+                            )
+                            adjusted += 1
+
+                    elif act == 'exit' and urgency == 'immediate':
+                        logger.warning(
+                            f"  ⚠️  Briefing recommends EXIT for {ticker} "
+                            f"(urgency: immediate) — {reasoning}. "
+                            f"Deferring to signal-driven exit flow."
+                        )
+
+            conn.commit()
+            conn.close()
+
+        except Exception as e:
+            logger.warning(f"apply_briefing_position_actions failed: {e}")
+
+        return adjusted
 
     def analyze_market_for_trades(self, defcon_level: int, signal_score: float,
                                   crisis_description: str, market_data: Dict) -> Optional[Dict]:
@@ -357,6 +599,9 @@ class BrokerDecisionEngine:
             trade['entry_date'][:10], '%Y-%m-%d')).days if trade.get('entry_date') else '?'
         news_text  = '\n'.join(f"  • {n}" for n in recent_news) if recent_news else '  • No recent mentions'
 
+        # Pull latest briefing intelligence for this exit decision
+        _, briefing_text = self._get_briefing_context(scope='positions')
+
         prompt = (
             f"You are a stop-loss review gate for a paper trading system.\n"
             f"A stop-loss just triggered for {ticker}. Your job: decide if we should "
@@ -371,6 +616,7 @@ class BrokerDecisionEngine:
             f"ORIGINAL THESIS\n"
             f"  {thesis_text or 'Not available'}\n\n"
             f"RECENT NEWS (last 24h)\n{news_text}\n\n"
+            f"{briefing_text}\n\n"
             f"YOUR DECISION:\n"
             f"  approve_exit=true  → honor the stop, exit now (thesis has broken down, "
             f"or loss is real and growing)\n"
@@ -898,6 +1144,14 @@ class BrokerDecisionEngine:
         # Fetch existing holdings for this ticker so the gate can see our exposure
         holdings, holdings_text = self._get_holdings_context([ticker])
 
+        # Fetch latest briefing risk assessment
+        briefing, briefing_risk_text = self._get_briefing_context(scope='risk')
+        biggest_risk = briefing.get('biggest_risk', '')
+        entry_conds_briefing = briefing.get('entry_conditions', '')
+        market_regime = briefing.get('market_regime', 'unknown')
+        regime_confidence = briefing.get('regime_confidence', '?')
+        signal_quality = briefing.get('signal_quality', '')
+
         prompt = (
             f"You are a pre-purchase risk gate for an automated paper trading system.\n"
             f"A conditional entry just triggered for {ticker} (watch_tag: {tag}).\n\n"
@@ -916,6 +1170,11 @@ class BrokerDecisionEngine:
             f"  DEFCON: {defcon}/5\n"
             f"  News score: {news_score}/100\n"
             f"  Macro composite score: {macro_score}/100\n\n"
+            f"LATEST BRIEFING RISK ASSESSMENT:\n"
+            f"  Biggest risk: {biggest_risk or 'N/A'}\n"
+            f"  Entry conditions (briefing): {entry_conds_briefing or 'N/A'}\n"
+            f"  Market regime: {market_regime} (confidence: {regime_confidence})\n"
+            f"  Signal quality: {signal_quality or 'N/A'}\n\n"
             f"YOUR JOB:\n"
             f"1. Check each entry condition against the live state. Are they met?\n"
             f"2. Check each invalidation condition. Has any been triggered?\n"
@@ -924,7 +1183,9 @@ class BrokerDecisionEngine:
             f"   is warranted (averaging down into strength, thesis reinforcement)\n"
             f"   or creates excessive concentration risk. Factor existing exposure into\n"
             f"   your approval/veto decision.\n"
-            f"5. Approve or veto this purchase.\n\n"
+            f"5. Approve or veto this purchase.\n"
+            f"6. Cross-check against the briefing's risk assessment. If the briefing\n"
+            f"   explicitly warns against this type of entry, factor that heavily.\n\n"
             f"Respond ONLY in this exact JSON (no other text):\n"
             f'{{\n'
             f'  "approve": true,\n'
@@ -1040,10 +1301,25 @@ class BrokerDecisionEngine:
             if not current_price or not entry_target:
                 continue
 
-            logger.debug(f"  📊 {ticker}: current=${current_price:.2f}, target=${entry_target:.2f}")
+            # ── Briefing regime check: require extra discount in risk-off ────
+            effective_target = entry_target
+            try:
+                briefing_ctx, _ = self._get_briefing_context(scope='risk')
+                _regime = briefing_ctx.get('market_regime', '')
+                _conf = float(briefing_ctx.get('model_confidence', 0) or 0)
+                if _regime == 'risk-off' and _conf > 0.7:
+                    effective_target = entry_target * 0.98  # Require 2% extra discount
+                    logger.info(
+                        f"  ⚠️  {ticker}: risk-off regime (conf={_conf:.2f}) — "
+                        f"tightening entry ${entry_target:.2f} → ${effective_target:.2f}"
+                    )
+            except Exception:
+                pass
+
+            logger.debug(f"  📊 {ticker}: current=${current_price:.2f}, target=${effective_target:.2f}")
 
             # Trigger check: price has reached or dropped to entry target
-            if current_price <= entry_target and ticker not in triggered_tickers:
+            if current_price <= effective_target and ticker not in triggered_tickers:
                 # Calculate position size using actual available cash (accounts for realized P&L)
                 available_cash = self._calculate_available_cash()
                 raw_pct        = float(cond.get('position_size_pct') or 0.05)
