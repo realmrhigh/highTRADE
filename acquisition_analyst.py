@@ -595,21 +595,11 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection) -> Opt
     prompt = _build_analyst_prompt(ticker, research, prior_gaps=prior_gaps or None,
                                    hound_context=hound_context)
 
-    # ── Quota pre-check: downgrade to balanced if Pro is near its soft limit ──
-    quota_status = gemini_client.check_quota('reasoning')
-    if quota_status == 'block':
-        logger.warning(f"  ⚠️  Pro quota near limit ({gemini_client.QUOTA_BLOCK_PCT*100:.0f}%+) — downgrading {ticker} to balanced tier")
-        effective_model_key = 'balanced'
-    elif quota_status == 'warn':
-        logger.warning(f"  ⚠️  Pro quota at {gemini_client.QUOTA_WARN_PCT*100:.0f}%+ — monitoring ({ticker})")
-        effective_model_key = 'reasoning'
-    else:
-        effective_model_key = 'reasoning'
-
+    # ── Gemini call (quota + fallback handled internally by call()) ──
     try:
         text, in_tok, out_tok = gemini_client.call(
             prompt=prompt,
-            model_key=effective_model_key,
+            model_key='reasoning',
             caller='analyst',
         )
     except Exception as e:

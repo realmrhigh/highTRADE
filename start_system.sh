@@ -35,7 +35,7 @@ mkdir -p trading_data/logs
 
 # Start orchestrator with semi_auto broker mode
 echo -e "\n${GREEN}Starting HighTrade Orchestrator (semi_auto mode)...${NC}"
-nohup python3 hightrade_orchestrator.py continuous 15 --broker semi_auto \
+nohup /opt/homebrew/bin/python3.11 hightrade_orchestrator.py continuous 15 --broker semi_auto \
     > trading_data/logs/orchestrator_output.log \
     2> trading_data/logs/orchestrator_error.log &
 ORCH_PID=$!
@@ -46,7 +46,7 @@ sleep 3
 
 # Start Slack bot
 echo -e "\n${GREEN}Starting Slack Bot...${NC}"
-nohup python3 slack_bot.py \
+nohup /opt/homebrew/bin/python3.11 slack_bot.py \
     > trading_data/logs/slack_bot_output.log \
     2> trading_data/logs/slack_bot_error.log &
 BOT_PID=$!

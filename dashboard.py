@@ -962,15 +962,18 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
     # ── Gemini quota widget HTML ─────────────────────────────────────────────
     _quota_color = {'ok': '#00ff88', 'warn': '#ffb300', 'block': '#ff4444'}
     _quota_label = {'ok': 'OK', 'warn': 'WARN', 'block': '⚠ NEAR LIMIT'}
+    _auth_icon   = {'cli': '🔐', 'rest': '🔑', 'unknown': '❓'}
     _model_short = {
-        'gemini-3.1-pro-preview': '3.1 Pro Preview ★ PRIMARY (Reasoning — 50/d, 2 RPM)',
-        'gemini-3-flash-preview': '3 Flash Preview ★ FAST/BALANCED (Thinking — 1500/d, 15 RPM)',
-        'gemini-2.5-pro':         '2.5 Pro ↩ FALLBACK (Thinking — 100/d, 5 RPM)',
+        'gemini-3.1-pro-preview':      '3.1 Pro Preview ★ REASONING (50/d, 2 RPM)',
+        'gemini-3-flash-preview':      '3 Flash Preview ★ FAST (1500/d, 15 RPM)',
+        'gemini-2.5-pro':              '2.5 Pro ↩ CLI FALLBACK (100/d, 5 RPM)',
+        'gemini-3.1-flash-lite-preview': '3.1 Flash Lite ↩ REST FALLBACK (1500/d, 30 RPM)',
     }
     _model_order = [
         'gemini-3.1-pro-preview',
         'gemini-3-flash-preview',
         'gemini-2.5-pro',
+        'gemini-3.1-flash-lite-preview',
     ]
     gemini_usage = gemini_usage or {}
     _quota_rows  = ''
@@ -987,6 +990,16 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
         _tok_out = _d.get('tokens_out', 0) or 0
         _bar_w   = min(int(_pct * 100), 100)
         _short   = _model_short.get(_mid, _mid)
+        # Auth breakdown string (e.g. "🔐 cli: 42 · 🔑 rest: 3")
+        _auth_bd = _d.get('auth_breakdown', {})
+        if _auth_bd:
+            _auth_parts = []
+            for _ak, _av in sorted(_auth_bd.items()):
+                _ai = _auth_icon.get(_ak, '')
+                _auth_parts.append(f'{_ai}{_ak}:{_av}')
+            _auth_str = ' &middot; '.join(_auth_parts)
+        else:
+            _auth_str = 'no calls'
         # Resets-in string
         _rs = _d.get('resets_in_s', 0)
         if _rs > 0:
@@ -1005,13 +1018,13 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
           <div style="background:#1a1a2e;border-radius:3px;height:5px;overflow:hidden;">
             <div style="width:{_bar_w}%;height:5px;background:{_col};border-radius:3px;transition:width 0.3s;"></div>
           </div>
-          <div style="color:#444;font-size:9px;margin-top:1px;">in: {_tok_in:,} tok &nbsp;·&nbsp; out: {_tok_out:,} tok &nbsp;·&nbsp; {_reset_str}</div>
+          <div style="color:#444;font-size:9px;margin-top:1px;">in: {_tok_in:,} tok &nbsp;·&nbsp; out: {_tok_out:,} tok &nbsp;·&nbsp; {_auth_str} &nbsp;·&nbsp; {_reset_str}</div>
         </div>"""
     if not _quota_rows:
         _quota_rows = '<div style="color:#555;font-size:10px;">No calls logged yet</div>'
     gemini_quota_html = f"""
       <div class="stat">
-        <div class="stat-label">&#128200; Gemini Quota &mdash; Rolling 24h</div>
+        <div class="stat-label">&#128200; Gemini Quota &mdash; Since Last Reset</div>
         {_quota_rows}
       </div>"""
 
@@ -1940,29 +1953,34 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
     <div style="display:flex;flex-direction:column;gap:8px;">
       <div class="stat">
         <div class="stat-label">Gemini 3.1 Pro Preview &mdash; Reasoning Tier ★ PRIMARY</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; gemini-3.1-pro-preview &middot; thinking=-1 (dynamic) &middot; OAuth</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">4:30 PM deep daily briefing &middot; acquisition analyst &middot; pre-purchase &amp; exit gates &middot; 16k output &middot; full dynamic reasoning budget</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; gemini-3.1-pro-preview &middot; thinking=-1 (dynamic) &middot; OAuth CLI</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">4:30 PM deep daily briefing &middot; acquisition analyst &middot; pre-purchase &amp; exit gates &middot; 16k output &middot; 50/d &middot; 2 RPM</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Gemini 3 Flash Preview &mdash; Fast Tier ★ PRIMARY &amp; Step-1 Fallback</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; gemini-3-flash-preview &middot; thinking=8k &middot; OAuth</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Per-cycle news triage (thinking=8k) &middot; 🌅 9:30 AM morning briefing &middot; ☀️ 12:00 PM midday briefing &middot; acquisition verifier &middot; Step-1 fallback when 3.1 Pro is unavailable</div>
+        <div class="stat-label">Gemini 3 Flash Preview &mdash; Fast Tier ★ PRIMARY</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; gemini-3-flash-preview &middot; thinking=8k &middot; OAuth CLI</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Per-cycle news triage &middot; briefings &middot; verifier &middot; Step-1 fallback for Pro &middot; 1500/d &middot; 15 RPM</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Gemini 2.5 Pro &mdash; Final Fallback</div>
-        <div style="color:#ffb300;font-size:11px;">&#9679; gemini-2.5-pro &middot; thinking=8k &middot; OAuth &middot; last resort for both tiers</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Activates only when both 3.1 Pro and 3 Flash are unavailable &middot; 100/d quota &middot; 5 RPM &middot; full reasoning capable</div>
+        <div class="stat-label">Gemini 2.5 Pro &mdash; CLI Fallback</div>
+        <div style="color:#ffb300;font-size:11px;">&#9679; gemini-2.5-pro &middot; thinking=8k &middot; OAuth CLI &middot; Step-2 fallback</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Activates when Flash unavailable via CLI &middot; 100/d &middot; 5 RPM</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Gemini 3.1 Flash Lite &mdash; REST Fallback</div>
+        <div style="color:#7eb8f7;font-size:11px;">&#9679; gemini-3.1-flash-lite-preview &middot; no thinking &middot; API Key (REST)</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Catches all CLI failures &middot; separate quota pool from OAuth &middot; 1500/d &middot; 30 RPM</div>
       </div>
       <div class="stat">
         <div class="stat-label">Grok 4.1 &mdash; Parallel Analyst</div>
         <div style="color:#00ff88;font-size:11px;">&#9679; grok-4-1-fast-reasoning &middot; X-Powered</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">𝕏 Daily Second Opinion &middot; Real-time X.com sentiment audit &middot; Contrarian signal detection &middot; Veto participant</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">&#120143; Daily Second Opinion &middot; Real-time X.com sentiment audit &middot; Contrarian signal detection &middot; Veto participant</div>
       </div>
 {gemini_quota_html}
       <div class="stat">
-        <div class="stat-label">Auth &amp; Token Efficiency</div>
-        <div style="color:#7eb8f7;font-size:11px;">&#128274; OAuth-only &middot; Gemini CLI 0.29.2 &middot; auto-downgrade at 90% soft limit</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">No API key &middot; dedup gate skips calls on zero new articles &middot; fallback chain: 3.1 Pro &rarr; 3 Flash &rarr; 2.5 Pro</div>
+        <div class="stat-label">Auth &amp; Fallback Chain</div>
+        <div style="color:#7eb8f7;font-size:11px;">&#128274; OAuth CLI primary &middot; REST API key fallback &middot; auto-downgrade at 90%</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Fallback: 3.1 Pro &rarr; 3 Flash (CLI) &rarr; Flash Lite (REST) &rarr; 2.5 Pro (REST) &middot; RPM pacing per model &middot; thread-safe quota tracking</div>
       </div>
     </div>
   </div>
