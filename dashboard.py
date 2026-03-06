@@ -274,6 +274,28 @@ def fetch_gemini_usage():
         return {}
 
 
+def fetch_stream_health():
+    """Fetch latest real-time stream health from stream_health table."""
+    try:
+        with _conn() as db:
+            row = db.execute("""
+                SELECT timestamp, status, ticks, tps, tickers,
+                       entries, exits, peaks, errors, feed, details_json
+                FROM stream_health
+                ORDER BY id DESC LIMIT 1
+            """).fetchone()
+            if not row:
+                return None
+            result = dict(row)
+            try:
+                result['details'] = json.loads(result.get('details_json') or '{}')
+            except Exception:
+                result['details'] = {}
+            return result
+    except Exception:
+        return None
+
+
 def fetch_exit_queue():
     """Fetch open positions enriched with exit levels from trade_records and
     conditional_tracking (analyst-set stops/TPs). Uses COALESCE so analyst
@@ -993,7 +1015,7 @@ def build_model_card(b, title, icon):
 
 def build_html(status, positions, closed, stats, briefings, macro, watchlist,
                sig_history, news, cong_clusters, cong_trades, hound_candidates, hound_last_run=None,
-               conditionals=None, gemini_usage=None, exit_queue=None):
+               conditionals=None, gemini_usage=None, exit_queue=None, stream_health=None):
 
     _ln = _local_now()
     now_str    = _ln.strftime('%Y-%m-%d %H:%M:%S ') + _ln.tzname()
@@ -1080,6 +1102,46 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
       <div class="stat">
         <div class="stat-label">&#128200; Gemini Quota &mdash; Since Midnight UTC</div>
         {_quota_rows}
+      </div>"""
+
+    # ── Real-time stream health widget ───────────────────────────────────────
+    stream_html = ''
+    if stream_health:
+        _sh = stream_health
+        _st_status = _sh.get('status', 'unknown')
+        _st_color = '#00ff88' if _st_status == 'streaming' else (
+            '#ffb300' if 'reconnect' in _st_status else '#ff4444' if 'failed' in _st_status or 'disabled' in _st_status else '#aaa')
+        _st_tps = _sh.get('tps', 0)
+        _st_tickers = _sh.get('tickers', 0)
+        _st_ticks = _sh.get('ticks', 0)
+        _st_entries = _sh.get('entries', 0)
+        _st_exits = _sh.get('exits', 0)
+        _st_peaks = _sh.get('peaks', 0)
+        _st_errors = _sh.get('errors', 0)
+        _st_feed = _sh.get('feed', '?').upper()
+        _st_details = _sh.get('details', {})
+        _st_reconnects = _st_details.get('reconnects', 0)
+        _st_ts = _sh.get('timestamp', '')
+        try:
+            _st_ts_display = _utc_to_local(_st_ts) if _st_ts else '—'
+        except Exception:
+            _st_ts_display = _st_ts or '—'
+
+        stream_html = f"""
+      <div class="stat">
+        <div class="stat-label">&#128308; Real-Time Stream &mdash; Alpaca WebSocket ({_st_feed})</div>
+        <div style="display:flex;gap:18px;flex-wrap:wrap;font-size:11px;margin-top:4px;">
+          <span style="color:{_st_color};font-weight:bold;">{_st_status.upper()}</span>
+          <span title="Ticks per second">{_st_tps}/s</span>
+          <span title="Subscribed tickers">{_st_tickers} tickers</span>
+          <span title="Total ticks received">{_st_ticks:,} ticks</span>
+          <span title="Entry triggers fired" style="color:#00ff88;">&#127919; {_st_entries} entries</span>
+          <span title="Exit triggers fired" style="color:#ff6b6b;">&#128721; {_st_exits} exits</span>
+          <span title="Peak price updates" style="color:#6bb3ff;">&#9650; {_st_peaks} peaks</span>
+          <span title="Reconnections">&#128260; {_st_reconnects} reconnects</span>
+          {'<span style="color:#ff4444;">&#9888; ' + str(_st_errors) + ' errors</span>' if _st_errors > 0 else ''}
+        </div>
+        <div style="color:#555;font-size:9px;margin-top:3px;">Last health log: {_st_ts_display}</div>
       </div>"""
 
     total_capital = 100_000.0
@@ -2031,6 +2093,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
         <div style="color:#666;font-size:10px;margin-top:3px;">&#120143; Daily Second Opinion &middot; Real-time X.com sentiment audit &middot; Contrarian signal detection &middot; Veto participant</div>
       </div>
 {gemini_quota_html}
+{stream_html}
       <div class="stat">
         <div class="stat-label">Auth &amp; Fallback Chain</div>
         <div style="color:#7eb8f7;font-size:11px;">&#128274; OAuth CLI primary &middot; REST API key fallback &middot; auto-downgrade at 90%</div>
@@ -2263,10 +2326,11 @@ def generate_dashboard_html():
     conditionals     = fetch_active_conditionals()
     gemini_usage     = fetch_gemini_usage()
     exit_queue       = fetch_exit_queue()
+    stream_health    = fetch_stream_health()
     return build_html(status, positions, closed, stats, briefings, macro,
                       watchlist, sig_hist, news, cong_cl, cong_tr, hound_candidates, hound_last_run,
                       conditionals=conditionals, gemini_usage=gemini_usage,
-                      exit_queue=exit_queue)
+                      exit_queue=exit_queue, stream_health=stream_health)
 
 
 # ─── Flask server ─────────────────────────────────────────────────────────────

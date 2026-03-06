@@ -195,12 +195,27 @@ class HighTradeOrchestrator:
         self._verifier_interval = 4       # Normal: every ~60 min (4 × 15-min cycles); DEFCON 1-2: every cycle
         self._last_flash_forecast = None  # DEFCON forecast from latest flash briefing (1-5 or None)
 
+        # Initialize real-time Alpaca WebSocket price stream
+        try:
+            from alpaca_stream import RealtimeMonitor
+            self.realtime_monitor = RealtimeMonitor(
+                broker=self.broker,
+                paper_trading=self.paper_trading,
+            )
+            self.realtime_enabled = True
+            logger.info("🔴 Real-time stream initialized (Alpaca WebSocket)")
+        except Exception as e:
+            logger.warning(f"⚠️  Real-time stream init failed: {e}")
+            self.realtime_monitor = None
+            self.realtime_enabled = False
+
         # Slash command processor
         self.cmd_processor = CommandProcessor(self)
 
         logger.info("✅ Orchestrator initialized successfully")
         logger.info(f"🤖 Broker Mode: {broker_mode.upper()}")
         logger.info(f"📰 News Monitoring: {'ENABLED' if self.news_enabled else 'DISABLED'}")
+        logger.info(f"🔴 Real-time Stream: {'ENABLED' if self.realtime_enabled else 'DISABLED'}")
         logger.info(f"📡 Slash commands: python3 hightrade_cmd.py /help")
 
     # ── DEFCON persistence across restarts ────────────────────────────────
@@ -376,7 +391,7 @@ class HighTradeOrchestrator:
         """
         Fetch the current market price for each open position and compute
         unrealized P&L. Updates trade_records in the DB and returns enriched list.
-        Uses the same yfinance/market data source the rest of the system uses.
+        Prefers real-time WebSocket prices when available; falls back to yfinance.
         Falls back gracefully — a price fetch failure never blocks the cycle.
         """
         if not positions:
@@ -393,15 +408,23 @@ class HighTradeOrchestrator:
             shares = p.get('shares', 0) or 0
 
             try:
-                import yfinance as yf
-                ticker = yf.Ticker(sym)
-                hist = ticker.history(period='1d', interval='1m')
-                if not hist.empty:
-                    current_price = float(hist['Close'].iloc[-1])
-                else:
-                    # Market closed — use last close
-                    hist = ticker.history(period='5d')
-                    current_price = float(hist['Close'].iloc[-1]) if not hist.empty else None
+                current_price = None
+
+                # Prefer real-time WebSocket price (sub-second freshness)
+                if self.realtime_enabled and self.realtime_monitor:
+                    current_price = self.realtime_monitor.get_price(sym)
+
+                # Fallback to yfinance if stream doesn't have it
+                if not current_price:
+                    import yfinance as yf
+                    ticker = yf.Ticker(sym)
+                    hist = ticker.history(period='1d', interval='1m')
+                    if not hist.empty:
+                        current_price = float(hist['Close'].iloc[-1])
+                    else:
+                        # Market closed — use last close
+                        hist = ticker.history(period='5d')
+                        current_price = float(hist['Close'].iloc[-1]) if not hist.empty else None
 
                 if current_price:
                     cost_basis = entry_price * shares
@@ -1240,21 +1263,33 @@ Check dashboard for detailed analysis.
             """).fetchall()
             conn.close()
 
-            # Batch-fetch all unique tickers in one yfinance call
+            # Batch-fetch all unique tickers in one yfinance call (fallback for non-streamed tickers)
             cond_tickers = list({r[0] for r in cond_rows})
+            _yf_prices = {}
             if cond_tickers:
-                raw = _yf.download(
-                    cond_tickers, period='1d', interval='1m',
-                    group_by='ticker', progress=False, auto_adjust=True
-                )
+                try:
+                    raw = _yf.download(
+                        cond_tickers, period='1d', interval='1m',
+                        group_by='ticker', progress=False, auto_adjust=True
+                    )
+                    for sym in cond_tickers:
+                        try:
+                            if len(cond_tickers) == 1:
+                                _yf_prices[sym] = float(raw['Close'].iloc[-1])
+                            else:
+                                _yf_prices[sym] = float(raw[sym]['Close'].iloc[-1])
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
 
             def _live_price(sym):
-                try:
-                    if len(cond_tickers) == 1:
-                        return float(raw['Close'].iloc[-1])
-                    return float(raw[sym]['Close'].iloc[-1])
-                except Exception:
-                    return None
+                # Prefer real-time WebSocket price, fall back to yfinance
+                if self.realtime_enabled and self.realtime_monitor:
+                    rt_price = self.realtime_monitor.get_price(sym)
+                    if rt_price:
+                        return rt_price
+                return _yf_prices.get(sym)
 
             cond_lines = []
             for r in cond_rows:
@@ -1790,9 +1825,14 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
             prox_bumped = []
             for row_id, ticker, target in rows:
                 try:
-                    import yfinance as _yf
-                    price = _yf.Ticker(ticker).fast_info.get('lastPrice') or \
-                            _yf.Ticker(ticker).fast_info.get('regularMarketPrice')
+                    # Prefer real-time WebSocket price, fall back to yfinance
+                    price = None
+                    if self.realtime_enabled and self.realtime_monitor:
+                        price = self.realtime_monitor.get_price(ticker)
+                    if not price:
+                        import yfinance as _yf
+                        price = _yf.Ticker(ticker).fast_info.get('lastPrice') or \
+                                _yf.Ticker(ticker).fast_info.get('regularMarketPrice')
                     if price and target and abs(float(price) - float(target)) / float(target) <= 0.02:
                         conn.execute("""
                             UPDATE conditional_tracking
@@ -2054,6 +2094,13 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
         logger.info(f"Alerts Sent: {self.alerts_sent}")
         logger.info(f"Log File: {LOG_FILE}")
 
+        # Real-time stream status
+        if self.realtime_enabled and self.realtime_monitor:
+            st = self.realtime_monitor.get_status()
+            logger.info(f"🔴 Stream: {st['status']} | {st['ticks_received']} ticks | "
+                        f"{st['subscribed_tickers']} tickers | "
+                        f"{st['entry_triggers']} entries | {st['exit_triggers']} exits")
+
         # Get latest monitoring data
         try:
             self.monitor.connect()
@@ -2073,6 +2120,14 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
         logger.info(f"   Interval: {interval_minutes} minutes")
         logger.info(f"   Log: {LOG_FILE}")
         logger.info(f"   Commands: python3 hightrade_cmd.py /help")
+
+        # Start real-time WebSocket stream (market-hours price monitoring)
+        if self.realtime_enabled and self.broker_mode != 'disabled':
+            try:
+                self.realtime_monitor.start()
+                logger.info("🔴 Real-time price stream started")
+            except Exception as e:
+                logger.warning(f"⚠️  Real-time stream start failed: {e}")
 
         cycle = 0
         try:
@@ -2132,6 +2187,11 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
             sys.exit(1)
 
         # Final shutdown
+        if self.realtime_enabled and self.realtime_monitor:
+            try:
+                self.realtime_monitor.stop()
+            except Exception:
+                pass
         self.alerts.send_slack(
             "🛑 HighTrade bot has shut down.",
             defcon_level=self.previous_defcon
