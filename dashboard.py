@@ -73,7 +73,8 @@ def fetch_open_positions():
         rows = db.execute("""
             SELECT asset_symbol, shares, entry_price, current_price,
                    position_size_dollars, unrealized_pnl_dollars,
-                   unrealized_pnl_percent, entry_date, defcon_at_entry
+                   unrealized_pnl_percent, entry_date, defcon_at_entry,
+                   stop_loss, take_profit_1, take_profit_2
             FROM trade_records WHERE status='open'
             ORDER BY entry_date
         """).fetchall()
@@ -308,6 +309,7 @@ def fetch_exit_queue():
                     t.shares,
                     t.entry_price,
                     t.current_price,
+                    t.peak_price,
                     t.position_size_dollars,
                     t.unrealized_pnl_dollars,
                     t.unrealized_pnl_percent,
@@ -483,7 +485,7 @@ def sig_pill(sig):
 
 def build_open_rows(positions):
     if not positions:
-        return '<tr><td colspan="8" style="color:#555;text-align:center;padding:20px;">No open positions</td></tr>'
+        return '<tr><td colspan="10" style="color:#555;text-align:center;padding:20px;">No open positions</td></tr>'
     rows = []
     for p in positions:
         ep    = float(p.get('entry_price') or 0)
@@ -493,9 +495,28 @@ def build_open_rows(positions):
         pnl_p = float(p.get('unrealized_pnl_percent') or 0)
         mv    = cp * sh
         dc    = p.get('defcon_at_entry', '?')
+        stop  = p.get('stop_loss')
+        tp1   = p.get('take_profit_1')
         color = pnl_color(pnl_d)
         bar_w = min(int(abs(pnl_p) * 3), 100)
         bar_c = '#00ff88' if pnl_d >= 0 else '#ff4444'
+
+        # Stop distance color
+        if stop and cp:
+            stop_dist = (float(stop) - cp) / cp * 100
+            stop_style = 'color:#ff4444;font-weight:700;' if abs(stop_dist) <= 3 else 'color:#ffb300;' if abs(stop_dist) <= 8 else 'color:#888;'
+            stop_cell = f'<span style="{stop_style}">${float(stop):,.2f}</span>'
+        else:
+            stop_cell = '<span style="color:#444;">—</span>'
+
+        # TP1 distance color
+        if tp1 and cp:
+            tp_dist = (float(tp1) - cp) / cp * 100
+            tp_style = 'color:#00ff88;font-weight:700;' if 0 < tp_dist <= 3 else 'color:#00d4ff;' if 0 < tp_dist <= 8 else 'color:#888;'
+            tp_cell = f'<span style="{tp_style}">${float(tp1):,.2f}</span>'
+        else:
+            tp_cell = '<span style="color:#444;">—</span>'
+
         rows.append(
             '<tr class="trow">'
             f'<td class="sym" onclick="showChart(\'{p.get("asset_symbol", "?")}\')">{p.get("asset_symbol", "?")}</td>'
@@ -508,6 +529,8 @@ def build_open_rows(positions):
             f'<div style="width:60px;background:#111;border-radius:3px;height:4px;">'
             f'<div style="width:{bar_w}%;background:{bar_c};height:4px;border-radius:3px;"></div></div>'
             f'<span style="color:{color};">{fmt_pct(pnl_p)}</span></div></td>'
+            f'<td>{stop_cell}</td>'
+            f'<td>{tp_cell}</td>'
             f'<td><span style="font-size:11px;color:#888">D{dc}</span></td>'
             '</tr>'
         )
@@ -546,6 +569,7 @@ def build_exit_queue_rows(positions):
         sym      = p.get('asset_symbol', '?')
         entry    = float(p.get('entry_price')    or 0)
         current  = float(p.get('current_price')  or entry)
+        peak     = float(p.get('peak_price')     or entry or 0)
         upnl_d   = float(p.get('unrealized_pnl_dollars')  or 0)
         upnl_pct = float(p.get('unrealized_pnl_percent')  or 0)
         stop     = p.get('stop_loss')
@@ -553,6 +577,15 @@ def build_exit_queue_rows(positions):
         tp2      = p.get('take_profit_2')
         has_fw   = bool(p.get('has_framework'))
         watch_tag = p.get('watch_tag') or ''
+
+        analyst_stop = float(stop) if stop else None
+        trailing_stop = round(peak * 0.97, 2) if peak else None
+        effective_stop = analyst_stop
+        stop_source = 'analyst'
+        if trailing_stop and trailing_stop > 0:
+            if effective_stop is None or trailing_stop > effective_stop:
+                effective_stop = trailing_stop
+                stop_source = 'trailing'
 
         # ── Thesis / popup (mirrors entry queue pattern) ──────────────────
         thesis_full  = p.get('thesis_summary') or '—'
@@ -564,8 +597,14 @@ def build_exit_queue_rows(positions):
         def _esc(s):
             return s.replace('&', '&amp;').replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
         exit_popup_lines = [thesis_full]
-        if stop and stop_rat:
-            exit_popup_lines.append(f'\n🛑 STOP   ${float(stop):.2f}\n{stop_rat}')
+        if analyst_stop and stop_rat:
+            exit_popup_lines.append(f'\n🛑 THESIS FLOOR   ${analyst_stop:.2f}\n{stop_rat}')
+        if trailing_stop and trailing_stop > 0:
+            trailing_note = (
+                f"3% below peak ${peak:.2f}" if peak and peak > entry
+                else f"3% below entry/peak base ${peak:.2f}"
+            )
+            exit_popup_lines.append(f'\n📉 TRAILING STOP   ${trailing_stop:.2f}\n{trailing_note}')
         if tp1 and tp_rat:
             exit_popup_lines.append(f'\n🎯 TP1    ${float(tp1):.2f}\n{tp_rat}')
         if inv_cond:
@@ -610,12 +649,14 @@ def build_exit_queue_rows(positions):
                 return f'{dist_pct:+.1f}%', style
 
         # ── Stop cell ─────────────────────────────────────────────────────
-        if stop:
-            stop_f = float(stop)
+        if effective_stop:
+            stop_f = float(effective_stop)
             sd, ss = _dist_cell(stop_f, current, 'down')
+            stop_label = 'TRAIL' if stop_source == 'trailing' else 'FLOOR'
             stop_cell = (
                 f'<div style="font-size:12px;font-weight:600;">${stop_f:,.2f}</div>'
                 f'<div style="font-size:10px;{ss}">{sd}</div>'
+                f'<div style="font-size:9px;color:{"#00d4ff" if stop_source == "trailing" else "#888"};letter-spacing:1px;">{stop_label}</div>'
             )
         else:
             stop_cell = '<div style="color:#ff4444;font-size:10px;letter-spacing:1px;">⚠ NOT SET</div>'
@@ -1906,7 +1947,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
       <table>
         <thead><tr>
           <th>Symbol</th><th>Shares</th><th>Entry</th><th>Current</th>
-          <th>Mkt Value</th><th>Unrlzd P&amp;L</th><th>Return</th><th>DEFCON@Entry</th>
+          <th>Mkt Value</th><th>Unrlzd P&amp;L</th><th>Return</th><th>Stop</th><th>TP1</th><th>DEFCON@Entry</th>
         </tr></thead>
         <tbody>{open_rows}</tbody>
       </table>

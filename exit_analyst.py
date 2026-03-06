@@ -327,6 +327,11 @@ def run_exit_analysis(
         cat_spike   = result.get('catalyst_spike_pct')    # float or None
         cat_fail    = result.get('catalyst_failure_pct')  # float (negative) or None
 
+        # Sentinel: if Gemini found no catalyst, store 'none' (not NULL) so the
+        # WHERE catalyst_event IS NULL query stops re-selecting this position.
+        if not cat_event:
+            cat_event = 'none'
+
         if not stop or not tp1:
             logger.warning(f"  ⚠️  {ticker}: incomplete exit framework (stop={stop}, tp1={tp1})")
             continue
@@ -342,7 +347,7 @@ def run_exit_analysis(
 
         # Compute catalyst_window_end from entry_date + window_hours
         cat_window_end = None
-        if cat_event and cat_hours:
+        if cat_event and cat_event != 'none' and cat_hours:
             try:
                 entry_dt = datetime.fromisoformat(pos['entry_date'][:19])
                 cat_window_end = (entry_dt + timedelta(hours=cat_hours)).isoformat()
@@ -374,7 +379,7 @@ def run_exit_analysis(
         conn.commit()
 
         catalyst_line = ''
-        if cat_event:
+        if cat_event and cat_event != 'none':
             window_end_str = cat_window_end[:16] if cat_window_end else '?'
             catalyst_line = (
                 f"\n  🎯 Catalyst: {cat_event}\n"

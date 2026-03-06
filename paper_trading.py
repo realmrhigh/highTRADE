@@ -486,10 +486,11 @@ class PaperTradingEngine:
         try:
             self.connect()
 
-            # Get all open trades
+            # Get all open trades (include per-trade exit levels set by exit_analyst)
             self.cursor.execute('''
             SELECT trade_id, asset_symbol, entry_price, entry_date, entry_time,
-                   defcon_at_entry, shares, position_size_dollars, crisis_id
+                   defcon_at_entry, shares, position_size_dollars, crisis_id,
+                   stop_loss, take_profit_1, take_profit_2
             FROM trade_records
             WHERE status = 'open'
             ORDER BY entry_date DESC, entry_time DESC
@@ -734,13 +735,15 @@ class PaperTradingEngine:
             self.disconnect()
 
     def get_open_positions(self) -> List[Dict[str, Any]]:
-        """Get all currently open positions"""
+        """Get all currently open positions (includes exit levels for deep-dive context)"""
         try:
             self.connect()
 
             self.cursor.execute('''
             SELECT trade_id, asset_symbol, entry_date, entry_price, shares,
-                   position_size_dollars, defcon_at_entry
+                   position_size_dollars, defcon_at_entry,
+                   current_price, stop_loss, take_profit_1, take_profit_2,
+                   unrealized_pnl_dollars, unrealized_pnl_percent
             FROM trade_records
             WHERE status = 'open'
             ORDER BY entry_date DESC

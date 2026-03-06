@@ -228,7 +228,9 @@ def _gather_daily_context(db_path: str, date_str: str = None) -> Dict:
     # ── 8. Open paper positions ─────────────────────────────────────────
     cursor.execute("""
         SELECT asset_symbol, entry_date, entry_price, shares,
-               position_size_dollars, defcon_at_entry
+               position_size_dollars, defcon_at_entry,
+               current_price, stop_loss, take_profit_1, take_profit_2,
+               unrealized_pnl_dollars, unrealized_pnl_percent
         FROM trade_records WHERE status = 'open'
     """)
     ctx['open_positions'] = [dict(r) for r in cursor.fetchall()]
@@ -369,7 +371,20 @@ def _build_daily_prompt(ctx: Dict) -> str:
     pos_text = ""
     if positions:
         for p in positions:
-            pos_text += f"  {p['asset_symbol']}: {p['shares']} shares @ ${p['entry_price']:.2f} (${p['position_size_dollars']:,.0f}) — entered {p['entry_date']}\n"
+            cur    = p.get('current_price')
+            stop   = p.get('stop_loss')
+            tp1    = p.get('take_profit_1')
+            upnl_d = p.get('unrealized_pnl_dollars')
+            upnl_p = p.get('unrealized_pnl_percent')
+            price_str = f" → now ${cur:.2f}" if cur else ""
+            pnl_str   = f" | P&L: ${upnl_d:+,.0f} ({upnl_p:+.1f}%)" if upnl_d is not None else ""
+            stop_str  = f" | Stop: ${stop:.2f}" if stop else ""
+            tp_str    = f" | TP1: ${tp1:.2f}" if tp1 else ""
+            pos_text += (
+                f"  {p['asset_symbol']}: {p['shares']} shares @ ${p['entry_price']:.2f}"
+                f"{price_str}{pnl_str}{stop_str}{tp_str}"
+                f" — entered {p['entry_date']}\n"
+            )
     else:
         pos_text = "  No open positions (cash deployed: $0)\n"
 

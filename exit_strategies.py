@@ -182,7 +182,9 @@ class ExitStrategyManager:
         
         Args:
             trade: Dict with keys: trade_id, asset_symbol, entry_price, entry_date, 
-                   entry_time, defcon_at_entry
+                   entry_time, defcon_at_entry.
+                   Optional: stop_loss, take_profit_1 (absolute price levels from
+                   exit_analyst / acquisition pipeline — override class defaults).
             current_price: Current market price
             current_defcon: Current DEFCON level
             
@@ -193,6 +195,11 @@ class ExitStrategyManager:
         trade_id = trade['trade_id']
         asset_symbol = trade['asset_symbol']
 
+        # Per-trade stop/TP from DB (set by exit_analyst or acquisition pipeline).
+        # Fall back to class-level defaults if not set.
+        trade_stop = trade.get('stop_loss')      # absolute price or None
+        trade_tp1  = trade.get('take_profit_1')   # absolute price or None
+
         # Calculate holding time
         entry_dt = datetime.strptime(f"{trade['entry_date']} {trade['entry_time']}", '%Y-%m-%d %H:%M:%S')
         holding_hours = (datetime.now() - entry_dt).total_seconds() / 3600
@@ -200,32 +207,64 @@ class ExitStrategyManager:
 
         # Priority order: Check from most important to least
         # 1. Stop loss (highest priority - prevent catastrophic losses)
-        loss_pct = self.check_stop_loss(entry_price, current_price, min_hold_met)
-        if loss_pct is not None:
-            return ExitSignal(
-                trade_id=trade_id,
-                asset_symbol=asset_symbol,
-                reason="stop_loss",
-                entry_price=entry_price,
-                exit_price=current_price,
-                profit_loss_pct=loss_pct,
-                message=f"⚠️  STOP LOSS: {asset_symbol} {loss_pct*100:.2f}%",
-                priority=5
-            )
+        #    Use per-trade absolute stop price if available, else fall back to % rule.
+        if trade_stop and trade_stop > 0:
+            # Per-trade absolute stop from exit_analyst — compare directly
+            if current_price <= trade_stop:
+                loss_pct = (current_price - entry_price) / entry_price
+                return ExitSignal(
+                    trade_id=trade_id,
+                    asset_symbol=asset_symbol,
+                    reason="stop_loss",
+                    entry_price=entry_price,
+                    exit_price=current_price,
+                    profit_loss_pct=loss_pct,
+                    message=f"⚠️  STOP LOSS: {asset_symbol} {loss_pct*100:.2f}% (hit ${trade_stop:.2f})",
+                    priority=5
+                )
+        else:
+            # Fallback: class-level percentage stop
+            loss_pct = self.check_stop_loss(entry_price, current_price, min_hold_met)
+            if loss_pct is not None:
+                return ExitSignal(
+                    trade_id=trade_id,
+                    asset_symbol=asset_symbol,
+                    reason="stop_loss",
+                    entry_price=entry_price,
+                    exit_price=current_price,
+                    profit_loss_pct=loss_pct,
+                    message=f"⚠️  STOP LOSS: {asset_symbol} {loss_pct*100:.2f}%",
+                    priority=5
+                )
 
         # 2. Profit target (lock in gains)
-        profit_pct = self.check_profit_target(entry_price, current_price, min_hold_met)
-        if profit_pct is not None:
-            return ExitSignal(
-                trade_id=trade_id,
-                asset_symbol=asset_symbol,
-                reason="profit_target",
-                entry_price=entry_price,
-                exit_price=current_price,
-                profit_loss_pct=profit_pct,
-                message=f"✅ PROFIT TARGET: {asset_symbol} +{profit_pct*100:.2f}%",
-                priority=4
-            )
+        #    Use per-trade absolute TP if available, else fall back to % rule.
+        if trade_tp1 and trade_tp1 > 0:
+            if current_price >= trade_tp1:
+                profit_pct = (current_price - entry_price) / entry_price
+                return ExitSignal(
+                    trade_id=trade_id,
+                    asset_symbol=asset_symbol,
+                    reason="profit_target",
+                    entry_price=entry_price,
+                    exit_price=current_price,
+                    profit_loss_pct=profit_pct,
+                    message=f"✅ PROFIT TARGET: {asset_symbol} +{profit_pct*100:.2f}% (hit ${trade_tp1:.2f})",
+                    priority=4
+                )
+        else:
+            profit_pct = self.check_profit_target(entry_price, current_price, min_hold_met)
+            if profit_pct is not None:
+                return ExitSignal(
+                    trade_id=trade_id,
+                    asset_symbol=asset_symbol,
+                    reason="profit_target",
+                    entry_price=entry_price,
+                    exit_price=current_price,
+                    profit_loss_pct=profit_pct,
+                    message=f"✅ PROFIT TARGET: {asset_symbol} +{profit_pct*100:.2f}%",
+                    priority=4
+                )
 
         # 3. Trailing stop (protect profits)
         trailing_signal = self.check_trailing_stop(trade_id, entry_price, current_price, min_hold_met)
