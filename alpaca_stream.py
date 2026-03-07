@@ -52,6 +52,12 @@ STREAM_HEALTH_LOG_SEC = 300       # Log stream health every 5 min
 RECONNECT_DELAY_SEC = 5           # Wait before reconnecting after disconnect
 MAX_RECONNECT_ATTEMPTS = 50       # Give up after this many consecutive failures
 PROXIMITY_ALERT_PCT = 0.02        # Alert when price within 2% of target
+
+# Breakout entry constants — duplicated from broker_agent.py to avoid heavy import chain
+# (broker_agent pulls in paper_trading, alerts, gemini_client, etc.)
+UPSIDE_TRIGGER_TAGS = {'breakout'}
+BREAKOUT_MAX_EXTENSION = 0.10
+
 IEX_SYMBOL_LIMIT = 30             # Free IEX tier max symbols (upgrade to SIP for unlimited)
 SIP_SYMBOL_LIMIT = 500            # SIP tier practical limit
 ROTATION_INTERVAL_SEC = 120       # Rotate overflow tickers every 2 minutes
@@ -483,22 +489,47 @@ class RealtimeMonitor:
         if not entry_target:
             return
 
-        # Proximity alert (within 2% of target, not yet triggered)
-        if price <= entry_target * (1 + PROXIMITY_ALERT_PCT) and price > entry_target:
-            dist_pct = (price - entry_target) / entry_target * 100
-            # Only log proximity once per minute
-            last_prox_key = f"prox_{ticker}"
-            last_prox = self._last_trigger_time.get(last_prox_key, 0)
-            if now - last_prox > 60:
-                self._last_trigger_time[last_prox_key] = now
-                self._stats['proximity_alerts'] += 1
-                logger.info(
-                    f"📍 PROXIMITY: {ticker} ${price:.2f} — {dist_pct:.1f}% from "
-                    f"entry target ${entry_target:.2f} [{cond.get('watch_tag', '')}]"
-                )
+        watch_tag = (cond.get('watch_tag') or 'untagged').lower()
+        is_upside = watch_tag in UPSIDE_TRIGGER_TAGS
 
-        # Entry trigger: price at or below target
-        if price <= entry_target:
+        # Proximity alert (within 2% of target)
+        if is_upside:
+            # Breakout: approaching target from below
+            if price >= entry_target * (1 - PROXIMITY_ALERT_PCT) and price < entry_target:
+                dist_pct = (entry_target - price) / entry_target * 100
+                last_prox_key = f"prox_{ticker}"
+                last_prox = self._last_trigger_time.get(last_prox_key, 0)
+                if now - last_prox > 60:
+                    self._last_trigger_time[last_prox_key] = now
+                    self._stats['proximity_alerts'] += 1
+                    logger.info(
+                        f"📍 PROXIMITY: {ticker} ${price:.2f} — {dist_pct:.1f}% below "
+                        f"breakout target ${entry_target:.2f} [{watch_tag}]"
+                    )
+        else:
+            # Pullback: approaching target from above
+            if price <= entry_target * (1 + PROXIMITY_ALERT_PCT) and price > entry_target:
+                dist_pct = (price - entry_target) / entry_target * 100
+                last_prox_key = f"prox_{ticker}"
+                last_prox = self._last_trigger_time.get(last_prox_key, 0)
+                if now - last_prox > 60:
+                    self._last_trigger_time[last_prox_key] = now
+                    self._stats['proximity_alerts'] += 1
+                    logger.info(
+                        f"📍 PROXIMITY: {ticker} ${price:.2f} — {dist_pct:.1f}% from "
+                        f"entry target ${entry_target:.2f} [{watch_tag}]"
+                    )
+
+        # Entry trigger: direction depends on watch_tag
+        if is_upside:
+            # Breakout: price at or above target, capped at 10% extension
+            max_price = entry_target * (1 + BREAKOUT_MAX_EXTENSION)
+            triggered = price >= entry_target and price <= max_price
+        else:
+            # Pullback: price at or below target
+            triggered = price <= entry_target
+
+        if triggered:
             # Debounce: don't re-trigger within DEBOUNCE_TRIGGER_SEC
             last_trigger = self._last_trigger_time.get(ticker, 0)
             if now - last_trigger < DEBOUNCE_TRIGGER_SEC:
@@ -507,11 +538,13 @@ class RealtimeMonitor:
             self._last_trigger_time[ticker] = now
             self._stats['entry_triggers'] += 1
 
-            watch_tag = cond.get('watch_tag', 'untagged')
+            if is_upside:
+                trigger_desc = f"${price:.2f} >= target ${entry_target:.2f} (breakout)"
+            else:
+                trigger_desc = f"${price:.2f} <= target ${entry_target:.2f}"
             logger.info(
                 f"🎯 ENTRY TRIGGER: {ticker} [{watch_tag}] "
-                f"${price:.2f} <= target ${entry_target:.2f} — "
-                f"dispatching to broker"
+                f"{trigger_desc} — dispatching to broker"
             )
 
             # Fire the broker's existing conditional processing

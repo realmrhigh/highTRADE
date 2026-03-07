@@ -146,6 +146,7 @@ def _build_verifier_prompt(cond: Dict, current_price: Optional[float],
     thesis      = cond.get('thesis_summary', 'N/A')
     confidence  = cond.get('research_confidence', 0)
     date_set    = cond.get('date_created', 'N/A')
+    watch_tag   = (cond.get('watch_tag') or 'untagged').lower()
     conditions  = json.loads(cond.get('entry_conditions_json') or '[]')
     invalidates = json.loads(cond.get('invalidation_conditions_json') or '[]')
     inval_count = cond.get('invalidation_count') or 0
@@ -156,7 +157,18 @@ def _build_verifier_prompt(cond: Dict, current_price: Optional[float],
     distance    = None
     if current_price and isinstance(entry_tgt, (int, float)):
         distance = (current_price - entry_tgt) / entry_tgt * 100
-    distance_str = f"{distance:+.1f}% from entry target" if distance is not None else ''
+
+    # Directional context: breakout entries WANT price above target
+    is_breakout = watch_tag in ('breakout',)
+    if is_breakout:
+        if distance is not None and distance > 0:
+            distance_str = f"{distance:+.1f}% ABOVE target (breakout confirmed — this is BULLISH)"
+        elif distance is not None:
+            distance_str = f"{distance:+.1f}% below breakout target (not yet triggered)"
+        else:
+            distance_str = ''
+    else:
+        distance_str = f"{distance:+.1f}% from entry target" if distance is not None else ''
 
     news_text = '\n'.join(f"  • {n}" for n in recent_news) if recent_news else '  • No recent mentions'
     cond_text = '\n'.join(f"  • {c}" for c in conditions[:3]) if conditions else '  • N/A'
@@ -181,15 +193,27 @@ def _build_verifier_prompt(cond: Dict, current_price: Optional[float],
             f"\n📋 History: {inval_count} prior invalidation(s), {flag_count} prior flag(s).\n"
         )
 
+    # Breakout tag context for the verifier model
+    tag_context = ''
+    if is_breakout:
+        tag_context = (
+            f"\n⚡ ENTRY TYPE: BREAKOUT — price ABOVE target means the breakout is CONFIRMED.\n"
+            f"  Do NOT invalidate because price is above target. For breakout entries,\n"
+            f"  the entry target is a SUPPORT FLOOR, not a ceiling. Price above target = bullish.\n"
+            f"  Only invalidate if the thesis itself has failed (e.g., catalyst reversed).\n"
+        )
+    elif watch_tag != 'untagged':
+        tag_context = f"\n  Entry type: {watch_tag}\n"
+
     return (
         f"You are a trading system verifier. Today is {datetime.now().strftime('%Y-%m-%d')}.\n"
         f"A Gemini 3 Pro analyst set a conditional entry on {ticker} on {date_set}.\n"
         f"Your job: quickly decide if this conditional is still VALID.\n"
-        f"{status_note}\n"
+        f"{status_note}{tag_context}\n"
         f"CONDITIONAL SUMMARY\n"
         f"  Thesis: {thesis}\n"
         f"  Entry target: ${entry_tgt}  |  Stop: ${stop}  |  TP1: ${tp1}\n"
-        f"  Original confidence: {confidence:.2f}\n\n"
+        f"  Watch tag: {watch_tag}  |  Original confidence: {confidence:.2f}\n\n"
         f"ENTRY CONDITIONS\n{cond_text}\n\n"
         f"INVALIDATION TRIGGERS\n{inv_text}\n\n"
         f"CURRENT STATE ({datetime.now().strftime('%Y-%m-%d')})\n"
@@ -340,7 +364,7 @@ def run_verification_cycle() -> Dict:
                    entry_conditions_json, invalidation_conditions_json,
                    verification_count, time_horizon_days,
                    invalidation_count, flag_count, priority, last_verified,
-                   data_gaps_json
+                   data_gaps_json, watch_tag
             FROM conditional_tracking
             WHERE status = 'active'
             ORDER BY COALESCE(attention_score, 0) DESC, research_confidence DESC
@@ -355,7 +379,7 @@ def run_verification_cycle() -> Dict:
                    entry_conditions_json, invalidation_conditions_json,
                    verification_count, time_horizon_days,
                    invalidation_count, flag_count, priority, last_verified,
-                   data_gaps_json
+                   data_gaps_json, watch_tag
             FROM conditional_tracking
             WHERE status = 'low_priority'
               AND (last_verified IS NULL OR last_verified < ?)

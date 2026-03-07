@@ -30,6 +30,16 @@ logger = logging.getLogger(__name__)
 # Analyst's stop_loss field is now the THESIS FLOOR (immediate exit, no gate).
 TRAILING_STOP_PCT = 0.03   # 3% from peak — matches paper_trading.STOP_LOSS default
 
+# ─── Breakout entry constants ─────────────────────────────────────────────────
+# Tags where trigger = price >= target (upside breakout confirmation)
+UPSIDE_TRIGGER_TAGS = {'breakout'}
+
+# Tags exempt from risk-off entry penalty (their thesis IS the crisis)
+RISK_OFF_EXEMPT_TAGS = {'breakout', 'defensive-hedge', 'macro-hedge'}
+
+# Max extension above target for breakout triggers (don't chase >10% above target)
+BREAKOUT_MAX_EXTENSION = 0.10
+
 
 # ─── Rebound Watchlist ────────────────────────────────────────────────────────
 
@@ -1303,23 +1313,36 @@ class BrokerDecisionEngine:
 
             # ── Briefing regime check: require extra discount in risk-off ────
             effective_target = entry_target
+            watch_tag = (cond.get('watch_tag') or 'untagged').lower()
             try:
                 briefing_ctx, _ = self._get_briefing_context(scope='risk')
                 _regime = briefing_ctx.get('market_regime', '')
                 _conf = float(briefing_ctx.get('model_confidence', 0) or 0)
-                if _regime == 'risk-off' and _conf > 0.7:
+                if _regime == 'risk-off' and _conf > 0.7 and watch_tag not in RISK_OFF_EXEMPT_TAGS:
                     effective_target = entry_target * 0.98  # Require 2% extra discount
                     logger.info(
                         f"  ⚠️  {ticker}: risk-off regime (conf={_conf:.2f}) — "
                         f"tightening entry ${entry_target:.2f} → ${effective_target:.2f}"
+                    )
+                elif _regime == 'risk-off' and _conf > 0.7 and watch_tag in RISK_OFF_EXEMPT_TAGS:
+                    logger.info(
+                        f"  ℹ️  {ticker}: risk-off regime but [{watch_tag}] exempt from penalty"
                     )
             except Exception:
                 pass
 
             logger.debug(f"  📊 {ticker}: current=${current_price:.2f}, target=${effective_target:.2f}")
 
-            # Trigger check: price has reached or dropped to entry target
-            if current_price <= effective_target and ticker not in triggered_tickers:
+            # Trigger check: direction depends on watch_tag
+            if watch_tag in UPSIDE_TRIGGER_TAGS:
+                # Breakout: trigger when price confirms above target (capped at 10% extension)
+                max_price = entry_target * (1 + BREAKOUT_MAX_EXTENSION)
+                price_triggered = current_price >= effective_target and current_price <= max_price
+            else:
+                # Pullback/dip entries: trigger when price drops to or below target
+                price_triggered = current_price <= effective_target
+
+            if price_triggered and ticker not in triggered_tickers:
                 # Calculate position size using actual available cash (accounts for realized P&L)
                 available_cash = self._calculate_available_cash()
                 raw_pct        = float(cond.get('position_size_pct') or 0.05)
@@ -1339,10 +1362,13 @@ class BrokerDecisionEngine:
                     continue
 
                 # ── PRE-PURCHASE GATE: Gemini 3 Pro live conditions check ──────
-                watch_tag = cond.get('watch_tag') or 'untagged'
+                if watch_tag in UPSIDE_TRIGGER_TAGS:
+                    trigger_desc = f"${current_price:.2f} >= ${entry_target:.2f} (breakout confirmed)"
+                else:
+                    trigger_desc = f"${current_price:.2f} <= ${entry_target:.2f}"
                 logger.info(
                     f"  🎯 {ticker} [{watch_tag}] price triggered: "
-                    f"${current_price:.2f} <= ${entry_target:.2f} — running Pro gate..."
+                    f"{trigger_desc} — running Pro gate..."
                 )
                 gate = self._run_pre_purchase_gate(cond, current_price, live_state)
 

@@ -32,7 +32,7 @@ from alerts import AlertSystem
 from dashboard import generate_dashboard_html
 from crisis_db_utils import CrisisDatabase
 from paper_trading import PaperTradingEngine
-from broker_agent import AutonomousBroker
+from broker_agent import AutonomousBroker, UPSIDE_TRIGGER_TAGS
 from hightrade_cmd import CommandProcessor
 from news_aggregator import NewsAggregator
 from news_sentiment import NewsSentimentAnalyzer
@@ -1297,7 +1297,10 @@ Check dashboard for detailed analysis.
                 live = _live_price(sym)
                 if live is not None:
                     dist_pct = (live - target) / target * 100
-                    arrow    = "🔴 ABOVE target" if live > target else f"📍 {abs(dist_pct):.1f}% away"
+                    if (tag or '').lower() in UPSIDE_TRIGGER_TAGS:
+                        arrow = "✅ ABOVE target (breakout zone)" if live >= target else f"📍 {abs(dist_pct):.1f}% below breakout"
+                    else:
+                        arrow = "🔴 ABOVE target" if live > target else f"📍 {abs(dist_pct):.1f}% away"
                     stop_str = f" | stop ${stop:.2f}" if stop else ""
                     tp_str   = f" | TP1 ${tp1:.2f}" if tp1 else ""
                     cond_lines.append(

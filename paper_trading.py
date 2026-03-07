@@ -112,6 +112,38 @@ class AlpacaBroker:
         except Exception:
             return None
 
+    def get_positions(self) -> List[dict]:
+        """Return all Alpaca positions, or an empty list if unavailable."""
+        if not self._configured:
+            return []
+        try:
+            import requests as _req
+            r = _req.get(
+                f'{self.base_url}/v2/positions',
+                headers=self._headers(),
+                timeout=10,
+            )
+            return r.json() if r.ok else []
+        except Exception as e:
+            logger.warning(f"Alpaca positions sync failed: {e}")
+            return []
+
+    def get_account(self) -> Optional[dict]:
+        """Return Alpaca account summary, or None if unavailable."""
+        if not self._configured:
+            return None
+        try:
+            import requests as _req
+            r = _req.get(
+                f'{self.base_url}/v2/account',
+                headers=self._headers(),
+                timeout=10,
+            )
+            return r.json() if r.ok else None
+        except Exception as e:
+            logger.warning(f"Alpaca account fetch failed: {e}")
+            return None
+
 
 class CrisisAssetIntelligence:
     """Analyzes crisis types and recommends appropriate assets to trade"""
@@ -269,6 +301,187 @@ class PaperTradingEngine:
     def disconnect(self):
         """Disconnect from database"""
         self.conn.close()
+
+    @staticmethod
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        try:
+            if value in (None, ''):
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _safe_int(value: Any, default: int = 0) -> int:
+        try:
+            if value in (None, ''):
+                return default
+            return int(float(value))
+        except (TypeError, ValueError):
+            return default
+
+    def _sync_open_positions_from_alpaca(self) -> None:
+        """Mirror Alpaca open positions into local trade_records so manual broker trades appear system-wide."""
+        if not self.alpaca.is_configured:
+            return
+
+        try:
+            alpaca_positions = self.alpaca.get_positions()
+            if alpaca_positions is None:
+                return
+
+            self.cursor.execute('''
+            SELECT trade_id, asset_symbol, shares, entry_price, entry_date, entry_time,
+                   position_size_dollars, stop_loss, take_profit_1, take_profit_2
+            FROM trade_records
+            WHERE status = 'open'
+            ORDER BY entry_date DESC, entry_time DESC, trade_id DESC
+            ''')
+            open_rows = [dict(row) for row in self.cursor.fetchall()]
+
+            local_by_symbol = {}
+            for row in open_rows:
+                symbol = (row.get('asset_symbol') or '').upper()
+                if symbol:
+                    local_by_symbol.setdefault(symbol, []).append(row)
+
+            alpaca_symbols = set()
+            changed = False
+            now = datetime.now()
+            now_date = now.strftime('%Y-%m-%d')
+            now_time = now.strftime('%H:%M:%S')
+
+            for raw_pos in alpaca_positions:
+                symbol = (raw_pos.get('symbol') or '').upper()
+                qty = abs(self._safe_int(raw_pos.get('qty')))
+                if not symbol or qty <= 0:
+                    continue
+
+                alpaca_symbols.add(symbol)
+                avg_entry = self._safe_float(raw_pos.get('avg_entry_price'))
+                market_value = abs(self._safe_float(raw_pos.get('market_value')))
+                local_rows = local_by_symbol.get(symbol, [])
+                local_qty = sum(self._safe_int(r.get('shares')) for r in local_rows)
+
+                if local_qty == qty:
+                    continue
+
+                if local_qty == 0:
+                    # Check if this symbol was recently closed (pending sell at broker).
+                    # If so, skip import — Alpaca still shows it because the sell order
+                    # hasn't filled yet (e.g., submitted after market close).
+                    self.cursor.execute('''
+                        SELECT trade_id, exit_date, exit_time
+                        FROM trade_records
+                        WHERE asset_symbol = ? AND status = 'closed'
+                        ORDER BY exit_date DESC, exit_time DESC
+                        LIMIT 1
+                    ''', (symbol,))
+                    recent_close = self.cursor.fetchone()
+                    if recent_close:
+                        close_dt_str = f"{recent_close[1]} {recent_close[2] or '00:00:00'}"
+                        try:
+                            close_dt = datetime.strptime(close_dt_str, '%Y-%m-%d %H:%M:%S')
+                            hours_since_close = (now - close_dt).total_seconds() / 3600
+                            if hours_since_close < 18:
+                                # Closed less than 18 hours ago — likely a pending sell
+                                logger.info(
+                                    f"  ℹ️  Skipping Alpaca import for {symbol}: "
+                                    f"closed {hours_since_close:.1f}h ago (pending sell)"
+                                )
+                                continue
+                        except (ValueError, TypeError):
+                            pass  # Can't parse date — fall through to import
+
+                    inferred_size = market_value if market_value > 0 else round(avg_entry * qty, 2)
+                    self.cursor.execute('''
+                    INSERT INTO trade_records
+                    (crisis_id, asset_symbol, entry_date, entry_time, entry_price,
+                     entry_signal_score, defcon_at_entry, shares, position_size_dollars,
+                     exit_reason, status, notes)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        0,
+                        symbol,
+                        now_date,
+                        now_time,
+                        avg_entry,
+                        0,
+                        5,
+                        qty,
+                        inferred_size,
+                        None,
+                        'open',
+                        'Imported from Alpaca open positions sync'
+                    ))
+                    changed = True
+                    logger.info(f"Imported Alpaca position into local state: {symbol} x{qty} @ ${avg_entry:.2f}")
+                    continue
+
+                newest = local_rows[0]
+                self.cursor.execute('''
+                UPDATE trade_records
+                SET shares = ?,
+                    entry_price = CASE WHEN ? > 0 THEN ? ELSE entry_price END,
+                    position_size_dollars = CASE
+                        WHEN ? > 0 THEN ?
+                        WHEN ? > 0 THEN ROUND(? * ?, 2)
+                        ELSE position_size_dollars
+                    END,
+                    notes = CASE
+                        WHEN notes IS NULL OR notes = '' THEN 'Synced with Alpaca open position'
+                        WHEN notes LIKE '%Synced with Alpaca%' THEN notes
+                        ELSE notes || ' | Synced with Alpaca open position'
+                    END
+                WHERE trade_id = ?
+                ''', (
+                    qty,
+                    avg_entry, avg_entry,
+                    market_value, market_value,
+                    avg_entry, avg_entry, qty,
+                    newest['trade_id']
+                ))
+
+                extra_row_ids = [r['trade_id'] for r in local_rows[1:]]
+                if extra_row_ids:
+                    placeholders = ','.join('?' for _ in extra_row_ids)
+                    self.cursor.execute(
+                        f"UPDATE trade_records SET status='closed', exit_reason='manual', exit_date=?, exit_time=?, exit_price=entry_price, profit_loss_dollars=0, profit_loss_percent=0, holding_hours=0, notes=COALESCE(notes,'') || ' | Closed during Alpaca quantity consolidation' WHERE trade_id IN ({placeholders})",
+                        (now_date, now_time, *extra_row_ids)
+                    )
+                changed = True
+
+            stale_symbols = [symbol for symbol in local_by_symbol.keys() if symbol not in alpaca_symbols]
+            for symbol in stale_symbols:
+                row_ids = [r['trade_id'] for r in local_by_symbol[symbol]]
+                if not row_ids:
+                    continue
+                placeholders = ','.join('?' for _ in row_ids)
+                self.cursor.execute(
+                    f"UPDATE trade_records SET status='closed', exit_reason='manual', exit_date=?, exit_time=?, exit_price=COALESCE(current_price, entry_price, 0), profit_loss_dollars=COALESCE((COALESCE(current_price, entry_price, 0) - entry_price) * shares, 0), profit_loss_percent=CASE WHEN entry_price > 0 THEN ((COALESCE(current_price, entry_price, 0) - entry_price) / entry_price) * 100 ELSE 0 END, holding_hours=COALESCE(holding_hours, 0), notes=COALESCE(notes,'') || ' | Closed by Alpaca sync (position no longer open at broker)' WHERE trade_id IN ({placeholders}) AND status='open'",
+                    (now_date, now_time, *row_ids)
+                )
+                changed = True
+
+            if changed:
+                self.conn.commit()
+
+        except Exception as e:
+            logger.warning(f"Alpaca open-position sync skipped: {e}")
+
+    def _get_alpaca_account_snapshot(self) -> Optional[Dict[str, float]]:
+        """Fetch a normalized broker account snapshot for portfolio summaries when available."""
+        account = self.alpaca.get_account()
+        if not account:
+            return None
+        return {
+            'equity': self._safe_float(account.get('equity')),
+            'cash': self._safe_float(account.get('cash')),
+            'buying_power': self._safe_float(account.get('buying_power')),
+            'portfolio_value': self._safe_float(account.get('portfolio_value')),
+            'long_market_value': self._safe_float(account.get('long_market_value')),
+            'last_equity': self._safe_float(account.get('last_equity')),
+        }
 
     def calculate_position_size_vix_adjusted(self, vix_level: float) -> float:
         """
@@ -617,7 +830,30 @@ class PaperTradingEngine:
             exit_date = exit_dt.strftime('%Y-%m-%d')
             exit_time = exit_dt.strftime('%H:%M:%S')
 
-            # Update trade record
+            # Mirror to Alpaca FIRST — only commit DB if broker confirms
+            symbol = trade['asset_symbol']
+            shares = trade['shares']
+            alpaca_result = self.alpaca.place_order(symbol, shares, 'sell')
+
+            if self.alpaca.is_configured and not alpaca_result.get('ok'):
+                # Alpaca sell failed — try cancelling stuck orders and retry
+                alpaca_err = alpaca_result.get('error', 'unknown')
+                logger.warning(f"⚠️  Alpaca sell failed for {symbol}: {alpaca_err} — cancelling stuck orders and retrying")
+                try:
+                    import requests as _req
+                    _req.delete(
+                        f'{self.alpaca.base_url}/v2/orders',
+                        headers=self.alpaca._headers(),
+                        timeout=10,
+                    )
+                    import time; time.sleep(0.5)
+                    alpaca_result = self.alpaca.place_order(symbol, shares, 'sell')
+                    if not alpaca_result.get('ok'):
+                        logger.error(f"🚫 Alpaca sell retry also failed for {symbol}: {alpaca_result.get('error')}")
+                except Exception as _re:
+                    logger.error(f"🚫 Alpaca cancel+retry failed for {symbol}: {_re}")
+
+            # Update trade record in DB
             self.cursor.execute('''
             UPDATE trade_records
             SET exit_date = ?, exit_time = ?, exit_price = ?, exit_reason = ?,
@@ -631,10 +867,7 @@ class PaperTradingEngine:
             ))
             self.conn.commit()
 
-            # Mirror to Alpaca (non-blocking)
-            self.alpaca.place_order(trade['asset_symbol'], trade['shares'], 'sell')
-
-            logger.info(f"✅ Position closed: {trade['asset_symbol']} "
+            logger.info(f"✅ Position closed: {symbol} "
                        f"{profit_loss_percent:+.2f}% (${profit_loss_dollars:+,.0f})")
 
             # Reset trailing stop for this trade
@@ -669,6 +902,7 @@ class PaperTradingEngine:
         """
         try:
             self.connect()
+            self._sync_open_positions_from_alpaca()
 
             # Get all trades
             self.cursor.execute('''
@@ -710,7 +944,9 @@ class PaperTradingEngine:
                         'win_rate': (asset_wins / len(asset_trades) * 100) if asset_trades else 0
                     }
 
-            return {
+            account_snapshot = self._get_alpaca_account_snapshot()
+
+            result = {
                 'total_trades': len(all_trades),
                 'open_trades': len(open_trades),
                 'closed_trades': len(closed_trades),
@@ -723,6 +959,17 @@ class PaperTradingEngine:
                 'by_asset': by_asset,
                 'timestamp': datetime.now().isoformat()
             }
+
+            if account_snapshot:
+                result.update({
+                    'broker_equity': account_snapshot['equity'],
+                    'broker_cash': account_snapshot['cash'],
+                    'broker_buying_power': account_snapshot['buying_power'],
+                    'broker_long_market_value': account_snapshot['long_market_value'],
+                    'broker_day_change_dollars': account_snapshot['equity'] - account_snapshot['last_equity'],
+                })
+
+            return result
 
         except Exception as e:
             logger.error(f"Error calculating portfolio performance: {e}", exc_info=True)
@@ -738,6 +985,7 @@ class PaperTradingEngine:
         """Get all currently open positions (includes exit levels for deep-dive context)"""
         try:
             self.connect()
+            self._sync_open_positions_from_alpaca()
 
             self.cursor.execute('''
             SELECT trade_id, asset_symbol, entry_date, entry_price, shares,
@@ -995,6 +1243,26 @@ class PaperTradingEngine:
             pnl_pct = round(((exit_price - entry_price) / entry_price) * 100, 4)
             exit_time = datetime.now()
 
+            # Mirror to Alpaca FIRST — try broker before committing DB
+            alpaca_result = self.alpaca.place_order(ticker, shares, 'sell')
+
+            if self.alpaca.is_configured and not alpaca_result.get('ok'):
+                alpaca_err = alpaca_result.get('error', 'unknown')
+                logger.warning(f"⚠️  Alpaca sell failed for {ticker}: {alpaca_err} — cancelling stuck orders and retrying")
+                try:
+                    import requests as _req
+                    _req.delete(
+                        f'{self.alpaca.base_url}/v2/orders',
+                        headers=self.alpaca._headers(),
+                        timeout=10,
+                    )
+                    import time; time.sleep(0.5)
+                    alpaca_result = self.alpaca.place_order(ticker, shares, 'sell')
+                    if not alpaca_result.get('ok'):
+                        logger.error(f"🚫 Alpaca sell retry also failed for {ticker}: {alpaca_result.get('error')}")
+                except Exception as _re:
+                    logger.error(f"🚫 Alpaca cancel+retry failed for {ticker}: {_re}")
+
             self.cursor.execute('''
                 UPDATE trade_records
                 SET exit_date=?, exit_time=?, exit_price=?, exit_reason=?,
@@ -1011,9 +1279,6 @@ class PaperTradingEngine:
                 actual_trade_id
             ))
             self.conn.commit()
-
-            # Mirror to Alpaca (non-blocking)
-            self.alpaca.place_order(ticker, shares, 'sell')
 
             direction = '📈' if pnl_dollars >= 0 else '📉'
             logger.info(

@@ -14,6 +14,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from pathlib import Path
 
+from paper_trading import PaperTradingEngine
+
 _ET = ZoneInfo('America/New_York')       # trading schedule — always Eastern
 _LOCAL_TZ = None                          # display timezone — auto-detected below
 
@@ -53,6 +55,11 @@ DB_PATH    = SCRIPT_DIR / "trading_data" / "trading_history.db"
 OUT_PATH   = SCRIPT_DIR / "trading_data" / "dashboard.html"
 
 
+def _engine() -> PaperTradingEngine:
+    """Create a paper trading engine bound to the dashboard database."""
+    return PaperTradingEngine(db_path=DB_PATH)
+
+
 # ─── Data Layer ──────────────────────────────────────────────────────────────
 
 def _conn():
@@ -69,16 +76,9 @@ def fetch_system_status():
         return dict(row) if row else {}
 
 def fetch_open_positions():
-    with _conn() as db:
-        rows = db.execute("""
-            SELECT asset_symbol, shares, entry_price, current_price,
-                   position_size_dollars, unrealized_pnl_dollars,
-                   unrealized_pnl_percent, entry_date, defcon_at_entry,
-                   stop_loss, take_profit_1, take_profit_2
-            FROM trade_records WHERE status='open'
-            ORDER BY entry_date
-        """).fetchall()
-        return [dict(r) for r in rows]
+    engine = _engine()
+    positions = engine.get_open_positions()
+    return sorted(positions, key=lambda row: row.get('entry_date') or '')
 
 def fetch_closed_trades():
     with _conn() as db:
@@ -92,20 +92,24 @@ def fetch_closed_trades():
         return [dict(r) for r in rows]
 
 def fetch_portfolio_stats():
-    with _conn() as db:
-        row = db.execute("""
-            SELECT
-                COUNT(*) as total_trades,
-                SUM(CASE WHEN status='closed' THEN 1 ELSE 0 END) as closed,
-                SUM(CASE WHEN status='open'   THEN 1 ELSE 0 END) as open_count,
-                SUM(CASE WHEN exit_reason='profit_target' THEN 1 ELSE 0 END) as wins,
-                SUM(CASE WHEN exit_reason='stop_loss'     THEN 1 ELSE 0 END) as losses,
-                ROUND(SUM(CASE WHEN status='closed' THEN profit_loss_dollars ELSE 0 END),2) as realized_pnl,
-                ROUND(SUM(CASE WHEN status='open'   THEN unrealized_pnl_dollars ELSE 0 END),2) as unrealized_pnl,
-                ROUND(SUM(CASE WHEN status='open'   THEN position_size_dollars ELSE 0 END),2) as deployed
-            FROM trade_records
-        """).fetchone()
-        return dict(row) if row else {}
+    perf = _engine().get_portfolio_performance()
+    positions = fetch_open_positions()
+
+    return {
+        'total_trades': perf.get('total_trades', 0),
+        'closed': perf.get('closed_trades', 0),
+        'open_count': perf.get('open_trades', 0),
+        'wins': perf.get('winning_trades', 0),
+        'losses': perf.get('losing_trades', 0),
+        'realized_pnl': round(perf.get('total_profit_loss_dollars', 0) or 0, 2),
+        'unrealized_pnl': round(sum((p.get('unrealized_pnl_dollars') or 0) for p in positions), 2),
+        'deployed': round(sum((p.get('position_size_dollars') or 0) for p in positions), 2),
+        'broker_equity': round(perf.get('broker_equity', 0) or 0, 2),
+        'broker_cash': round(perf.get('broker_cash', 0) or 0, 2),
+        'broker_buying_power': round(perf.get('broker_buying_power', 0) or 0, 2),
+        'broker_long_market_value': round(perf.get('broker_long_market_value', 0) or 0, 2),
+        'broker_day_change_dollars': round(perf.get('broker_day_change_dollars', 0) or 0, 2),
+    }
 
 def fetch_daily_briefings():
     with _conn() as db:
@@ -301,6 +305,11 @@ def fetch_exit_queue():
     """Fetch open positions enriched with exit levels from trade_records and
     conditional_tracking (analyst-set stops/TPs). Uses COALESCE so analyst
     levels fill in when the trade_record fields are NULL (manual entries)."""
+    # Ensure broker positions are synced into trade_records before querying exit queue.
+    try:
+        _engine().get_open_positions()
+    except Exception:
+        pass
     with _conn() as db:
         try:
             rows = db.execute("""
