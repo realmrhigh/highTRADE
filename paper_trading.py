@@ -1067,10 +1067,12 @@ class PaperTradingEngine:
         except Exception as e:
             logger.debug(f"yfinance price fetch failed for {asset_symbol}: {e}")
 
-        # Fallback: Alpha Vantage
+        # Fallback: Alpha Vantage (key from env — never hardcoded)
         try:
-            import requests
-            api_key = "98ac4e761ff2e37793f310bcfb4f54c9"
+            import requests, os
+            api_key = os.getenv('ALPHA_VANTAGE_API_KEY', '')
+            if not api_key:
+                raise ValueError('ALPHA_VANTAGE_API_KEY not set')
             url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={asset_symbol}&apikey={api_key}"
 
             response = requests.get(url, timeout=5)

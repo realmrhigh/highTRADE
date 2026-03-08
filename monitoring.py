@@ -6,6 +6,7 @@ Integrates with FRED API for bond yield data and news feeds for sentiment
 """
 
 import sqlite3
+import os
 import requests
 import json
 from datetime import datetime, timedelta
@@ -17,7 +18,7 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
 
 # FRED API - Federal Reserve Economic Data (free tier)
-FRED_API_KEY = "98ac4e761ff2e37793f310bcfb4f54c9"  # Get from https://fred.stlouisfed.org/docs/api/fred/
+FRED_API_KEY = os.environ.get('FRED_API_KEY', '')  # Set FRED_API_KEY env var — never hardcode
 FRED_ENDPOINTS = {
     'DGS10': 'DGS10',      # 10-Year Treasury Constant Maturity
     'VIXCLS': 'VIXCLS',    # VIX
