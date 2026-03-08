@@ -70,37 +70,6 @@ class GrokClient:
             logger.error(f"Grok call failed: {e}")
             return None, 0, 0
 
-    def second_opinion(self, payload: Dict[str, Any], focus: str = "current positions/watchlist") -> Optional[Dict]:
-        """Deep reasoning second opinion with X-powered critique."""
-        system_prompt = """
-        You are Grok as independent second-opinion analyst for the HighTrade system.
-        Lead model is Gemini 3.1 Pro.
-        - Be truth-seeking: flag blind spots, over-optimism, missed signals.
-        - Leverage real-time X data for sentiment, flow, whispers.
-        - Output strict JSON only.
-        """
-        
-        prompt = f"STATE SNAPSHOT:\n{json.dumps(payload, indent=2)}\n\nFocus: {focus}\n\nProvide a second opinion in JSON format with keys: critique (str), x_signals (list of dicts), gaps_recommendations (list of str), action_suggestion (hold|buy|sell|monitor|add_to_watch), and confidence (float 0-1)."
-        
-        text, in_tok, out_tok = self.call(prompt, system_prompt=system_prompt, temperature=0.4)
-        if not text:
-            return None
-
-        # Clean JSON markdown if present
-        if "```json" in text:
-            text = text.split("```json")[1].split("```")[0].strip()
-        elif "```" in text:
-            text = text.split("```")[1].split("```")[0].strip()
-
-        try:
-            result = json.loads(text)
-            result['input_tokens'] = in_tok
-            result['output_tokens'] = out_tok
-            return result
-        except json.JSONDecodeError:
-            logger.error(f"Failed to parse Grok second opinion JSON: {text[:200]}")
-            return None
-
 # Backward compatibility for existing functional calls
 _instance = None
 def call(*args, **kwargs):
@@ -112,5 +81,5 @@ def call(*args, **kwargs):
 if __name__ == "__main__":
     client = GrokClient()
     print(f"Testing Grok Client with {client.default_model}...")
-    res = client.second_opinion({"market_regime": "bullish", "defcon": 5}, focus="SPY")
-    print(json.dumps(res, indent=2) if res else "Failed")
+    text, in_tok, out_tok = client.call("Reply with a single JSON object: {\"status\": \"ok\"}")
+    print(f"Response: {text} | tokens: {in_tok}→{out_tok}")

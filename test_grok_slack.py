@@ -19,15 +19,15 @@ from sector_rotation import SectorRotationAnalyzer
 from vix_term_structure import VIXTermStructure
 
 def trigger_test_analysis():
-    logger.info("🚀 Triggering manual AI analysis (Gemini 3.1 + Grok-3)...")
-    
+    logger.info("🚀 Triggering manual AI analysis (Gemini Flash + Grok Deep)...")
+
     # 1. Initialize components
     gemini = GeminiAnalyzer()
-    grok = GrokAnalyzer()
+    grok   = GrokAnalyzer()
     alerts = AlertSystem()
     sector = SectorRotationAnalyzer()
-    vix = VIXTermStructure()
-    
+    vix    = VIXTermStructure()
+
     # 2. Mock high-impact news
     test_articles = [
         {
@@ -51,72 +51,59 @@ def trigger_test_analysis():
             'matched_keywords': ['supply chain', 'strike', 'inflation']
         }
     ]
-    
-    score = 75.0  # Elevated score to trigger Pro/Grok
-    crisis_type = 'inflation_rate'
+
+    score            = 75.0
+    crisis_type      = 'inflation_rate'
     sentiment_summary = 'Strongly Bearish (90%)'
-    components = {'sentiment_net': 90.0, 'urgency_premium': 20.0, 'signal_concentration': 85.0}
-    
+    components       = {'sentiment_net': 90.0, 'urgency_premium': 20.0, 'signal_concentration': 85.0}
+    mock_positions   = [
+        {'symbol': 'AAPL', 'shares': 10, 'entry_price': 185.50, 'pnl_pct': 2.5},
+        {'symbol': 'NVDA', 'shares': 5,  'entry_price': 720.00, 'pnl_pct': -1.2}
+    ]
+
     # 3. Gather macro context
     sector_res = sector.get_rotation_data()
-    vix_res = vix.get_term_structure_data()
-    
-    # 4. Run AI Analysis
+    vix_res    = vix.get_term_structure_data()
+
+    # 4. Run AI Analysis — Flash pre-filter, then Grok deep dive
     logger.info("  🤖 Running Gemini Flash...")
     flash_res = gemini.run_flash_analysis(
         test_articles, components, sentiment_summary, crisis_type,
         sector_rotation=sector_res, vix_term_structure=vix_res
     )
-    
-    logger.info("  🧠 Running Gemini 3.1 Pro...")
-    pro_res = gemini.run_pro_analysis(
+
+    logger.info("  🧠 Running Grok deep analysis...")
+    grok_res = grok.run_deep_analysis(
         test_articles, components, sentiment_summary, crisis_type,
         news_score=score, flash_analysis=flash_res, current_defcon=5,
+        positions=mock_positions,
         sector_rotation=sector_res, vix_term_structure=vix_res
     )
-    
-    logger.info("  𝕏 Running Grok Second Opinion (State Snapshot)...")
-    mock_positions = [
-        {'symbol': 'AAPL', 'shares': 10, 'entry_price': 185.50, 'pnl_pct': 2.5},
-        {'symbol': 'NVDA', 'shares': 5, 'entry_price': 720.00, 'pnl_pct': -1.2}
-    ]
-    
-    grok_res = grok.run_analysis(
-        test_articles, crisis_type, score,
-        sector_rotation=sector_res,
-        vix_term_structure=vix_res,
-        positions=mock_positions,
-        current_defcon=5
-    )
-    
+
     # 5. Format and Send to Slack
-    gemini_summary = {
-        'action': pro_res.get('recommended_action', 'WAIT') if pro_res else 'WAIT',
-        'theme': pro_res.get('dominant_theme', 'N/A') if pro_res else 'N/A',
-        'reasoning': pro_res.get('reasoning', '')[:300] if pro_res else 'N/A'
-    }
-    
-    grok_summary = {
-        'action': grok_res.get('second_opinion_action', 'WAIT') if grok_res else 'WAIT',
-        'x_sentiment': grok_res.get('x_sentiment_score', 0) if grok_res else 0,
-        'reasoning': grok_res.get('reasoning', '')[:300] if grok_res else 'N/A',
-        'disagreement_flag': grok_res.get('disagreement_flag', False) if grok_res else False
-    }
-    
+    gemini_summary = None
+    if flash_res:
+        gemini_summary = {
+            'action':     flash_res.get('recommended_action', 'WAIT'),
+            'coherence':  flash_res.get('narrative_coherence', 0),
+            'confidence': flash_res.get('confidence_in_signal', 0),
+            'theme':      flash_res.get('dominant_theme', ''),
+            'reasoning':  flash_res.get('reasoning', '')[:200],
+        }
+
     logger.info("  📤 Sending to Slack...")
     alerts.send_silent_log('news_update', {
-        'news_score': score,
-        'crisis_type': crisis_type,
-        'sentiment': 'bearish',
-        'article_count': len(test_articles),
+        'news_score':        score,
+        'crisis_type':       crisis_type,
+        'sentiment':         'bearish',
+        'article_count':     len(test_articles),
         'new_article_count': len(test_articles),
-        'breaking_count': 1,
-        'score_components': components,
-        'top_articles': test_articles,
-        'gemini': gemini_summary,
-        'grok': grok_summary,
-        'timestamp': datetime.now().isoformat(),
-        'is_test': True
+        'breaking_count':    1,
+        'score_components':  components,
+        'top_articles':      test_articles,
+        'gemini':            gemini_summary,
+        'timestamp':         datetime.now().isoformat(),
+        'is_test':           True
     })
     
     logger.info("✅ Test analysis complete and sent to Slack!")

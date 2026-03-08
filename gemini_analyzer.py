@@ -27,98 +27,52 @@ PRO_TRIGGER_SCORE = 40.0
 
 
 class GrokAnalyzer:
-    """X.com analysis and second opinion using xAI Grok"""
+    """Primary deep-dive analyst using xAI Grok with native live search."""
 
     def __init__(self, model: str = GROK_MODEL):
         self.model = model
         self.client = grok_client.GrokClient()
 
-    def run_analysis(self, articles: List[Dict], crisis_type: str, news_score: float,
-                     sector_rotation: Optional[Dict] = None,
-                     vix_term_structure: Optional[Dict] = None,
-                     positions: Optional[List] = None,
-                     current_defcon: Optional[int] = None) -> Optional[Dict]:
+    def run_deep_analysis(self, articles: List[Dict], score_components: Dict,
+                          sentiment_summary: str, crisis_type: str, news_score: float,
+                          flash_analysis: Optional[Dict], current_defcon: int,
+                          positions: Optional[List] = None,
+                          sector_rotation: Optional[Dict] = None,
+                          vix_term_structure: Optional[Dict] = None,
+                          briefing_context: Optional[str] = None) -> Optional[Dict]:
         """
-        Run Grok analysis for X.com sentiment and second opinion on market state.
+        Grok deep analysis — primary deep dive, replaces Gemini Pro on elevated signals.
+        Uses identical prompt to run_pro_analysis; Grok's live search fills data gaps.
         """
-        logger.info(f"  𝕏 Running Grok analysis for X.com sentiment ({self.model})...")
+        logger.info(f"  🧠 Running Grok DEEP analysis (score={news_score:.1f}, defcon={current_defcon})...")
 
-        # Format snapshot payload for Grok
-        payload = {
-            "news_signal": {
-                "score": news_score,
-                "type": crisis_type,
-                "articles": [a.get('title') for a in articles[:10]],
-                "sentiment_summary": "bearish" # Simplification for payload
-            },
-            "macro": {
-                "sector_rotation": sector_rotation,
-                "vix_term_structure": vix_term_structure
-            },
-            "system_state": {
-                "defcon": current_defcon,
-                "positions": positions
-            }
-        }
-        
-        result = self.client.second_opinion(payload, focus=f"Market {crisis_type} event and current positions")
+        _gem = GeminiAnalyzer()
+        prompt = _gem._build_pro_prompt(
+            articles, score_components, sentiment_summary, crisis_type,
+            news_score, flash_analysis, current_defcon, positions,
+            sector_rotation, vix_term_structure, briefing_context
+        )
 
-        if not result:
-            logger.warning("  ⚠️  Grok returned no valid JSON response")
+        text, in_tok, out_tok = self.client.call(prompt, temperature=0.4)
+
+        if not text:
+            logger.error("  ❌ Grok deep analysis returned no response")
             return None
 
-        # Map new Grok keys to internal structure
-        # Internal: x_sentiment_score, trending_topics, hidden_narratives, second_opinion_action, reasoning, contrarian_signal
-        # Grok Suggestions: critique (str), x_signals (list[dict]), gaps_recommendations (list[str]), action_suggestion (hold|buy|sell|monitor|add_to_watch), confidence (float 0-1)
-        
-        mapped_result = {
-            "x_sentiment_score": result.get('confidence', 0) * (-1 if 'bearish' in result.get('critique', '').lower() else 1),
-            "trending_topics": [s.get('summary') for s in result.get('x_signals', []) if isinstance(s, dict)],
-            "hidden_narratives": result.get('gaps_recommendations', []),
-            "second_opinion_action": result.get('action_suggestion', 'WAIT').upper(),
-            "reasoning": result.get('critique', ''),
-            "contrarian_signal": 1.0 - result.get('confidence', 0.5),
-            "model": self.model,
-            "input_tokens": result.get('input_tokens', 0),
-            "output_tokens": result.get('output_tokens', 0),
-            "timestamp": datetime.now().isoformat(),
-            "full_critique": result # Store the full original response
-        }
-        
-        logger.info(f"  ✅ Grok: action={mapped_result['second_opinion_action']}, x_sentiment={mapped_result['x_sentiment_score']:.2f} ({mapped_result['input_tokens']}→{mapped_result['output_tokens']} tokens)")
-        return mapped_result
-
-    def save_analysis_to_db(self, db_path: str, news_signal_id: int, analysis: Dict) -> Optional[int]:
-        """Save Grok analysis to grok_analysis table"""
-        import sqlite3
         try:
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute("""
-                INSERT INTO grok_analysis
-                (news_signal_id, model_used, x_sentiment_score, trending_topics,
-                 hidden_narratives, second_opinion_action, reasoning, 
-                 input_tokens, output_tokens)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                news_signal_id,
-                analysis.get('model', ''),
-                analysis.get('x_sentiment_score', 0),
-                json.dumps(analysis.get('trending_topics', [])),
-                json.dumps(analysis.get('hidden_narratives', [])),
-                analysis.get('second_opinion_action', 'WAIT'),
-                analysis.get('reasoning', ''),
-                analysis.get('input_tokens', 0),
-                analysis.get('output_tokens', 0)
-            ))
-            
-            conn.commit()
-            analysis_id = cursor.lastrowid
-            conn.close()
-            return analysis_id
+            result = _gem._parse_json_response(text)
+            result['model'] = self.model
+            result['input_tokens'] = in_tok
+            result['output_tokens'] = out_tok
+            result['timestamp'] = datetime.now().isoformat()
+
+            action = result.get('recommended_action', 'WAIT')
+            defcon_rec = result.get('defcon_recommendation', current_defcon)
+            logger.info(f"  ✅ Grok deep: action={action}, defcon_rec={defcon_rec} ({in_tok}→{out_tok} tokens)")
+            return result
+
         except Exception as e:
-            logger.error(f"  ❌ Failed to save Grok analysis: {e}")
+            logger.error(f"  ❌ Grok deep analysis parse failed: {e}")
             return None
 
 

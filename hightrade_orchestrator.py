@@ -473,7 +473,6 @@ class HighTradeOrchestrator:
         logger.debug(f"DEBUG: Current PATH: {os.environ.get('PATH')}")
         sector_result = None
         vix_result = None
-        grok_result = None
         macro_result = None
         
         if self.sector_analyzer:
@@ -584,13 +583,11 @@ class HighTradeOrchestrator:
                                 vix_term_structure=vix_result
                             )
 
-                            # --- LAYER 2: Pro deep analysis + Grok second opinion on elevated signals ---
+                            # --- LAYER 2: Grok deep analysis on elevated signals ---
                             if self.gemini.should_run_pro(score, fresh_news_signal['breaking_count'], defcon_changed):
-                                logger.info(f"  🧠 Elevated signal ({score:.1f}) — triggering deep AI analysis (Gemini Pro + Grok)...")
+                                logger.info(f"  🧠 Elevated signal ({score:.1f}) — triggering Grok deep analysis...")
                                 open_positions = self.paper_trading.get_open_positions()
-                                
-                                # 1. Gemini Pro (Standard Tier)
-                                # Inject latest briefing intelligence into Pro context
+
                                 _pro_briefing_ctx = None
                                 try:
                                     from broker_agent import get_latest_briefing_context
@@ -598,7 +595,7 @@ class HighTradeOrchestrator:
                                 except Exception:
                                     pass
 
-                                gemini_pro_result = self.gemini.run_pro_analysis(
+                                gemini_pro_result = self.grok.run_deep_analysis(
                                     articles_for_gemini,
                                     score_components=components,
                                     sentiment_summary=fresh_news_signal['sentiment_summary'],
@@ -610,30 +607,7 @@ class HighTradeOrchestrator:
                                     sector_rotation=sector_result,
                                     vix_term_structure=vix_result,
                                     briefing_context=_pro_briefing_ctx,
-                                )
-                                
-                                # 2. Grok Second Opinion (X.com Analysis)
-                                if self.grok_enabled:
-                                    grok_result = self.grok.run_analysis(
-                                        articles_for_gemini,
-                                        crisis_type=fresh_news_signal['dominant_crisis_type'],
-                                        news_score=score,
-                                        sector_rotation=sector_result,
-                                        vix_term_structure=vix_result,
-                                        positions=open_positions,
-                                        current_defcon=self.previous_defcon
-                                    )
-                                    
-                                    # --- VETO / CONTRARIAN FLAG LOGIC ---
-                                    if grok_result and gemini_pro_result:
-                                        gemini_action = gemini_pro_result.get('recommended_action', 'WAIT').upper()
-                                        grok_action = grok_result.get('second_opinion_action', 'WAIT').upper()
-                                        
-                                        if (gemini_action in ('BUY', 'SELL')) and (grok_action != gemini_action):
-                                            logger.warning(f"  🚨 AI DISAGREEMENT: Gemini={gemini_action}, Grok={grok_action}. Flagging for review.")
-                                            grok_result['disagreement_flag'] = True
-                                else:
-                                    grok_result = None
+                                ) if self.grok_enabled else None
                         elif self.gemini_enabled:
                             logger.info(f"  ⏭️  Skipping Gemini — 0 new articles (reusing previous analysis)")
 
@@ -644,17 +618,11 @@ class HighTradeOrchestrator:
                             gemini_flash=gemini_flash_result
                         )
 
-                        # Save Pro analysis to gemini_analysis table
-                        if gemini_pro_result and signal_id and self.gemini_enabled:
+                        # Save Grok deep analysis to gemini_analysis table (same schema)
+                        if gemini_pro_result and signal_id and self.grok_enabled:
                             self.gemini.save_analysis_to_db(
                                 str(DB_PATH), signal_id, gemini_pro_result,
                                 trigger_type='elevated' if score >= 40 else 'breaking'
-                            )
-                            
-                        # Save Grok analysis to grok_analysis table
-                        if grok_result and signal_id and self.grok_enabled:
-                            self.grok.save_analysis_to_db(
-                                str(DB_PATH), signal_id, grok_result
                             )
 
                         if fresh_news_signal['article_count'] > 0:
@@ -682,15 +650,6 @@ class HighTradeOrchestrator:
                                     'reasoning': gemini_flash_result.get('reasoning', '')[:200]
                                 }
                                 
-                            grok_summary = None
-                            if 'grok_result' in locals() and grok_result:
-                                grok_summary = {
-                                    'action': grok_result.get('second_opinion_action', 'WAIT'),
-                                    'x_sentiment': grok_result.get('x_sentiment_score', 0),
-                                    'reasoning': grok_result.get('reasoning', '')[:200],
-                                    'disagreement_flag': grok_result.get('disagreement_flag', False)
-                                }
-
                             # Send silent notification to #logs-silent every cycle
                             self.alerts.send_silent_log('news_update', {
                                 'news_score': score,
@@ -702,7 +661,6 @@ class HighTradeOrchestrator:
                                 'score_components': components,
                                 'top_articles': latest_articles[:3],
                                 'gemini': gemini_summary,
-                                'grok': grok_summary,
                                 'timestamp': datetime.now().isoformat()
                             })
                             

@@ -185,12 +185,9 @@ def fetch_recent_news():
                    ga.recommended_action as gemini_pro_action,
                    ga.reasoning as gemini_pro_reasoning,
                    ga.confidence_in_signal as gemini_pro_confidence,
-                   gr.second_opinion_action as grok_action,
-                   gr.x_sentiment_score as grok_sentiment,
-                   gr.reasoning as grok_reasoning
+                   ga.model_used as deep_dive_model
             FROM news_signals ns
             LEFT JOIN gemini_analysis ga ON ns.news_signal_id = ga.news_signal_id AND ga.trigger_type IN ('elevated', 'breaking')
-            LEFT JOIN grok_analysis gr ON ns.news_signal_id = gr.news_signal_id
             ORDER BY ns.created_at DESC LIMIT 6
         """).fetchall()
         return [dict(r) for r in rows]
@@ -241,6 +238,38 @@ def fetch_hound_last_run():
             ORDER BY created_at DESC LIMIT 1
         """).fetchone()
         return row[0] if row else None
+
+def fetch_grok_usage():
+    """
+    Return Grok API usage today (midnight UTC) from grok_analysis + daily_briefings.
+    Grok is pay-per-token (no daily limit), so we track calls and tokens only.
+    """
+    try:
+        import sqlite3 as _sq
+        from datetime import datetime, timezone
+        _today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        _conn = _sq.connect(str(DB_PATH))
+        # Deep dive calls — now stored in gemini_analysis with model_used='grok-*'
+        _d = _conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0) "
+            "FROM gemini_analysis WHERE model_used LIKE 'grok%' AND created_at >= ?", (_today,)
+        ).fetchone() or (0, 0, 0)
+        # Daily briefing calls
+        _b = _conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0) "
+            "FROM daily_briefings WHERE model_key='grok' AND date=?", (_today,)
+        ).fetchone() or (0, 0, 0)
+        _conn.close()
+        return {
+            'calls':       (_d[0] or 0) + (_b[0] or 0),
+            'tokens_in':   (_d[1] or 0) + (_b[1] or 0),
+            'tokens_out':  (_d[2] or 0) + (_b[2] or 0),
+            'deep_calls':  _d[0] or 0,
+            'brief_calls': _b[0] or 0,
+        }
+    except Exception:
+        return {}
+
 
 def fetch_gemini_usage():
     """
@@ -873,10 +902,6 @@ def build_news_items(news):
         else:
             insight_html = '<div style="font-size:11px;color:#444;margin-top:4px;font-style:italic;">Low-score cycle — Flash analysis not triggered</div>'
 
-        grok_badge = ""
-        if n.get('grok_action'):
-            grok_badge = f'<span style="color:#aaa;font-size:10px;margin-left:6px;">𝕏 {action_badge(n["grok_action"])}</span>'
-
         items.append(
             '<div class="news-item">'
             '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">'
@@ -885,7 +910,6 @@ def build_news_items(news):
             f'<span style="color:#aaa;font-size:11px;">{(n.get("crisis_type","")).replace("_"," ").upper()}</span>'
             '<div>'
             f'{action_badge(n.get("gemini_pro_action"))}'
-            f'{grok_badge}'
             '</div>'
             '</div>'
             f'<div style="font-size:11px;color:#555;">{n.get("article_count",0)} articles &middot; {n.get("breaking_count",0)} breaking</div>'
@@ -1065,7 +1089,7 @@ def build_model_card(b, title, icon):
 
 def build_html(status, positions, closed, stats, briefings, macro, watchlist,
                sig_history, news, cong_clusters, cong_trades, hound_candidates, hound_last_run=None,
-               conditionals=None, gemini_usage=None, exit_queue=None, stream_health=None):
+               conditionals=None, gemini_usage=None, grok_usage=None, exit_queue=None, stream_health=None):
 
     _ln = _local_now()
     now_str    = _ln.strftime('%Y-%m-%d %H:%M:%S ') + _ln.tzname()
@@ -1084,6 +1108,24 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
             hound_last_str = str(hound_last_run)[:16]
     else:
         hound_last_str = 'No runs yet'
+
+    # ── Grok usage counter widget ────────────────────────────────────────────
+    _gu = grok_usage or {}
+    _g_calls      = _gu.get('calls', 0)
+    _g_tok_in     = _gu.get('tokens_in', 0)
+    _g_tok_out    = _gu.get('tokens_out', 0)
+    _g_deep       = _gu.get('deep_calls', 0)
+    _g_brief      = _gu.get('brief_calls', 0)
+    _g_call_color = '#00ff88' if _g_calls > 0 else '#555'
+    grok_usage_html = f"""
+      <div class="stat">
+        <div class="stat-label">&#120143; Grok Usage &mdash; Since Midnight UTC</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
+          <span style="color:#aaa;font-size:9px;">grok-4-1-fast-reasoning &nbsp;&middot;&nbsp; pay-per-token</span>
+          <span style="color:{_g_call_color};font-size:10px;font-weight:600;">{_g_calls} calls &nbsp;&middot;&nbsp; {_g_tok_in:,} in &nbsp;&middot;&nbsp; {_g_tok_out:,} out</span>
+        </div>
+        <div style="color:#444;font-size:9px;">deep_dives: {_g_deep} &nbsp;&middot;&nbsp; briefings: {_g_brief} &nbsp;&middot;&nbsp; total tok: {_g_tok_in + _g_tok_out:,}</div>
+      </div>"""
 
     # ── Gemini quota widget HTML ─────────────────────────────────────────────
     _quota_color = {'ok': '#00ff88', 'warn': '#ffb300', 'block': '#ff4444'}
@@ -1291,7 +1333,7 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
     cong_cl_rows   = build_cong_cluster_rows(cong_clusters)
     cong_tr_rows   = build_cong_trade_rows(cong_trades)
     reasoning_card = build_model_card(latest_b, 'REASONING (Gemini 3.1)', '🔬')
-    grok_card      = build_model_card(latest_grok, 'SECOND OPINION (Grok 4.1)', '𝕏')
+    grok_card      = build_model_card(latest_grok, 'DEEP DIVE (Grok 4.1)', '𝕏')
 
     # Daily schedule intraday cards
     morning_card = build_flash_card(morning_b, 'MARKET OPEN', '9:30 AM', '🌅', '#00d4ff33')
@@ -2138,10 +2180,11 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
         <div style="color:#666;font-size:10px;margin-top:3px;">Catches all CLI failures &middot; separate quota pool from OAuth &middot; 1500/d &middot; 120 RPM</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Grok 4.1 &mdash; Parallel Analyst</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; grok-4-1-fast-reasoning &middot; X-Powered</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">&#120143; Daily Second Opinion &middot; Real-time X.com sentiment audit &middot; Contrarian signal detection &middot; Veto participant</div>
+        <div class="stat-label">Grok 4.1 &mdash; Primary Deep Dive</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; grok-4-1-fast-reasoning &middot; X-Powered &middot; Native live search</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">&#120143; Elevated signal deep analysis &middot; Real-time data gap resolution &middot; Daily close briefing</div>
       </div>
+{grok_usage_html}
 {gemini_quota_html}
 {stream_html}
       <div class="stat">
@@ -2375,11 +2418,12 @@ def generate_dashboard_html():
     hound_last_run   = fetch_hound_last_run()
     conditionals     = fetch_active_conditionals()
     gemini_usage     = fetch_gemini_usage()
+    grok_usage       = fetch_grok_usage()
     exit_queue       = fetch_exit_queue()
     stream_health    = fetch_stream_health()
     return build_html(status, positions, closed, stats, briefings, macro,
                       watchlist, sig_hist, news, cong_cl, cong_tr, hound_candidates, hound_last_run,
-                      conditionals=conditionals, gemini_usage=gemini_usage,
+                      conditionals=conditionals, gemini_usage=gemini_usage, grok_usage=grok_usage,
                       exit_queue=exit_queue, stream_health=stream_health)
 
 
