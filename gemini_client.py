@@ -49,6 +49,19 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Which system is running this client (hightrade | highcrypto).
+# Set via HIGHTRADE_SYSTEM env var in each project's .env file.
+SYSTEM_NAME: str = os.environ.get("HIGHTRADE_SYSTEM", "hightrade")
+
+# Cross-process rate limiter — coordinates calls across simultaneously-running
+# highTRADE and highCRYPTO instances sharing the same Gemini API key.
+try:
+    from ai_choreographer import AIChoreographer as _Choreographer
+    _CHOREOGRAPHER_OK = True
+except ImportError:
+    _CHOREOGRAPHER_OK = False
+    logger.warning("[gemini_client] ai_choreographer not found — falling back to local QuotaTracker pacing only")
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1. CONFIGURATION — models, quotas, fallback chains
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -830,8 +843,11 @@ def call(
             logger.debug(f"Skipping {attempt_model} -- quota already exhausted")
             continue
 
-        # Check daily quota before attempting
-        daily_status = QuotaTracker.check_daily_quota(attempt_model)
+        # Check daily quota before attempting (cross-process via choreographer if available)
+        if _CHOREOGRAPHER_OK:
+            daily_status = _Choreographer.check_daily_quota(attempt_model)
+        else:
+            daily_status = QuotaTracker.check_daily_quota(attempt_model)
         if daily_status == 'block':
             logger.warning(f"  {attempt_model} daily quota at {QUOTA_BLOCK_PCT*100:.0f}%+ -- skipping")
             quota_exhausted_models.add(attempt_model)
@@ -852,8 +868,11 @@ def call(
                 att_thinking = min(att_thinking, 8000) if att_thinking > 0 else att_thinking
                 att_max_out  = min(att_max_out, att_cfg.get('max_output_tokens', 8192))
 
-        # RPM pacing — single enforcement point
-        QuotaTracker.pace_for_rpm(attempt_model)
+        # RPM pacing — cross-process enforcement via choreographer (falls back to local)
+        if _CHOREOGRAPHER_OK:
+            _Choreographer.pace_and_record(attempt_model, SYSTEM_NAME)
+        else:
+            QuotaTracker.pace_for_rpm(attempt_model)
 
         # Attempt the call
         if attempt_auth == 'cli':
