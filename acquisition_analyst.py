@@ -33,6 +33,7 @@ DB_PATH             = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
 CONFIDENCE_THRESHOLD       = 0.70   # minimum to promote to broker (standard pipeline)
 HOUND_CONFIDENCE_THRESHOLD = 0.60   # lower bar for Grok Hound speculative picks
 MAX_POSITION_PCT           = 0.20   # hard cap: max 20% of capital in any single trade
+MAX_ANALYST_TICKERS        = 10     # per-run cap — keep high enough to drain queue, low enough to respect RPM pacing
 
 
 # ── Prompt template ────────────────────────────────────────────────────────────
@@ -821,8 +822,8 @@ def run_analyst_cycle() -> List[Dict]:
             FROM stock_research_library
             WHERE status IN ('library_ready', 'partial')
             ORDER BY created_at ASC
-            LIMIT 5
-        """)
+            LIMIT ?
+        """, (MAX_ANALYST_TICKERS,))
         ready = [dict(r) for r in cursor.fetchall()]
     except Exception as e:
         logger.error(f"Failed to fetch ready research: {e}")

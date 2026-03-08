@@ -194,6 +194,7 @@ class HighTradeOrchestrator:
         self._verifier_cycle    = 0       # Counts cycles toward next conditional verification run
         self._verifier_interval = 4       # Normal: every ~60 min (4 × 15-min cycles); DEFCON 1-2: every cycle
         self._last_flash_forecast = None  # DEFCON forecast from latest flash briefing (1-5 or None)
+        self._last_pending_pipeline_check = None  # Throttle opportunistic acquisition queue drains
 
         # Initialize real-time Alpaca WebSocket price stream
         try:
@@ -1066,6 +1067,7 @@ Check dashboard for detailed analysis.
 
         # ── Acquisition Pipeline Checkpoints (pre-market 9:00 AM, mid-day 12:30 PM) ─
         self._check_acquisition_pipeline()
+        self._check_pending_acquisition_work()
 
         # ── Daily Briefing (fires once per day at/after 4:30 PM) ──────────
         self._check_daily_briefing()
@@ -1844,6 +1846,49 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
                     
         except Exception as e:
             logger.warning(f"Pipeline checkpoint check failed: {e}")
+
+    def _check_pending_acquisition_work(self):
+        """
+        Opportunistically drain newly queued acquisition work between fixed checkpoints.
+
+        Why: Hound, daily briefing, or exit-review jobs can enqueue new `pending`
+        watchlist rows after the 12:30 PM checkpoint. Without this, they sit idle
+        until the close briefing pipeline runs.
+
+        Guardrails:
+          - throttled to once every 15 minutes
+          - only fires when there are pending watchlist rows or actionable research rows
+        """
+        try:
+            now = _et_now()
+            if self._last_pending_pipeline_check:
+                elapsed = (now - self._last_pending_pipeline_check).total_seconds()
+                if elapsed < 15 * 60:
+                    return
+
+            import sqlite3 as _sq
+            conn = _sq.connect(str(DB_PATH))
+            pending_watchlist = conn.execute(
+                "SELECT COUNT(*) FROM acquisition_watchlist WHERE status='pending'"
+            ).fetchone()[0]
+            ready_research = conn.execute(
+                "SELECT COUNT(*) FROM stock_research_library WHERE status IN ('library_ready', 'partial')"
+            ).fetchone()[0]
+            conn.close()
+
+            self._last_pending_pipeline_check = now
+
+            if pending_watchlist <= 0 and ready_research <= 0:
+                return
+
+            logger.info(
+                "🔁 Pending acquisition work detected — draining queue now "
+                f"(watchlist={pending_watchlist}, ready={ready_research})"
+            )
+            self._run_acquisition_pipeline(now.strftime('%Y-%m-%d'), skip_date_check=True)
+
+        except Exception as e:
+            logger.warning(f"Pending acquisition work check failed: {e}")
 
     def _check_daily_briefing(self, force: bool = False):
         """Fire daily briefing once per day after market close (4:30 PM ET)."""
