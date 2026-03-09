@@ -86,21 +86,28 @@ tail -f trading_data/logs/orchestrator_output.log
 
 ## Running Services
 
-### Orchestrator (LaunchD)
-- **Service**: `com.hightrade.orchestrator`
-- **Status**: Auto-starts on boot, auto-restarts on crash
-- **Interval**: Monitoring every 15 minutes
-- **Features**:
-  - ✅ Config validation on startup
-  - ✅ News deduplication active
-  - ✅ Rate limiting enabled
-- **Logs**: `trading_data/logs/orchestrator_*.log`
+All three services run via launchd and auto-restart on crash. See `KEEPALIVE_SETUP.md` for details.
 
-### Slack Bot (Background Process)
-- **Process**: `slack_bot.py`
-- **Status**: Running (PID in `trading_data/slack_bot.pid`)
+```bash
+./start_with_launchd.sh   # Start all three
+./stop_launchd.sh         # Stop all three
+launchctl list | grep hightrade   # Check status
+```
+
+### Dashboard (launchd)
+- **Label**: `com.hightrade2.dashboard`
+- **URL**: http://localhost:5055 · http://192.168.0.233:5055
+- **Log**: `logs/dashboard_srv.log`
+
+### Orchestrator (launchd)
+- **Label**: `com.hightrade2.orchestrator`
+- **Interval**: Every 15 minutes
+- **Log**: `logs/orchestrator_srv.log`
+
+### Slack Bot (launchd)
+- **Label**: `com.hightrade.slackbot`
 - **Function**: Listens for commands in #all-hightrade
-- **Logs**: `trading_data/logs/slack_bot_*.log`
+- **Log**: `logs/slack_bot.log`
 
 ### MCP Server (Claude Desktop)
 - **Path**: `/Users/stantonhigh/Documents/hightrade/mcp_server.py`
@@ -142,41 +149,44 @@ Send these in #all-hightrade channel:
 
 ### Service Management
 ```bash
+# Start / stop all
+./start_with_launchd.sh
+./stop_launchd.sh
+
 # Check status
-sudo launchctl list | grep hightrade
-ps aux | grep -E "hightrade_orchestrator|slack_bot" | grep -v grep
+launchctl list | grep hightrade
 
-# Restart orchestrator (loads new enhancements)
-sudo launchctl stop com.hightrade.orchestrator
+# Restart individual services
+launchctl kickstart -k gui/$(id -u)/com.hightrade2.orchestrator
+launchctl kickstart -k gui/$(id -u)/com.hightrade2.dashboard
+launchctl kickstart -k gui/$(id -u)/com.hightrade.slackbot
 
-# Restart Slack bot
-pkill -f slack_bot.py
-cd ~/Documents/hightrade
-nohup python3 slack_bot.py > trading_data/logs/slack_bot_output.log 2>&1 &
-echo $! > trading_data/slack_bot.pid
+# View logs
+tail -f logs/orchestrator_srv.log
+tail -f logs/dashboard_srv.log
+tail -f logs/slack_bot.log
 ```
 
 ## Monitoring
 
 ### View Logs
 ```bash
-# Real-time all logs
-tail -f ~/Documents/hightrade/trading_data/logs/orchestrator_output.log
+# Live logs
+tail -f logs/orchestrator_srv.log
+tail -f logs/dashboard_srv.log
+tail -f logs/slack_bot.log
 
-# Errors only
-tail -f ~/Documents/hightrade/trading_data/logs/*error.log
-
-# Slack bot
-tail -f ~/Documents/hightrade/trading_data/logs/slack_bot_output.log
+# Daily rotating orchestrator log
+tail -f logs/hightrade_$(date +%Y%m%d).log
 
 # Watch for rate limit events
-grep -i "rate limit" trading_data/logs/orchestrator_output.log
+grep -i "rate limit" logs/orchestrator_srv.log
 
 # See deduplication stats
-grep -i "deduplication" trading_data/logs/orchestrator_output.log
+grep -i "deduplication" logs/orchestrator_srv.log
 
 # Check exit strategy triggers
-grep -E "TRAILING STOP|TIME LIMIT|DEFCON REVERT" trading_data/logs/orchestrator_output.log
+grep -E "TRAILING STOP|TIME LIMIT|DEFCON REVERT" logs/orchestrator_srv.log
 ```
 
 ### Check Database
@@ -319,20 +329,24 @@ python3 test_claude_feedback.py
 
 ### Orchestrator Not Running
 ```bash
-sudo launchctl load /Library/LaunchDaemons/com.hightrade.orchestrator.plist
-tail -f ~/Documents/hightrade/trading_data/logs/orchestrator_error.log
+launchctl list | grep hightrade   # check exit code
+tail -f logs/orchestrator_srv.log
+launchctl kickstart -k gui/$(id -u)/com.hightrade2.orchestrator
+# If exit code 78 persists after kickstart, see KEEPALIVE_SETUP.md (label poisoning)
 ```
 
 ### Slack Bot Not Responding
 ```bash
-# Check if running
-ps aux | grep slack_bot.py
+launchctl list | grep hightrade   # check exit code
+tail -f logs/slack_bot.log
+launchctl kickstart -k gui/$(id -u)/com.hightrade.slackbot
+```
 
-# Restart
-pkill -f slack_bot.py
-cd ~/Documents/hightrade
-nohup python3 slack_bot.py > trading_data/logs/slack_bot_output.log 2>&1 &
-echo $! > trading_data/slack_bot.pid
+### Dashboard Not Loading
+```bash
+lsof -i :5055   # check if port is bound
+tail -f logs/dashboard_srv.log
+launchctl kickstart -k gui/$(id -u)/com.hightrade2.dashboard
 ```
 
 ### MCP Server Not Working

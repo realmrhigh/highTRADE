@@ -1,155 +1,101 @@
-# HighTrade Keep-Alive Setup
+# HighTrade launchd Keep-Alive Setup
 
 ## Current Status
-✅ **System is running with nohup** (PIDs: 77416 orchestrator, 77423 slack bot)
+✅ **All three services running via launchd** with automatic restart on crash.
 
-## Permission Issues Encountered
-- ❌ **launchd**: Exit code 78 (permissions/configuration error)
-- ❌ **cron**: No crontab access for user
+| Service | Label | Log |
+|---|---|---|
+| Dashboard | `com.hightrade2.dashboard` | `logs/dashboard_srv.log` |
+| Orchestrator | `com.hightrade2.orchestrator` | `logs/orchestrator_srv.log` |
+| Slack Bot | `com.hightrade.slackbot` | `logs/slack_bot.log` |
 
-## ✅ **RECOMMENDED SOLUTION: Manual Restart Script**
+Dashboard: http://localhost:5055 · Network: http://192.168.0.233:5055
 
-The simplest, most reliable approach:
+---
 
-### 1. Use the current nohup setup (already running)
+## Start / Stop
+
 ```bash
-./start_system.sh  # Starts both processes
-./stop_system.sh   # Stops both processes
+./start_with_launchd.sh   # Start all three
+./stop_launchd.sh         # Stop all three
 ```
 
-### 2. If processes die, just restart them
 ```bash
-./start_system.sh
-```
+# Restart a single service
+launchctl kickstart -k gui/$(id -u)/com.hightrade2.orchestrator
+launchctl kickstart -k gui/$(id -u)/com.hightrade2.dashboard
+launchctl kickstart -k gui/$(id -u)/com.hightrade.slackbot
 
-### 3. Check if running
-```bash
-ps aux | grep -E "(orchestrator|slack_bot)" | grep python
-```
+# Check status
+launchctl list | grep hightrade
 
-## Alternative: Screen Session with Watchdog
-
-If you want automatic recovery without permissions issues:
-
-### Setup (one time)
-```bash
-# Start a screen session
-screen -S hightrade-watchdog
-
-# Inside screen, run the watchdog
-cd /Users/stantonhigh/Documents/hightrade
-./watchdog.sh
-
-# Detach: Press Ctrl+A, then D
-```
-
-### To check later
-```bash
-# Reattach to see watchdog status
-screen -r hightrade-watchdog
-
-# List screen sessions
-screen -ls
-
-# Kill the watchdog
-screen -X -S hightrade-watchdog quit
-```
-
-The watchdog will check every 30 seconds and automatically restart any dead processes.
-
-## Files Available
-
-### Startup Scripts
-- ✅ `start_system.sh` - Start with nohup (CURRENT METHOD)
-- ✅ `stop_system.sh` - Stop all processes
-- ❌ `start_with_launchd.sh` - launchd version (permission issues)
-- ❌ `stop_launchd.sh` - Stop launchd services
-
-### Watchdog Scripts
-- ✅ `watchdog.sh` - Continuous monitoring loop
-- ✅ `watchdog_check.sh` - Single check (for cron)
-- ❌ `setup_cron_watchdog.sh` - Cron setup (permission issues)
-
-### launchd Plists (not working)
-- ❌ `~/Library/LaunchAgents/com.hightrade.orchestrator.plist`
-- ❌ `~/Library/LaunchAgents/com.hightrade.slackbot.plist`
-
-## Why nohup is Actually Fine
-
-The processes are **very stable**:
-- Python is reliable
-- No complex dependencies
-- Good error handling in code
-- Logging to files for debugging
-
-**Real-world experience**: These processes have run for hours without issues. The "disconnect" you experienced was likely just misunderstanding the sleep cycles.
-
-## Monitoring Health
-
-### Quick health check
-```bash
-python3 hightrade_cmd.py /status
-```
-
-If it responds, everything is working!
-
-### Check process uptime
-```bash
-ps -p 77416 -o etime=  # orchestrator uptime
-ps -p 77423 -o etime=  # slack bot uptime
-```
-
-### Watch logs live
-```bash
-tail -f trading_data/logs/orchestrator_error.log
-tail -f trading_data/logs/slack_bot_error.log
-```
-
-## If You Really Want Auto-Restart
-
-### Option 1: Screen + Watchdog (RECOMMENDED)
-```bash
-screen -S hightrade-watchdog
-./watchdog.sh
-# Ctrl+A, D to detach
-```
-- ✅ No permissions needed
-- ✅ Works across reboots (if screen session survives)
-- ✅ Easy to check status
-
-### Option 2: Manual restart when needed
-```bash
-./stop_system.sh && ./start_system.sh
-```
-- ✅ Simplest
-- ✅ No background processes
-- ✅ Full control
-
-### Option 3: Login Item (macOS GUI)
-1. System Settings → General → Login Items
-2. Add `start_system.sh` to "Open at Login"
-- ✅ Starts on boot
-- ❌ Requires GUI session
-- ❌ Runs every login
-
-## Bottom Line
-
-**Current setup is solid.** The nohup processes are stable and working perfectly.
-
-If you want extra peace of mind:
-```bash
-screen -S hightrade-watchdog
-./watchdog.sh
-# Ctrl+A, D
-```
-
-Otherwise, just check occasionally with:
-```bash
-python3 hightrade_cmd.py /status
+# Watch logs
+tail -f logs/orchestrator_srv.log
+tail -f logs/dashboard_srv.log
+tail -f logs/slack_bot.log
 ```
 
 ---
 
-**Processes Running**: ✅ 77416 (orchestrator), 77423 (slack bot)
-**Health**: ✅ All systems operational
-**Action Needed**: None - system is stable
+## Root Causes Fixed (March 2026)
+
+Three bugs caused all three services to fail. Documented here to prevent recurrence.
+
+### 1. Slackbot using wrong Python
+**Symptom**: Immediate crash, exit 78
+**Cause**: Plist used `/usr/bin/python3` (system Python, no packages installed)
+**Fix**: Changed to `/opt/homebrew/bin/python3.11`
+
+### 2. Orchestrator using bash wrapper
+**Symptom**: Exit 126 — "Operation not permitted" on getcwd
+**Cause**: `/bin/bash` is blocked from accessing `~/Documents/` by macOS TCC (privacy framework) when launched via launchd. Python has the grant but bash does not.
+**Fix**: Plist now invokes Python directly (same as highcrypto suite):
+```
+/opt/homebrew/bin/python3.11 hightrade_orchestrator.py continuous 15
+```
+
+### 3. Label/log-file poisoning after repeated crashes
+**Symptom**: Exit 78 (`EX_CONFIG`) on every restart attempt, even after `bootout`/`bootstrap`/`kickstart`. No output in log files. 102+ crash cycles accumulated.
+**Cause**: macOS launchd permanently associates crash state with a label+log-file combo. After many rapid crashes, this state is cached and cannot be cleared without a reboot or entirely new label/log names.
+**Fix**: Renamed labels to `com.hightrade2.*` and log files to `*_srv.log`. These had no crash history and started immediately.
+
+---
+
+## If Services Break Again
+
+**Do NOT** attempt:
+- `launchctl unload/load` (deprecated, doesn't clear poisoned state)
+- `launchctl bootout/bootstrap` with the same label (still poisoned)
+- `launchctl kickstart -k` (doesn't clear label state)
+
+**Do:**
+1. Check which service is broken: `launchctl list | grep hightrade`
+2. Check the log for the actual error
+3. Fix the underlying bug
+4. In the plist, change `Label` from `com.hightrade2.X` → `com.hightrade3.X`
+5. Change `StandardOutPath`/`StandardErrorPath` to `logs/X_v3.log`
+6. `launchctl bootout` the old label, then `launchctl bootstrap` the updated plist
+
+---
+
+## Plist Files
+
+All three live in `~/Library/LaunchAgents/`:
+
+| Plist filename | Label inside |
+|---|---|
+| `com.hightrade.dashboard.plist` | `com.hightrade2.dashboard` |
+| `com.hightrade.orchestrator.plist` | `com.hightrade2.orchestrator` |
+| `com.hightrade.slackbot.plist` | `com.hightrade.slackbot` |
+
+The plist *filenames* kept the original naming; only the *Label* key and log paths were versioned.
+
+### Key plist rules
+- Orchestrator must invoke Python directly — **no bash wrapper**
+- All services must use `/opt/homebrew/bin/python3.11` — **not system python**
+- `HOME=/Users/stantonhigh` must be in `EnvironmentVariables`
+- Log file paths must be **new (non-existent)** when bootstrapping after a label change
+
+---
+
+**Last Updated**: 2026-03-09
