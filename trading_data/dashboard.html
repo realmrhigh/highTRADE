@@ -3,12 +3,12 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>HighTrade Dashboard</title>
+<title>highCRYPTO Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
 :root {
-  --bg:#08090f; --panel:#0d0e1a; --border:#1e2040;
-  --text:#e2e8f0; --dim:#64748b; --accent:#00d4ff;
+  --bg:#09080a; --panel:#120f0d; --border:#2a1a0a;
+  --text:#e2e8f0; --dim:#7a6a5a; --accent:#f7931a;
   --green:#00ff88; --red:#ff4444; --gold:#ffd700;
 }
 * { box-sizing:border-box; margin:0; padding:0; }
@@ -18,7 +18,7 @@ body { background:var(--bg); color:var(--text); font-family:'SF Mono','Fira Code
 /* Header */
 .header { display:flex; justify-content:space-between; align-items:center;
   padding:16px 24px; border-bottom:1px solid var(--border); margin-bottom:20px;
-  background:linear-gradient(90deg,#0d0e1a,#08090f); border-radius:10px; }
+  background:linear-gradient(90deg,#1a0f06,#09080a); border-radius:10px; }
 .header-title { font-size:22px; font-weight:900; letter-spacing:4px; color:var(--accent); }
 .header-meta { color:var(--dim); font-size:11px; text-align:right; line-height:1.8; }
 
@@ -38,7 +38,7 @@ body { background:var(--bg); color:var(--text); font-family:'SF Mono','Fira Code
 
 /* Stat cards */
 .stat-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:10px; }
-.stat { background:#0a0b14; border:1px solid var(--border); border-radius:8px; padding:12px; }
+.stat { background:#120f09; border:1px solid var(--border); border-radius:8px; padding:12px; }
 .stat-label { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:uppercase; margin-bottom:4px; }
 .stat-value { font-size:20px; font-weight:700; }
 .stat-sub   { font-size:10px; color:var(--dim); margin-top:2px; }
@@ -58,14 +58,14 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
 .sym:hover { text-decoration:underline; color:#fff; }
 
 /* Model cards */
-.model-card { background:#0a0b14; border:1px solid var(--border); border-radius:8px; padding:14px; }
+.model-card { background:#120f09; border:1px solid var(--border); border-radius:8px; padding:14px; }
 .card-label { font-size:10px; font-weight:700; letter-spacing:2px; color:var(--dim); text-transform:uppercase; }
 .themes-row { display:flex; flex-wrap:wrap; gap:6px; }
-.theme-pill { background:#1a1a2e; border:1px solid #2a2a50; border-radius:20px;
+.theme-pill { background:#1a0f06; border:1px solid #2a2a50; border-radius:20px;
               padding:3px 10px; font-size:10px; color:#aaa; }
 .micro-label { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:uppercase; margin-bottom:3px; }
 .two-col { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-.ticker-tag { background:#00d4ff15; color:var(--accent); border:1px solid #00d4ff33;
+.ticker-tag { background:#f7931a15; color:var(--accent); border:1px solid #f7931a33;
               border-radius:4px; padding:2px 8px; font-size:11px; font-weight:700; }
 
 /* News */
@@ -96,13 +96,13 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
   margin:24px 0 12px; padding-bottom:6px; border-bottom:1px solid var(--border); }
 
 /* Live indicator */
-.live-dot { display:inline-block; width:7px; height:7px; background:var(--green);
+.live-dot { display:inline-block; width:7px; height:7px; background:var(--accent);
   border-radius:50%; margin-right:4px; animation:pulse 2s infinite; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
 
 /* Win rate bar */
 .wr-bar  { background:#111; border-radius:4px; height:6px; overflow:hidden; margin-top:4px; }
-.wr-fill { height:100%; border-radius:4px; background:linear-gradient(90deg,var(--green),#00d4ff); }
+.wr-fill { height:100%; border-radius:4px; background:linear-gradient(90deg,var(--green),var(--accent)); }
 
 /* Chart Modal */
 #chart-modal { 
@@ -115,7 +115,7 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
 }
 .chart-controls { display:flex; gap:10px; margin-bottom:20px; }
 .chart-btn { 
-    background:#1a1a2e; color:#888; border:1px solid var(--border); padding:6px 12px; 
+    background:#1a0f06; color:#888; border:1px solid var(--border); padding:6px 12px; 
     border-radius:4px; cursor:pointer; font-size:11px; font-weight:700;
 }
 .chart-btn.active { background:var(--accent); color:#000; border-color:var(--accent); }
@@ -123,7 +123,7 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
 .close-modal:hover { color:#fff; }
 
 /* Footer */
-.footer { text-align:center; color:#2a2a40; font-size:10px; letter-spacing:2px; padding:24px 0; margin-top:10px; }
+.footer { text-align:center; color:#3a2a1a; font-size:10px; letter-spacing:2px; padding:24px 0; margin-top:10px; }
 
 /* ── Rolling log overlay ── */
 @keyframes htLogRoll {
@@ -152,14 +152,14 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
 /* ── Thesis hover popup ── */
 #thesis-popup {
   position:fixed; z-index:9999; display:none;
-  background:#0d0e1a; border:1px solid #00d4ff44;
+  background:#120f09; border:1px solid #f7931a44;
   border-radius:8px; padding:14px 16px;
   max-width:440px; min-width:180px;
-  box-shadow:0 8px 32px rgba(0,0,0,0.85), 0 0 0 1px #00d4ff18;
+  box-shadow:0 8px 32px rgba(0,0,0,0.85), 0 0 0 1px #f7931a18;
   pointer-events:none;
 }
 #thesis-popup .tp-header {
-  font-size:9px; letter-spacing:2px; color:#00d4ff;
+  font-size:9px; letter-spacing:2px; color:var(--accent);
   text-transform:uppercase; margin-bottom:8px; font-weight:700;
 }
 #thesis-popup .tp-body {
@@ -174,19 +174,29 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
 <div class="page">
 
 <!-- ═══ HEADER ═══ -->
-<div style="border-radius:10px 10px 0 0;overflow:hidden;line-height:0;margin-bottom:0;position:relative;">
-  <img src="/header-image" style="width:100%;height:auto;display:block;" alt="HighTrade"/>
-  <div id="log-overlay-wrap">
-    <div id="log-reel"></div>
+<div style="border-radius:10px;overflow:hidden;margin-bottom:20px;position:relative;
+  background:linear-gradient(135deg,#1a0f06 0%,#0f0a05 50%,#09080a 100%);
+  border:1px solid #f7931a22;box-shadow:0 0 40px rgba(247,147,26,0.08);">
+  <div style="padding:20px 28px;display:flex;justify-content:space-between;align-items:center;">
+    <div>
+      <div style="font-size:32px;font-weight:900;letter-spacing:6px;
+        background:linear-gradient(90deg,#f7931a,#ffd700);
+        -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+        background-clip:text;line-height:1;">&#8383; highCRYPTO</div>
+      <div style="font-size:9px;letter-spacing:4px;color:#7a6a5a;margin-top:6px;text-transform:uppercase;">
+        Crypto Intelligence &nbsp;&middot;&nbsp; Paper Trading &nbsp;&middot;&nbsp; 24 / 7
+      </div>
+    </div>
+    <div style="text-align:right;">
+      <div style="font-size:11px;color:#7a6a5a;line-height:2.0;">
+        <span class="live-dot"></span>LIVE &nbsp;&middot;&nbsp;
+        Generated: 2026-03-08 14:19:13 PDT &nbsp;&middot;&nbsp; Last cycle: 2026-03-08 09:58:19 PDT
+      </div>
+      <div style="opacity:0.3;font-size:9px;letter-spacing:2px;color:#f7931a;margin-top:2px;">v2.4-CRYPTO</div>
+    </div>
   </div>
-</div>
-<div class="header" style="border-radius:0 0 10px 10px;margin-bottom:20px;padding:8px 24px;border-top:none;">
-  <div></div>
-  <div class="header-meta">
-    <span class="live-dot"></span>LIVE &nbsp;&middot;&nbsp;
-    Generated: 2026-03-08 08:30:37 PDT &nbsp;&middot;&nbsp;
-    Last cycle: 2026-03-07 21:53:47 PST<br/>
-    <span style="opacity:0.35;font-size:9px;letter-spacing:2px;">v2.4-INTERACTIVE</span>
+  <div id="log-overlay-wrap" style="position:absolute;bottom:0;left:0;right:0;">
+    <div id="log-reel"></div>
   </div>
 </div>
 
@@ -200,32 +210,32 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
       <div>
         <div class="micro-label">CUSTOM AI PROMPT</div>
         <div style="display:flex;gap:10px;margin-bottom:10px;">
-          <select id="model-select" style="background:#1a1a2e;color:#ddd;border:1px solid var(--border);padding:5px;border-radius:4px;">
+          <select id="model-select" style="background:#1a0f06;color:#ddd;border:1px solid var(--border);padding:5px;border-radius:4px;">
             <option value="reasoning">Gemini 3.1 Pro (Reasoning)</option>
             <option value="balanced">Gemini 3 Flash (Balanced)</option>
             <option value="fast">Gemini 3 Flash (Fast)</option>
             <option value="grok">Grok 4.1 (X-Powered)</option>
           </select>
           <input type="text" id="custom-prompt" placeholder="Ask AI about the market, positions, or specific tickers..."
-                 style="flex:1;background:#0a0b14;color:var(--text);border:1px solid var(--border);padding:8px;border-radius:4px;">
+                 style="flex:1;background:#120f09;color:var(--text);border:1px solid var(--border);padding:8px;border-radius:4px;">
           <button onclick="sendPrompt()" style="background:var(--accent);color:#000;border:none;padding:0 20px;border-radius:4px;font-weight:700;cursor:pointer;">SEND</button>
-          <button onclick="clearChat()" title="Clear chat history" style="background:#1a1a2e;color:#666;border:1px solid #333;padding:0 14px;border-radius:4px;cursor:pointer;font-size:13px;">&#10005;</button>
+          <button onclick="clearChat()" title="Clear chat history" style="background:#1a0f06;color:#666;border:1px solid #333;padding:0 14px;border-radius:4px;cursor:pointer;font-size:13px;">&#10005;</button>
         </div>
-        <div id="ai-response" style="background:#0a0b14;border:1px solid #111;border-radius:4px;padding:10px;min-height:60px;font-size:12px;color:#aaa;white-space:pre-wrap;">AI response will appear here...</div>
+        <div id="ai-response" style="background:#120f09;border:1px solid #111;border-radius:4px;padding:10px;min-height:60px;font-size:12px;color:#aaa;white-space:pre-wrap;">AI response will appear here...</div>
       </div>
 
       <!-- Quick Control Buttons -->
       <div style="border-left:1px solid #111;padding-left:20px;">
         <div class="micro-label">SYSTEM OVERRIDES</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:5px;">
-          <button onclick="sendCommand('/status')" style="background:#1a1a2e;color:var(--accent);border:1px solid var(--accent)44;padding:8px;border-radius:4px;cursor:pointer;">STATUS</button>
-          <button onclick="sendCommand('/update')" style="background:#1a1a2e;color:var(--green);border:1px solid var(--green)44;padding:8px;border-radius:4px;cursor:pointer;">RUN CYCLE</button>
-          <button onclick="sendCommand('/hold')" style="background:#1a1a2e;color:var(--gold);border:1px solid var(--gold)44;padding:8px;border-radius:4px;cursor:pointer;">HOLD</button>
-          <button onclick="sendCommand('/start')" style="background:#1a1a2e;color:var(--green);border:1px solid var(--green)44;padding:8px;border-radius:4px;cursor:pointer;">START</button>
-          <button onclick="sendCommand('/briefing')" style="background:#1a1a2e;color:#c084fc;border:1px solid #c084fc44;padding:8px;border-radius:4px;cursor:pointer;">DAILY RPT</button>
-          <button onclick="sendCommand('/research')" style="background:#1a1a2e;color:var(--accent);border:1px solid var(--accent)44;padding:8px;border-radius:4px;cursor:pointer;">RESEARCH</button>
-          <button onclick="sendCommand('/hunt')" style="background:#1a1a2e;color:#ff8c00;border:1px solid #ff8c0044;padding:8px;border-radius:4px;cursor:pointer;">🦮 HUNT</button>
-          <button onclick="sendCommand('/estop')" style="background:#1a1a2e;color:var(--red);border:1px solid var(--red)44;padding:8px;border-radius:4px;cursor:pointer;">E-STOP</button>
+          <button onclick="sendCommand('/status')" style="background:#1a0f06;color:var(--accent);border:1px solid var(--accent)44;padding:8px;border-radius:4px;cursor:pointer;">STATUS</button>
+          <button onclick="sendCommand('/update')" style="background:#1a0f06;color:var(--green);border:1px solid var(--green)44;padding:8px;border-radius:4px;cursor:pointer;">RUN CYCLE</button>
+          <button onclick="sendCommand('/hold')" style="background:#1a0f06;color:var(--gold);border:1px solid var(--gold)44;padding:8px;border-radius:4px;cursor:pointer;">HOLD</button>
+          <button onclick="sendCommand('/start')" style="background:#1a0f06;color:var(--green);border:1px solid var(--green)44;padding:8px;border-radius:4px;cursor:pointer;">START</button>
+          <button onclick="sendCommand('/briefing')" style="background:#1a0f06;color:#c084fc;border:1px solid #c084fc44;padding:8px;border-radius:4px;cursor:pointer;">DAILY RPT</button>
+          <button onclick="sendCommand('/research')" style="background:#1a0f06;color:var(--accent);border:1px solid var(--accent)44;padding:8px;border-radius:4px;cursor:pointer;">RESEARCH</button>
+          <button onclick="sendCommand('/hunt')" style="background:#1a0f06;color:#ff8c00;border:1px solid #ff8c0044;padding:8px;border-radius:4px;cursor:pointer;">🦮 HUNT</button>
+          <button onclick="sendCommand('/estop')" style="background:#1a0f06;color:var(--red);border:1px solid var(--red)44;padding:8px;border-radius:4px;cursor:pointer;">E-STOP</button>
         </div>
       </div>
 
@@ -455,27 +465,27 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
 <div class="grid-top">
 
   <!-- DEFCON PANEL -->
-  <div class="panel" style="display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;border-color:#ff8c0044;">
+  <div class="panel" style="display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;border-color:#ffd70044;">
     <div class="panel-title" style="justify-content:center;">System Status</div>
-    <div class="defcon-num" style="color:#ff8c00;">D4</div>
-    <div class="defcon-label" style="color:#ff8c00;">DEFENSIVE</div>
-    <div class="defcon-row"><div style="background:#1a1a2e;color:#00ff88;font-weight:400;width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:14px;border:1px solid #00ff8833;">1</div><div style="background:#1a1a2e;color:#7fff00;font-weight:400;width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:14px;border:1px solid #7fff0033;">2</div><div style="background:#1a1a2e;color:#ffd700;font-weight:400;width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:14px;border:1px solid #ffd70033;">3</div><div style="background:#ff8c00;color:#000;font-weight:900;width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:14px;border:1px solid #ff8c0033;">4</div><div style="background:#1a1a2e;color:#ff3333;font-weight:400;width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:14px;border:1px solid #ff333333;">5</div></div>
+    <div class="defcon-num" style="color:#ffd700;">D3</div>
+    <div class="defcon-label" style="color:#ffd700;">CAUTIOUS</div>
+    <div class="defcon-row"><div style="background:#1a1a2e;color:#00ff88;font-weight:400;width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:14px;border:1px solid #00ff8833;">1</div><div style="background:#1a1a2e;color:#7fff00;font-weight:400;width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:14px;border:1px solid #7fff0033;">2</div><div style="background:#ffd700;color:#000;font-weight:900;width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:14px;border:1px solid #ffd70033;">3</div><div style="background:#1a1a2e;color:#ff8c00;font-weight:400;width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:14px;border:1px solid #ff8c0033;">4</div><div style="background:#1a1a2e;color:#ff3333;font-weight:400;width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:14px;border:1px solid #ff333333;">5</div></div>
     <div style="margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%;">
       <div class="stat">
         <div class="stat-label">Signal Score</div>
-        <div class="stat-value" style="font-size:18px;color:#00d4ff;">25.2</div>
+        <div class="stat-value" style="font-size:18px;color:var(--accent);">25.7</div>
       </div>
       <div class="stat">
-        <div class="stat-label">VIX</div>
-        <div class="stat-value" style="font-size:18px;color:#ff8c00;">29.49</div>
+        <div class="stat-label">Crypto Regime</div>
+        <div class="stat-value" style="font-size:13px;color:#ffd700;">Neutral</div>
       </div>
       <div class="stat">
-        <div class="stat-label">10Y Yield</div>
-        <div class="stat-value" style="font-size:16px;color:#aaa;">4.13%</div>
+        <div class="stat-label">BTC</div>
+        <div class="stat-value" style="font-size:16px;color:#f7931a;">$66,853</div>
       </div>
       <div class="stat">
-        <div class="stat-label">2Y Yield</div>
-        <div class="stat-value" style="font-size:16px;color:#aaa;">3.57%</div>
+        <div class="stat-label">ETH</div>
+        <div class="stat-value" style="font-size:16px;color:#627eea;">$1,949</div>
       </div>
     </div>
   </div>
@@ -486,80 +496,59 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
     <div class="stat-grid">
       <div class="stat">
         <div class="stat-label">Account Value</div>
-        <div class="stat-value" style="font-size:22px;color:#00ff88;">$101,842</div>
+        <div class="stat-value" style="font-size:22px;color:#00ff88;">$100,000</div>
         <div class="stat-sub">Base Capital: $100,000</div>
       </div>
       <div class="stat">
         <div class="stat-label">Total P&amp;L</div>
-        <div class="stat-value" style="font-size:22px;color:#00ff88;">+$1,841.71</div>
-        <div class="stat-sub">+1.84% on capital</div>
+        <div class="stat-value" style="font-size:22px;color:#00ff88;">+$0.00</div>
+        <div class="stat-sub">+0.00% on capital</div>
       </div>
       <div class="stat">
         <div class="stat-label">Realized P&amp;L</div>
-        <div class="stat-value" style="font-size:18px;color:#00ff88;">+$2,104.09</div>
-        <div class="stat-sub">4W / 9L closed</div>
+        <div class="stat-value" style="font-size:18px;color:#00ff88;">+$0.00</div>
+        <div class="stat-sub">0W / 0L closed</div>
       </div>
       <div class="stat">
         <div class="stat-label">Unrealized P&amp;L</div>
-        <div class="stat-value" style="font-size:18px;color:#ff4444;">$-262.38</div>
-        <div class="stat-sub">3 open positions</div>
+        <div class="stat-value" style="font-size:18px;color:#00ff88;">+$0.00</div>
+        <div class="stat-sub">0 open positions</div>
       </div>
       <div class="stat">
         <div class="stat-label">Cash Available</div>
-        <div class="stat-value" style="font-size:18px;">$70,408</div>
-        <div class="stat-sub">Deployed: $31,696</div>
+        <div class="stat-value" style="font-size:18px;">$100,000</div>
+        <div class="stat-sub">Deployed: $0</div>
       </div>
       <div class="stat">
         <div class="stat-label">Win Rate</div>
-        <div class="stat-value" style="font-size:18px;color:#ff8c00;">31%</div>
-        <div class="wr-bar"><div class="wr-fill" style="width:30.76923076923077%;"></div></div>
+        <div class="stat-value" style="font-size:18px;color:#ff8c00;">0%</div>
+        <div class="wr-bar"><div class="wr-fill" style="width:0%;"></div></div>
       </div>
     </div>
   </div>
 
-  <!-- MACRO PANEL -->
-  <div class="panel">
-    <div class="panel-title">Macro Environment</div>
-    <div class="macro-grid">
-      <div style="display:flex;flex-direction:column;align-items:center;">
-        <svg width="100" height="100" viewBox="0 0 100 100"><circle cx="50" cy="50" r="38" fill="none" stroke="#1a1a2e" stroke-width="10"/><circle cx="50" cy="50" r="38" fill="none" stroke="#ffd700" stroke-width="10" stroke-dasharray="112.2 238.8" stroke-dashoffset="59.7" stroke-linecap="round"/><text x="50" y="45" text-anchor="middle" fill="#ffd700" font-size="18" font-weight="bold" font-family="monospace">47</text><text x="50" y="62" text-anchor="middle" fill="#888" font-size="9" font-family="monospace">MACRO</text></svg>
-        <div style="font-size:9px;color:#555;margin-top:4px;text-align:center;">NEUTRAL</div>
-      </div>
-      <div>
-        <div class="macro-row"><span style="color:#888;">Fed Funds</span><span>3.64%</span></div>
-        <div class="macro-row"><span style="color:#888;">Yield Curve</span><span style="color:#00ff88;">+0.59%</span></div>
-        <div class="macro-row"><span style="color:#888;">Unemployment</span><span>4.4%</span></div>
-        <div class="macro-row"><span style="color:#888;">HY Spreads</span><span style="color:#00ff88;">300 bps</span></div>
-        <div class="macro-row"><span style="color:#888;">Cons. Sentiment</span><span style="color:#ff4444;">56.4</span></div>
-        <div class="macro-row"><span style="color:#888;">M2 YoY</span><span>+3.62%</span></div>
-      </div>
-    </div>
-    <div style="margin-top:10px;border-top:1px solid #111;padding-top:8px;">
-      <div style="color:#888;font-size:12px;margin:3px 0;">&#9670; Yield curve normal (+0.59%)</div><div style="color:#ff4444;font-size:12px;margin:3px 0;">&#9660; Consumer sentiment low (56.4) — demand slowdown risk</div>
-    </div>
-  </div>
 
 </div>
 
 <!-- ═══ SIGNAL SPARKLINES ═══ -->
 <div class="grid-full">
   <div class="panel">
-    <div class="panel-title">Signal History &mdash; Last 48 Monitoring Cycles</div>
+    <div class="panel-title">Signal History &mdash; Last 4 Monitoring Cycles</div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;">
       <div class="spark-row">
-        <div class="spark-label">VIX</div>
-        <svg width="180" height="40" viewBox="0 0 180 40"><defs><linearGradient id="sg50091" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ff8c00" stop-opacity="0.4"/><stop offset="100%" stop-color="#ff8c00" stop-opacity="0"/></linearGradient></defs><polygon points="0,40 0,38 3,38 7,38 11,38 15,38 19,38 22,38 26,38 30,38 34,38 38,38 42,38 45,38 49,38 53,38 57,38 61,38 65,38 68,38 72,38 76,38 80,38 84,38 88,38 91,38 95,38 99,38 103,38 107,38 111,38 114,38 118,38 122,38 126,38 130,38 134,38 137,38 141,38 145,38 149,38 153,38 157,38 160,38 164,38 168,38 172,38 176,38 180,38 180,40" fill="url(#sg50091)"/><polyline points="0,38 3,38 7,38 11,38 15,38 19,38 22,38 26,38 30,38 34,38 38,38 42,38 45,38 49,38 53,38 57,38 61,38 65,38 68,38 72,38 76,38 80,38 84,38 88,38 91,38 95,38 99,38 103,38 107,38 111,38 114,38 118,38 122,38 126,38 130,38 134,38 137,38 141,38 145,38 149,38 153,38 157,38 160,38 164,38 168,38 172,38 176,38 180,38" fill="none" stroke="#ff8c00" stroke-width="1.5" stroke-linejoin="round"/></svg>
-        <div class="spark-val" style="color:#ff8c00;">29.49</div>
+        <div class="spark-label">Crypto Regime</div>
+        <svg width="180" height="40" viewBox="0 0 180 40"><defs><linearGradient id="sg37191" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#00ff88" stop-opacity="0.4"/><stop offset="100%" stop-color="#00ff88" stop-opacity="0"/></linearGradient></defs><polygon points="0,40 0,38 60,38 120,38 180,38 180,40" fill="url(#sg37191)"/><polyline points="0,38 60,38 120,38 180,38" fill="none" stroke="#00ff88" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        <div class="spark-val" style="color:#00ff88;">60</div>
       </div>
       <div class="spark-row">
         <div class="spark-label">News Score</div>
-        <svg width="180" height="40" viewBox="0 0 180 40"><defs><linearGradient id="sg72295" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#c084fc" stop-opacity="0.4"/><stop offset="100%" stop-color="#c084fc" stop-opacity="0"/></linearGradient></defs><polygon points="0,40 0,8 3,11 7,10 11,9 15,11 19,11 22,2 26,2 30,3 34,3 38,3 42,4 45,4 49,4 53,6 57,5 61,3 65,7 68,8 72,8 76,8 80,7 84,20 88,21 91,23 95,23 99,26 103,31 107,30 111,32 114,34 118,38 122,33 126,33 130,33 134,27 137,27 141,30 145,27 149,27 153,27 157,27 160,27 164,34 168,35 172,34 176,35 180,14 180,40" fill="url(#sg72295)"/><polyline points="0,8 3,11 7,10 11,9 15,11 19,11 22,2 26,2 30,3 34,3 38,3 42,4 45,4 49,4 53,6 57,5 61,3 65,7 68,8 72,8 76,8 80,7 84,20 88,21 91,23 95,23 99,26 103,31 107,30 111,32 114,34 118,38 122,33 126,33 130,33 134,27 137,27 141,30 145,27 149,27 153,27 157,27 160,27 164,34 168,35 172,34 176,35 180,14" fill="none" stroke="#c084fc" stroke-width="1.5" stroke-linejoin="round"/></svg>
-        <div class="spark-val" style="color:#c084fc;">45.9</div>
+        <svg width="180" height="40" viewBox="0 0 180 40"><defs><linearGradient id="sg9216" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#c084fc" stop-opacity="0.4"/><stop offset="100%" stop-color="#c084fc" stop-opacity="0"/></linearGradient></defs><polygon points="0,40 0,38 60,38 120,38 180,2 180,40" fill="url(#sg9216)"/><polyline points="0,38 60,38 120,38 180,2" fill="none" stroke="#c084fc" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        <div class="spark-val" style="color:#c084fc;">47.9</div>
       </div>
       <div class="spark-row">
         <div class="spark-label">Signal</div>
-        <svg width="180" height="40" viewBox="0 0 180 40"><defs><linearGradient id="sg69192" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#00d4ff" stop-opacity="0.4"/><stop offset="100%" stop-color="#00d4ff" stop-opacity="0"/></linearGradient></defs><polygon points="0,40 0,8 3,11 7,10 11,9 15,11 19,11 22,2 26,2 30,3 34,3 38,3 42,4 45,4 49,4 53,6 57,5 61,3 65,7 68,8 72,8 76,8 80,7 84,20 88,21 91,23 95,23 99,26 103,31 107,30 111,32 114,34 118,38 122,33 126,33 130,33 134,27 137,27 141,30 145,27 149,27 153,27 157,27 160,27 164,34 168,35 172,34 176,35 180,14 180,40" fill="url(#sg69192)"/><polyline points="0,8 3,11 7,10 11,9 15,11 19,11 22,2 26,2 30,3 34,3 38,3 42,4 45,4 49,4 53,6 57,5 61,3 65,7 68,8 72,8 76,8 80,7 84,20 88,21 91,23 95,23 99,26 103,31 107,30 111,32 114,34 118,38 122,33 126,33 130,33 134,27 137,27 141,30 145,27 149,27 153,27 157,27 160,27 164,34 168,35 172,34 176,35 180,14" fill="none" stroke="#00d4ff" stroke-width="1.5" stroke-linejoin="round"/></svg>
-        <div class="spark-val" style="color:#00d4ff;">25.2</div>
+        <svg width="180" height="40" viewBox="0 0 180 40"><defs><linearGradient id="sg94501" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#f7931a" stop-opacity="0.4"/><stop offset="100%" stop-color="#f7931a" stop-opacity="0"/></linearGradient></defs><polygon points="0,40 0,38 60,38 120,38 180,2 180,40" fill="url(#sg94501)"/><polyline points="0,38 60,38 120,38 180,2" fill="none" stroke="#f7931a" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        <div class="spark-val" style="color:var(--accent);">25.7</div>
       </div>
     </div>
   </div>
@@ -570,17 +559,17 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
 <div class="section-head">&#128197; Daily Analysis Schedule &mdash; 2026-03-08</div>
 
 <div class="grid-three" style="margin-bottom:0;">
-  <div class="model-card" style="border-color:#00d4ff33;display:flex;flex-direction:column;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-shrink:0;"><div class="card-label" style="font-size:11px;">🌅 MARKET OPEN</div><div style="color:#888;font-size:10px;">9:30 AM · 2026-03-07 14:41</div></div><div style="color:#999;font-size:10px;margin-bottom:6px;">A fragile macro backdrop (consumer sentiment 56.4, yield curve +0.59%) provides a weak foundation that exacerbates the negative impact of the current energy-driven stagflationary shock.</div><div style="color:#ccc;font-size:11px;line-height:1.6;flex:1;">Escalating geopolitical conflict in the Middle East has disrupted the Strait of Hormuz, triggering a severe energy price shock. This event is driving a broad market correction and raising immediate stagflationary risks.</div></div>
-  <div class="model-card" style="border-color:#ffd70033;display:flex;flex-direction:column;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-shrink:0;"><div class="card-label" style="font-size:11px;">☀️ MID-DAY</div><div style="color:#888;font-size:10px;">12:00 PM · 2026-03-07 17:20</div></div><div style="color:#999;font-size:10px;margin-bottom:6px;">Macro composite at 47/100 shows underlying weakness, but the structural damage (SPY -1.31%) and VIX surge are entirely driven by the acute geopolitical shock overriding baseline macro data.</div><div style="color:#ccc;font-size:11px;line-height:1.6;flex:1;">A severe geopolitical crisis involving a US-Iran conflict and a blockade of the Strait of Hormuz has emerged over the weekend. This is triggering an energy price shock and broad stagflationary fears, completely shifting the structural outlook to defensive.</div></div>
-  <div class="model-card" style="border-color:#c084fc33;display:flex;flex-direction:column;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-shrink:0;"><div class="card-label" style="font-size:11px;">📋 CLOSE DEEP DIVE</div><div style="color:#888;font-size:10px;">4:30 PM · 2026-03-07 21:46</div></div><div style="color:#999;font-size:10px;margin-bottom:6px;"><span style="background:#ff444422;color:#ff4444;border:1px solid #ff4444;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">risk-off</span> conf=88%</div><div style="color:#ccc;font-size:11px;line-height:1.6;flex:1;">A severe geopolitical crisis has erupted over the weekend, featuring a physical blockade of the Strait of Hormuz that is triggering an immediate energy price shock. This acute systemic event is overriding baseline macroeconomic data and driving intense stagflationary fears ahead ...</div></div>
+  <div class="model-card" style="border-color:#f7931a33;opacity:0.45;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><div class="card-label" style="font-size:11px;">🌅 MARKET OPEN</div><div style="color:#555;font-size:10px;">9:30 AM</div></div><div style="color:#444;font-size:11px;font-style:italic;">Not yet fired</div></div>
+  <div class="model-card" style="border-color:#ffd70033;opacity:0.45;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><div class="card-label" style="font-size:11px;">☀️ MID-DAY</div><div style="color:#555;font-size:10px;">12:00 PM</div></div><div style="color:#444;font-size:11px;font-style:italic;">Not yet fired</div></div>
+  <div class="model-card" style="border-color:#c084fc33;opacity:0.45;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><div class="card-label" style="font-size:11px;">📋 CLOSE DEEP DIVE</div><div style="color:#555;font-size:10px;">4:30 PM</div></div><div style="color:#444;font-size:11px;font-style:italic;">Not yet fired — triggers after market close</div></div>
 </div>
 
 <!-- ═══ CLOSE DEEP DIVE — FULL ANALYSIS ═══ -->
-<div class="section-head" style="margin-top:18px;">&#129504; Close Deep Dive &mdash; 2026-03-07</div>
+<div class="section-head" style="margin-top:18px;">&#129504; Close Deep Dive &mdash; —</div>
 
 <div class="grid-mid">
-  <div class="model-card" style="display:flex;flex-direction:column;max-height:600px;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-shrink:0;"><div class="card-label">🔬 REASONING (Gemini 3.1)</div><div style="display:flex;gap:8px;align-items:center;"><span style="background:#ff444422;color:#ff4444;border:1px solid #ff4444;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">risk-off</span><span style="color:#00ff88;font-weight:700;font-size:13px;">88%</span></div></div><div class="scroll-wrap" style="flex:1;overflow-y:auto;padding-right:5px;"><div style="color:#ddd;font-size:12px;line-height:1.6;margin-bottom:12px;font-weight:bold;">A severe geopolitical crisis has erupted over the weekend, featuring a physical blockade of the Strait of Hormuz that is triggering an immediate energy price shock. This acute systemic event is overriding baseline macroeconomic data and driving intense stagflationary fears ahead of Monday's open.</div><div class="themes-row" style="margin-bottom:12px;"><div class="theme-pill">Strait of Hormuz Blockade</div><div class="theme-pill">Energy Price Shock</div><div class="theme-pill">Macro Stagflation Risk</div></div><div style="margin-bottom:10px;"><div class="micro-label">SIGNAL QUALITY</div><div style="color:#aaa;font-size:11px;line-height:1.5;">Highly meaningful. The synthesis of 3144 articles across 69 cycles shows absolute consensus on a realized systemic shock, rather than speculative noise, corroborated by strong AI model agreement.</div></div><div style="margin-bottom:10px;"><div class="micro-label">PORTFOLIO ASSESSMENT</div><div style="color:#aaa;font-size:11px;line-height:1.5;">Current long positions in high-beta tech (GOOGL, NVDA, MSFT) are highly vulnerable to the impending stagflationary shock, broad market de-risking, and yield curve steepening expected at Monday's open.</div></div><div class="two-col" style="margin-bottom:10px;"><div><div class="micro-label">BIGGEST RISK</div><div style="color:#ff8888;font-size:11px;line-height:1.5;">Immediate stagflationary shock driven by the Strait of Hormuz blockade, compounded by an already fragile macroeconomic foundation (consumer sentiment at 56.4 and HY credit spreads at 300bps).</div></div><div><div class="micro-label">OPPORTUNITY</div><div style="color:#88ff88;font-size:11px;line-height:1.5;">Energy sector equities and direct commodity proxies (like oil) serving as structural hedges against the realized Middle East supply disruption.</div></div></div><div style="margin-bottom:10px;"><div class="micro-label">WATCHLIST</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;"><span class="ticker-tag" style="cursor:pointer;" onclick="showChart('XLE')">XLE</span><span class="ticker-tag" style="cursor:pointer;" onclick="showChart('USO')">USO</span><span class="ticker-tag" style="cursor:pointer;" onclick="showChart('VIXY')">VIXY</span></div></div><div><div class="micro-label">DEFCON FORECAST</div><div style="color:#888;font-size:11px;line-height:1.5;">DEFCON 4 or potentially higher if the energy blockade translates into immediate, aggressive gap-downs and sustained VIX backwardation at Monday's open.</div></div></div></div>
-  <div class="model-card" style="display:flex;flex-direction:column;max-height:600px;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-shrink:0;"><div class="card-label">𝕏 DEEP DIVE (Grok 4.1)</div><div style="display:flex;gap:8px;align-items:center;"><span style="background:#ff444422;color:#ff4444;border:1px solid #ff4444;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">risk-off</span><span style="color:#00ff88;font-weight:700;font-size:13px;">92%</span></div></div><div class="scroll-wrap" style="flex:1;overflow-y:auto;padding-right:5px;"><div style="color:#ddd;font-size:12px;line-height:1.6;margin-bottom:12px;font-weight:bold;">Escalating US-Iran conflict has blockaded the Strait of Hormuz, severing global energy supplies and igniting a crude price shock. VIX backwardation at 1.07 signals acute near-term stress amid a market correction. Stagflation risks surge against a fragile macro backdrop with consumer sentiment at 56.4.</div><div class="themes-row" style="margin-bottom:12px;"><div class="theme-pill">Geopolitical Energy Supply Shock</div><div class="theme-pill">Strait of Hormuz Blockade</div><div class="theme-pill">Stagflationary Macro Risks</div></div><div style="margin-bottom:10px;"><div class="micro-label">SIGNAL QUALITY</div><div style="color:#aaa;font-size:11px;line-height:1.5;">High quality: Top news scores 52+ with 82% concentration on market_correction, consistent bearish tilt (17-20%), and 35 breaking events overriding noise.</div></div><div style="margin-bottom:10px;"><div class="micro-label">PORTFOLIO ASSESSMENT</div><div style="color:#aaa;font-size:11px;line-height:1.5;">Tech-heavy opens (GOOGL/NVDA/MSFT) vulnerable in risk-off de-risking; multiple recent NVDA -2% losses signal need for tight stops or exits pre-open Monday amid energy-driven correction.</div></div><div class="two-col" style="margin-bottom:10px;"><div><div class="micro-label">BIGGEST RISK</div><div style="color:#ff8888;font-size:11px;line-height:1.5;">Strait of Hormuz physical blockage disrupting 20%+ of global oil, evidenced by UAE/Kuwaiti cuts, VIX backwardation, and Gemini consensus on systemic shock transition.</div></div><div><div class="micro-label">OPPORTUNITY</div><div style="color:#88ff88;font-size:11px;line-height:1.5;">Energy sector rebound via XLE or USO if de-escalation news emerges, supported by prior USO +8.4% profit target hit and XLE +1.7% stop gain.</div></div></div><div style="margin-bottom:10px;"><div class="micro-label">WATCHLIST</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;"><span class="ticker-tag" style="cursor:pointer;" onclick="showChart('XLE')">XLE</span><span class="ticker-tag" style="cursor:pointer;" onclick="showChart('USO')">USO</span><span class="ticker-tag" style="cursor:pointer;" onclick="showChart('VIX')">VIX</span></div></div><div><div class="micro-label">DEFCON FORECAST</div><div style="color:#888;font-size:11px;line-height:1.5;">DEFCON 3</div></div></div></div>
+  <div class="model-card"><div class="card-label">🔬 REASONING (Gemini 3.1)</div><p style="color:#555;margin-top:8px;">No data yet</p></div>
+  <div class="model-card"><div class="card-label">𝕏 SECOND OPINION (Grok 4.1)</div><p style="color:#555;margin-top:8px;">No data yet</p></div>
 </div>
 
 <!-- ═══ PORTFOLIO POSITIONS ═══ -->
@@ -595,7 +584,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
           <th>Symbol</th><th>Shares</th><th>Entry</th><th>Current</th>
           <th>Mkt Value</th><th>Unrlzd P&amp;L</th><th>Return</th><th>Stop</th><th>TP1</th><th>DEFCON@Entry</th>
         </tr></thead>
-        <tbody><tr class="trow"><td class="sym" onclick="showChart('GOOGL')">GOOGL</td><td>54</td><td>$299.38</td><td>$298.44</td><td>$16,115.76</td><td style="color:#ff4444;">$-50.55</td><td><div style="display:flex;align-items:center;gap:6px;"><div style="width:60px;background:#111;border-radius:3px;height:4px;"><div style="width:0%;background:#ff4444;height:4px;border-radius:3px;"></div></div><span style="color:#ff4444;">-0.31%</span></div></td><td><span style="color:#ffb300;">$284.41</span></td><td><span style="color:#888;">$329.32</span></td><td><span style="font-size:11px;color:#888">D2</span></td></tr><tr class="trow"><td class="sym" onclick="showChart('NVDA')">NVDA</td><td>54</td><td>$181.59</td><td>$177.73</td><td>$9,597.42</td><td style="color:#ff4444;">$-208.36</td><td><div style="display:flex;align-items:center;gap:6px;"><div style="width:60px;background:#111;border-radius:3px;height:4px;"><div style="width:6%;background:#ff4444;height:4px;border-radius:3px;"></div></div><span style="color:#ff4444;">-2.12%</span></div></td><td><span style="color:#ff4444;font-weight:700;">$172.50</span></td><td><span style="color:#888;">$212.19</span></td><td><span style="font-size:11px;color:#888">D2</span></td></tr><tr class="trow"><td class="sym" onclick="showChart('MSFT')">MSFT</td><td>14</td><td>$408.87</td><td>$408.62</td><td>$5,720.68</td><td style="color:#ff4444;">$-3.47</td><td><div style="display:flex;align-items:center;gap:6px;"><div style="width:60px;background:#111;border-radius:3px;height:4px;"><div style="width:0%;background:#ff4444;height:4px;border-radius:3px;"></div></div><span style="color:#ff4444;">-0.06%</span></div></td><td><span style="color:#ffb300;">$392.00</span></td><td><span style="color:#888;">$451.05</span></td><td><span style="font-size:11px;color:#888">D2</span></td></tr></tbody>
+        <tbody><tr><td colspan="10" style="color:#555;text-align:center;padding:20px;">No open positions</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -616,43 +605,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
           <th>Stop Loss</th><th>TP1</th><th>TP2</th>
           <th>Hold</th><th>Thesis</th><th>Framework</th>
         </tr></thead>
-        <tbody><tr class="trow"><td class="sym" onclick="showChart('GOOGL')">  GOOGL</td><td style="color:#ddd;">$299.38<br>  <span style="color:#888;font-size:10px;">→ $298.44</span></td><td style="color:#ff4444;font-weight:700;">$-50.55  <br><span style="font-size:10px;">-0.31%</span></td><td><div style="font-size:12px;font-weight:600;">$290.39</div><div style="font-size:10px;color:#ff4444;font-weight:700;">-2.7%</div><div style="font-size:9px;color:#00d4ff;letter-spacing:1px;">TRAIL</div></td><td><div style="font-size:12px;font-weight:600;">$329.32</div><div style="font-size:10px;color:#888;">+10.3%</div></td><td><div style="font-size:12px;font-weight:600;">$349.00</div><div style="font-size:10px;color:#888;">+16.9%</div></td><td style="color:#666;font-size:11px;">1d</td><td class="has-thesis" style="color:#888;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="GOOGL presents a 'growth at a reasonable price' opportunity with a forward P/E of ~22.7 against +31% earnings growth. The current 5-6% pullback allows for an entry near major support, betting on a resumption of the primary trend driven by strong fundamentals.
-
-🛑 THESIS FLOOR   $284.41
-Placed below the $285 support zone and recent consolidation lows; a breach of this level would indicate a breakdown of the intermediate bullish structure.
-
-📉 TRAILING STOP   $290.39
-3% below entry/peak base $299.38
-
-🎯 TP1    $329.32
-TP1 captures gains near the previous resistance/consolidation block prior to the recent dip. TP2 targets the analyst consensus mean ($373), aligning with fundamental fair value.
-
-⚠️ INVALIDATION
-[&quot;Weekly close below $280&quot;, &quot;Material deterioration in forward guidance reducing expected growth below 15%&quot;, &quot;Broad market correction pushing VIX above 30&quot;]" data-ticker="GOOGL">GOOGL presents a 'growth at a reasonable price' opportunity with a forward P/E of ~22.7 against +31% earnings growth. The current 5-6% pullback allows for an en…</td><td><span style="background:#1a2a1a;color:#00ff88;font-size:9px;padding:2px 6px;border-radius:3px;letter-spacing:1px;">🎯 ANALYST</span></td></tr><tr class="trow"><td class="sym" onclick="showChart('NVDA')">  NVDA<div style="font-size:9px;color:#888;margin-top:2px;letter-spacing:1px;">MOMENTUM</div></td><td style="color:#ddd;">$181.59<br>  <span style="color:#888;font-size:10px;">→ $177.73</span></td><td style="color:#ff4444;font-weight:700;">$-208.36  <br><span style="font-size:10px;">-2.12%</span></td><td><div style="font-size:12px;font-weight:600;">$176.14</div><div style="font-size:10px;color:#ff4444;font-weight:700;">-0.9%</div><div style="font-size:9px;color:#00d4ff;letter-spacing:1px;">TRAIL</div></td><td><div style="font-size:12px;font-weight:600;">$212.19</div><div style="font-size:10px;color:#888;">+19.4%</div></td><td><div style="font-size:12px;font-weight:600;">$265.18</div><div style="font-size:10px;color:#888;">+49.2%</div></td><td style="color:#666;font-size:11px;">1d</td><td class="has-thesis" style="color:#888;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="Despite a risk-off market, NVDA's exceptional earnings and revenue growth suggest the recent pullback is a buying opportunity. We are establishing a conditional entry to buy into this weakness, anticipating a resumption of the primary uptrend as the market stabilizes.
-
-🛑 THESIS FLOOR   $172.50
-The stop is placed ~6% below the entry target. This level provides a buffer against volatility while being tight enough to exit the position if the pullback deepens and the momentum thesis is threatened. It sits above the analyst low target of $140, which would represent a more significant trend breakdown.
-
-📉 TRAILING STOP   $176.14
-3% below entry/peak base $181.59
-
-🎯 TP1    $212.19
-TP1 at $190 targets a recovery to a level above the current price, offering a &gt;15% gain to de-risk the position. TP2 at $210 targets a test of the 52-week high ($212.19), which is a natural target for a full position exit if momentum returns.
-
-⚠️ INVALIDATION
-[&quot;A quarterly earnings report showing revenue growth decelerating below 30% YoY, breaking the core thesis.&quot;, &quot;A weekly close below the stop-loss level of $155.00, indicating a technical breakdown.&quot;]" data-ticker="NVDA">Despite a risk-off market, NVDA's exceptional earnings and revenue growth suggest the recent pullback is a buying opportunity. We are establishing a conditional…</td><td><span style="background:#1a2a1a;color:#00ff88;font-size:9px;padding:2px 6px;border-radius:3px;letter-spacing:1px;">🎯 ANALYST</span></td></tr><tr class="trow"><td class="sym" onclick="showChart('MSFT')">  MSFT<div style="font-size:9px;color:#888;margin-top:2px;letter-spacing:1px;">MEAN-REVERSION</div></td><td style="color:#ddd;">$408.87<br>  <span style="color:#888;font-size:10px;">→ $408.62</span></td><td style="color:#ff4444;font-weight:700;">$-3.47  <br><span style="font-size:10px;">-0.06%</span></td><td><div style="font-size:12px;font-weight:600;">$396.60</div><div style="font-size:10px;color:#ff4444;font-weight:700;">-2.9%</div><div style="font-size:9px;color:#00d4ff;letter-spacing:1px;">TRAIL</div></td><td><div style="font-size:12px;font-weight:600;">$451.05</div><div style="font-size:10px;color:#888;">+10.4%</div></td><td><div style="font-size:12px;font-weight:600;">$555.45</div><div style="font-size:10px;color:#888;">+35.9%</div></td><td style="color:#666;font-size:11px;">1d</td><td class="has-thesis" style="color:#888;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="MSFT has suffered a rare, sharp 17% one-month pullback, driving its valuation down to a historically cheap forward P/E of 20.6. Despite this price action, fundamentals remain immaculate with 60% earnings growth and $53B in free cash flow. This represents a high-conviction mean-reversion opportunity on a best-in-class asset.
-
-🛑 THESIS FLOOR   $392.00
-Placed strategically below the established 52-week low of $344.79. A daily close below this level would indicate a definitive breakdown of the long-term technical structure.
-
-📉 TRAILING STOP   $396.60
-3% below entry/peak base $408.87
-
-🎯 TP1    $451.05
-TP1 ($490) secures gains as the stock reverts to the midpoint of its recent range. TP2 ($555) targets the prior cycle 52-week high for a full exit.
-
-⚠️ INVALIDATION
-[&quot;Daily close below the 52-week low of $344.79&quot;, &quot;Systemic macro breakdown pushing VIX &gt; 35&quot;]" data-ticker="MSFT">MSFT has suffered a rare, sharp 17% one-month pullback, driving its valuation down to a historically cheap forward P/E of 20.6. Despite this price action, funda…</td><td><span style="background:#1a2a1a;color:#00ff88;font-size:9px;padding:2px 6px;border-radius:3px;letter-spacing:1px;">🎯 ANALYST</span></td></tr></tbody>
+        <tbody><tr><td colspan="10" style="color:#555;text-align:center;padding:20px;">No open positions</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -667,7 +620,7 @@ TP1 ($490) secures gains as the stock reverts to the midpoint of its recent rang
           <th>Symbol</th><th>Shares</th><th>Entry</th><th>Exit</th>
           <th>P&amp;L</th><th>Return</th><th>Exit Reason</th><th>Close Date</th>
         </tr></thead>
-        <tbody><tr class="trow"><td class="sym" onclick="showChart('MSFT')">MSFT</td><td>14</td><td>$408.87</td><td>$408.87</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr><tr class="trow"><td class="sym" onclick="showChart('NVDA')">NVDA</td><td>54</td><td>$181.59</td><td>$181.59</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr><tr class="trow"><td class="sym" onclick="showChart('GOOGL')">GOOGL</td><td>54</td><td>$299.38</td><td>$299.38</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr><tr class="trow"><td class="sym" onclick="showChart('MSFT')">MSFT</td><td>14</td><td>$408.87</td><td>$408.87</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr><tr class="trow"><td class="sym" onclick="showChart('NVDA')">NVDA</td><td>54</td><td>$181.59</td><td>$181.59</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr><tr class="trow"><td class="sym" onclick="showChart('GOOGL')">GOOGL</td><td>54</td><td>$299.38</td><td>$299.38</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr><tr class="trow"><td class="sym" onclick="showChart('MSFT')">MSFT</td><td>14</td><td>$408.87</td><td>$408.87</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-06</td></tr><tr class="trow"><td class="sym" onclick="showChart('NVDA')">NVDA</td><td>54</td><td>$181.59</td><td>$181.59</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-06</td></tr><tr class="trow"><td class="sym" onclick="showChart('GOOGL')">GOOGL</td><td>54</td><td>$299.38</td><td>$299.38</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-06</td></tr><tr class="trow"><td class="sym" onclick="showChart('MSFT')">MSFT</td><td>14</td><td>$408.87</td><td>$408.87</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-06</td></tr><tr class="trow"><td class="sym" onclick="showChart('NVDA')">NVDA</td><td>54</td><td>$181.59</td><td>$181.59</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-06</td></tr><tr class="trow"><td class="sym" onclick="showChart('GOOGL')">GOOGL</td><td>54</td><td>$299.38</td><td>$299.38</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-06</td></tr><tr class="trow"><td class="sym" onclick="showChart('MSFT')">MSFT</td><td>14</td><td>$408.87</td><td>$408.87</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-06</td></tr><tr class="trow"><td class="sym" onclick="showChart('NVDA')">NVDA</td><td>54</td><td>$181.59</td><td>$181.59</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-06</td></tr><tr class="trow"><td class="sym" onclick="showChart('GOOGL')">GOOGL</td><td>54</td><td>$299.38</td><td>$299.38</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-06</td></tr><tr class="trow"><td class="sym" onclick="showChart('MSFT')">MSFT</td><td>14</td><td>$408.87</td><td>$408.87</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-06</td></tr><tr class="trow"><td class="sym" onclick="showChart('NVDA')">NVDA</td><td>54</td><td>$181.59</td><td>$181.59</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-06</td></tr><tr class="trow"><td class="sym" onclick="showChart('GOOGL')">GOOGL</td><td>54</td><td>$299.38</td><td>$299.38</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-06</td></tr><tr class="trow"><td class="sym" onclick="showChart('MSFT')">MSFT</td><td>14</td><td>$408.87</td><td>$408.87</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-06</td></tr><tr class="trow"><td class="sym" onclick="showChart('NVDA')">NVDA</td><td>54</td><td>$181.59</td><td>$181.59</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-06</td></tr></tbody>
+        <tbody><tr><td colspan="8" style="color:#555;text-align:center;padding:20px;">No closed trades</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -684,7 +637,7 @@ TP1 ($490) secures gains as the stock reverts to the midpoint of its recent rang
         <thead><tr>
           <th>Ticker</th><th>Source</th><th>Conf</th><th>Regime</th><th>Thesis</th><th>Status</th><th>Added</th>
         </tr></thead>
-        <tbody><tr class="trow"><td class="sym" onclick="showChart('GME')">GME</td><td><span style="background:#ff444422;color:#ff4444;border:1px solid #ff444455;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🔄 REBOUND</span></td><td><span style="color:#ffd700;font-weight:700;">50%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">recovery</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="This is a speculative, catalyst-driven trade aiming to capitalize on a potential short squeeze fueled by high short interest ahead of the 2026-03-24 earnings report. The entry is strictly conditional on an improving macro environment (VIX &lt; 25, macro score &gt; 50) to mitigate significant risks from the current risk-off regime. ◆ Entry: $24.00 / Stop: $19.50 ◆ VIX must be below 25.0 at time of entry. | Internal Macro composite score must be greater than 50.0." data-ticker="GME">This is a speculative, catalyst-driven trade aiming to capitalize on a potential short squeeze fueled by high short interest ahead of the 2026-03-24 earnings report. The entry is strictly conditional on an improving macro environment (VIX < 25, macro…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">conditional_set</span></td><td style="color:#666;font-size:11px;">2026-03-03</td></tr><tr class="trow"><td class="sym" onclick="showChart('JNJ')">JNJ</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">72%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="Healthcare giant with pipeline catalysts and short interest &gt;3%, X buzz on undervaluation post-earnings" data-ticker="JNJ">Healthcare giant with pipeline catalysts and short interest >3%, X buzz on undervaluation post-earnings</td><td><span style="color:#ffd700;font-size:11px;text-transform:uppercase;">pending</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr><tr class="trow"><td class="sym" onclick="showChart('TWLO')">TWLO</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">87%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="TWLO is currently the beneficiary of a focused AI-driven rotation in the communications sector, evidenced by a 3x surge in social chatter and unusual call option volume. While the macro environment is 'risk-off', the technical setup for a breakout toward 52-week highs remains intact provided the 129.50 level is cleared with volume. ◆ Entry: $129.50 / Stop: $125.65 ◆ TWLO price must hit 129.50 on a 15-minute or higher candle close | VIX must be below 31.0 at the time of entry to avoid buying into" data-ticker="TWLO">TWLO is currently the beneficiary of a focused AI-driven rotation in the communications sector, evidenced by a 3x surge in social chatter and unusual call option volume. While the macro environment is 'risk-off', the technical setup for a breakout to…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">conditional_set</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr><tr class="trow"><td class="sym" onclick="showChart('ASAN')">ASAN</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">82%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="ASAN is primed for a social-driven short squeeze. With 27.1% of the float short and a massive spike in X velocity, a break above $8.00 could trigger a rapid move toward the $10 analyst consensus target, providing a high-reward-to-risk speculative window. ◆ Entry: $8.05 / Stop: $7.49 ◆ VIX must be below 30.0 at time of entry to ensure market stability | ASAN price must hold above 8.05 on a 15-minute candle" data-ticker="ASAN">ASAN is primed for a social-driven short squeeze. With 27.1% of the float short and a massive spike in X velocity, a break above $8.00 could trigger a rapid move toward the $10 analyst consensus target, providing a high-reward-to-risk speculative win…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">conditional_set</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr><tr class="trow"><td class="sym" onclick="showChart('WDAY')">WDAY</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">91%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="WDAY is exhibiting strong relative strength (+12.9% week) and high Grok Alpha (91/100) driven by enterprise AI adoption buzz and a very recent 8-K filing. Despite a risk-off macro regime, the forward P/E of 12x against a trailing 58x suggests the market is pricing in the massive 59% earnings growth, creating a high-conviction momentum setup. ◆ Entry: $155.00 / Stop: $145.00 ◆ WDAY price must touch or exceed 155.00 to confirm breakout | VIX must be below 32.0 to ensure a stable enough environment" data-ticker="WDAY">WDAY is exhibiting strong relative strength (+12.9% week) and high Grok Alpha (91/100) driven by enterprise AI adoption buzz and a very recent 8-K filing. Despite a risk-off macro regime, the forward P/E of 12x against a trailing 58x suggests the mar…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">conditional_set</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr><tr class="trow"><td class="sym" onclick="showChart('SLDP')">SLDP</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">82%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="SLDP is primed for a short-term speculative squeeze driven by an 82/100 Alpha score, a massive social media velocity spike, and potential news from the 3/6 8-K filing. With short interest reported as high as 25% by Grok Hound and a very bullish options skew, any positive supply chain catalyst could trigger a violent 15-30% recovery. ◆ Entry: $3.35 / Stop: $3.12 ◆ Price clears $3.35 on relative volume (RVOL) &gt; 1.5x | VIX remains below 32.0 to ensure a manageable macro volatility environment" data-ticker="SLDP">SLDP is primed for a short-term speculative squeeze driven by an 82/100 Alpha score, a massive social media velocity spike, and potential news from the 3/6 8-K filing. With short interest reported as high as 25% by Grok Hound and a very bullish optio…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">conditional_set</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr><tr class="trow"><td class="sym" onclick="showChart('ARRY')">ARRY</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">76%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="ARRY is poised for a short-term speculative squeeze as retail velocity surges and the stock attempts to rebound from an extreme -43% monthly drawdown. The combination of high short interest and a rotation into solar names on tariff-related sentiment provides a high-asymmetry entry point if the $7.00 floor is reclaimed. ◆ Entry: $7.15 / Stop: $6.75 ◆ Last price &gt;= 7.15 on a 5-minute candle | VIX &lt;= 29.50 (stable or declining volatility)" data-ticker="ARRY">ARRY is poised for a short-term speculative squeeze as retail velocity surges and the stock attempts to rebound from an extreme -43% monthly drawdown. The combination of high short interest and a rotation into solar names on tariff-related sentiment …</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">conditional_set</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr><tr class="trow"><td class="sym" onclick="showChart('NOK')">NOK</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#ffd700;font-weight:700;">50%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#888;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="PASS (45% conf) — NOK is currently trading near its 52-week high despite weak fundamentals and a risk-off macro regime. Waiting for a mean-reversion pullback provides a safer entry. At current levels, the risk/reward is heavily skewed to the downside. ◆ Re-entry if: Need more granular details on the 6-K filed on 2026-03-06; Options open interest mapping at the 7.00 and 8.00 strikes for the April expiry ◆ Risks: High VIX environment causing correlated market drawdowns, Earnings growth is currentl" data-ticker="NOK">PASS (45% conf) — NOK is currently trading near its 52-week high despite weak fundamentals and a risk-off macro regime. Waiting for a mean-reversion pullback provides a safer entry. At current levels, the risk/reward is heavily skewed to the downside…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">analyst_pass</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr><tr class="trow"><td class="sym" onclick="showChart('XLE')">XLE</td><td><span style="background:#c084fc22;color:#c084fc;border:1px solid #c084fc55;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🧠 BRIEFING</span></td><td><span style="color:#00ff88;font-weight:700;">88%</span></td><td><span style="background:#ff444422;color:#ff4444;border:1px solid #ff4444;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">risk-off</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="XLE demonstrates notable relative strength by consolidating near its 52-week high of $57.88 despite a strained macro environment and a VIX near 30. A bullish Put/Call OI ratio of 0.61 suggests institutional positioning for an upside resolution. This conditional entry captures the breakout potential once market-wide volatility subsides and the risk-off regime cools. ◆ Entry: $58.15 / Stop: $55.85 ◆ Price clears and holds above $58.15 on a 15-minute closing basis | VIX retreats below 25.0 to signa" data-ticker="XLE">XLE demonstrates notable relative strength by consolidating near its 52-week high of $57.88 despite a strained macro environment and a VIX near 30. A bullish Put/Call OI ratio of 0.61 suggests institutional positioning for an upside resolution. This …</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">conditional_set</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr><tr class="trow"><td class="sym" onclick="showChart('USO')">USO</td><td><span style="background:#c084fc22;color:#c084fc;border:1px solid #c084fc55;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🧠 BRIEFING</span></td><td><span style="color:#00ff88;font-weight:700;">88%</span></td><td><span style="background:#ff444422;color:#ff4444;border:1px solid #ff4444;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">risk-off</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="USO is exhibiting extreme momentum driven by a 'risk-off' market regime and a likely geopolitical supply shock, evidenced by its +32% weekly gain. A breakout above the 52-week high of $109.98 signals a continuation of the parabolic move, supported by a bullish Put/Call ratio of 0.51. ◆ Entry: $110.05 / Stop: $104.55 ◆ USO price crosses and holds above $110.05 on the 15-minute chart | VIX remains above 25.0 to maintain the risk-off commodity bid" data-ticker="USO">USO is exhibiting extreme momentum driven by a 'risk-off' market regime and a likely geopolitical supply shock, evidenced by its +32% weekly gain. A breakout above the 52-week high of $109.98 signals a continuation of the parabolic move, supported by…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">conditional_set</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr><tr class="trow"><td class="sym" onclick="showChart('VIXY')">VIXY</td><td><span style="background:#c084fc22;color:#c084fc;border:1px solid #c084fc55;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🧠 BRIEFING</span></td><td><span style="color:#00ff88;font-weight:700;">88%</span></td><td><span style="background:#ff444422;color:#ff4444;border:1px solid #ff4444;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">risk-off</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="VIXY is positioned for a momentum breakout as the VIX approaches the critical 30 level amidst a sustained risk-off market regime. A conditional entry above 35.50 captures the next leg of the volatility spike while maintaining a tight 6% stop to mitigate the inherent contango-related decay of the instrument. ◆ Entry: $35.50 / Stop: $33.37 ◆ Spot VIX Index must be above 30.0 at the time of entry | VIXY price must trade at or above 35.50 on high relative volume" data-ticker="VIXY">VIXY is positioned for a momentum breakout as the VIX approaches the critical 30 level amidst a sustained risk-off market regime. A conditional entry above 35.50 captures the next leg of the volatility spike while maintaining a tight 6% stop to mitig…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">conditional_set</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr><tr class="trow"><td class="sym" onclick="showChart('MTDR')">MTDR</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#ffd700;font-weight:700;">50%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#888;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="PASS (85% conf) — While MTDR presents a technical breakout setup at its 52-week high, the broader context is extremely negative. Declining revenues, negative free cash flow, heavy insider selling, and a risk-off macro environment with high VIX make this a low-probability trade. ◆ Re-entry if: Contents of the recent 8-K filed on 2026-03-05 to assess material risks; Volume profile at the $56.55 resistance level ◆ Risks: Macro risk-off regime with VIX at 29.49, Deteriorating fundamentals including " data-ticker="MTDR">PASS (85% conf) — While MTDR presents a technical breakout setup at its 52-week high, the broader context is extremely negative. Declining revenues, negative free cash flow, heavy insider selling, and a risk-off macro environment with high VIX make t…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">analyst_pass</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr><tr class="trow"><td class="sym" onclick="showChart('MRO')">MRO</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#ffd700;font-weight:700;">50%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#888;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="PASS (0% conf) — There is a complete lack of price, fundamental, and technical data for MRO in the current cycle. A trade setup cannot be established under these conditions. ◆ Re-entry if: Current price; Historical price data (52-week highs/lows) ◆ Risks: Zero visibility into asset pricing, Elevated broader market volatility (VIX 29.49)" data-ticker="MRO">PASS (0% conf) — There is a complete lack of price, fundamental, and technical data for MRO in the current cycle. A trade setup cannot be established under these conditions. ◆ Re-entry if: Current price; Historical price data (52-week highs/lows) ◆ R…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">analyst_pass</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr><tr class="trow"><td class="sym" onclick="showChart('MLGO')">MLGO</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#ffd700;font-weight:700;">50%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#888;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="PASS (30% conf) — Grok Hound flagged a speculative AI quantum edge play with alleged 40% short interest and partnership rumors. However, actual data shows only 4.7% short interest, a toxic fundamental chart ($972.0 down to $3.72), and high macro risk. The setup is highly speculative, lacks verifiable data, and is not suitable for entry. ◆ Re-entry if: Accurate, up-to-date short interest data to resolve the 4.7% vs 40% discrepancy; Options chain data (Open Interest, IV) to gauge market expectatio" data-ticker="MLGO">PASS (30% conf) — Grok Hound flagged a speculative AI quantum edge play with alleged 40% short interest and partnership rumors. However, actual data shows only 4.7% short interest, a toxic fundamental chart ($972.0 down to $3.72), and high macro risk…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">analyst_pass</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr><tr class="trow"><td class="sym" onclick="showChart('V')">V</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">75%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="Visa is positioned for a momentum reversal driven by M&amp;A speculation (S-4 filing) and a sector rotation into fintech. Despite high market volatility, V's strong fundamentals and proximity to 52-week lows create an asymmetric entry point if key resistance is reclaimed. ◆ Entry: $322.50 / Stop: $305.00 ◆ V price must sustain a 15-minute close above 322.50 | VIX must be below 28.0 to signal stabilizing market volatility" data-ticker="V">Visa is positioned for a momentum reversal driven by M&A speculation (S-4 filing) and a sector rotation into fintech. Despite high market volatility, V's strong fundamentals and proximity to 52-week lows create an asymmetric entry point if key resist…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">conditional_set</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr><tr class="trow"><td class="sym" onclick="showChart('ZTS')">ZTS</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">82%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="ZTS is a speculative rotation play driven by retail velocity and social media buzz around animal health catalysts. Despite a risk-off macro regime and insider selling, the sharp recent pullback offers an attractive mean-reversion entry near the 52-week low. ◆ Entry: $121.50 / Stop: $114.50 ◆ VIX remains below 32 at the time of execution | Pre-market or opening volume indicates retail velocity building as per Hound signal" data-ticker="ZTS">ZTS is a speculative rotation play driven by retail velocity and social media buzz around animal health catalysts. Despite a risk-off macro regime and insider selling, the sharp recent pullback offers an attractive mean-reversion entry near the 52-we…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">conditional_set</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr><tr class="trow"><td class="sym" onclick="showChart('IDXX')">IDXX</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">76%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="Social sentiment and Hound intelligence indicate a strong rotation into the veterinary diagnostic sector, driven by upcoming product launches. Despite recent broader market weakness and insider selling, a confirmed price reversal above 620.00 offers a compelling short-term momentum setup. ◆ Entry: $620.00 / Stop: $585.00 ◆ VIX must fall below 28.0 indicating subsiding broader market stress | Price must cross above 620.00 with higher than average volume" data-ticker="IDXX">Social sentiment and Hound intelligence indicate a strong rotation into the veterinary diagnostic sector, driven by upcoming product launches. Despite recent broader market weakness and insider selling, a confirmed price reversal above 620.00 offers …</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">conditional_set</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr><tr class="trow"><td class="sym" onclick="showChart('FFIE')">FFIE</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#ffd700;font-weight:700;">50%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#888;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="PASS (10% conf) — Grok Hound has identified a potential short-squeeze and momentum play on FFIE driven by retail X chatter and extremely high short interest. However, due to a complete lack of current price, technical, and fundamental data, no safe or calculated trade can be structured at this time. ◆ Re-entry if: Current price; 52-week high and low ◆ Risks: extreme volatility, pump and dump history" data-ticker="FFIE">PASS (10% conf) — Grok Hound has identified a potential short-squeeze and momentum play on FFIE driven by retail X chatter and extremely high short interest. However, due to a complete lack of current price, technical, and fundamental data, no safe o…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">analyst_pass</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr><tr class="trow"><td class="sym" onclick="showChart('CAT')">CAT</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">82%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="CAT has experienced an overextended 8.3% weekly pullback, presenting a short-term momentum opportunity. Grok intelligence indicates a rotation into industrials fueled by China stimulus whispers and unusual call flow. A small, tightly managed position capitalizes on this speculative shift while respecting the broader risk-off environment. ◆ Entry: $685.50 / Stop: $664.50 ◆ VIX must fall below 28.5 to signal cooling macro fear before entry. | Price must cross and hold above 685.5 for at least 15 m" data-ticker="CAT">CAT has experienced an overextended 8.3% weekly pullback, presenting a short-term momentum opportunity. Grok intelligence indicates a rotation into industrials fueled by China stimulus whispers and unusual call flow. A small, tightly managed position…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">conditional_set</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr><tr class="trow"><td class="sym" onclick="showChart('UNP')">UNP</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">78%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="UNP presents a short-term momentum setup driven by intermodal volume surges and potential short covering, despite a broader risk-off market. By waiting for price strength at the next open to confirm the trend, we can capitalize on the supply chain rotation narrative while strictly managing risk. ◆ Entry: $255.50 / Stop: $247.80 ◆ VIX remains below 30.0 at the open | Price crosses above 255.50 to confirm momentum" data-ticker="UNP">UNP presents a short-term momentum setup driven by intermodal volume surges and potential short covering, despite a broader risk-off market. By waiting for price strength at the next open to confirm the trend, we can capitalize on the supply chain ro…</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">conditional_set</span></td><td style="color:#666;font-size:11px;">2026-03-07</td></tr></tbody>
+        <tbody><tr><td colspan="7" style="color:#555;text-align:center;padding:20px;">Watchlist empty — waiting for next daily briefing</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -699,307 +652,18 @@ TP1 ($490) secures gains as the stock reverts to the midpoint of its recent rang
         <thead><tr>
           <th>Ticker</th><th>Attention</th><th>Conf</th><th>Target</th><th>Stop</th><th>TP1</th><th>Tag</th><th>Thesis</th>
         </tr></thead>
-        <tbody><tr class="trow"><td class="sym" onclick="showChart('BTBT')">⬜ BTBT</td><td style="color:#aaa;font-size:11px;text-align:center;">25</td><td><span style="color:#00ff88;font-weight:700;">75%</span></td><td style="color:#00d4ff;font-size:11px;">$1.65</td><td style="color:#ff8c00;font-size:11px;">$1.53</td><td style="color:#7fff00;font-size:11px;">$1.95</td><td style="color:#888;font-size:10px;">Earnings Play</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="BTBT offers a high-alpha speculative setup driven by extreme undervaluation (P/E 2.6) and a 20-24% short interest ahead of its 2026-03-12 earnings. The Hound signal indicates a rotation into miners from overbought AI names, creating a technical window for a short-term squeeze.
-
-📍 ENTRY  $1.65
-Setting an entry_price_target of $1.65 to confirm a minor breakout above the recent $1.62 close and validate the Hound's momentum signal before committing capital.
-
-🛑 STOP   $1.53
-The stop_loss of $1.53 is placed 7.2% below entry, providing a buffer above the critical $1.49 52-week low; a breach of this level would invalidate the 'rebound' component of the thesis.
-
-🎯 TP1    $1.95
-The initial take_profit_1 of $1.95 targets a return to recent consolidation highs, while take_profit_2 of $2.30 aims to capture a larger move toward analyst mean targets if a short squeeze triggers." data-ticker="BTBT">BTBT offers a high-alpha speculative setup driven by extreme undervaluation (P/E 2.6) and a 20-24% short interest ahead of its 2026-03-12 earnings. The Hound si…</td></tr><tr class="trow"><td class="sym" onclick="showChart('COST')">⬜ COST</td><td style="color:#aaa;font-size:11px;text-align:center;">25</td><td><span style="color:#ffd700;font-weight:700;">72%</span></td><td style="color:#00d4ff;font-size:11px;">$1005.50</td><td style="color:#ff8c00;font-size:11px;">$965.28</td><td style="color:#7fff00;font-size:11px;">$1045.00</td><td style="color:#888;font-size:10px;">Breakout</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="Costco is showing fundamental strength with comp sales acceleration and membership resilience. The technical setup near the $1000.00 level offers a clear breakout trigger, while the current high-volatility market regime favors flight-to-safety names like COST.
-
-📍 ENTRY  $1005.50
-Entry at 1005.50 confirms a clean breakout above the $1000.00 psychological resistance level, providing a buffer against false breakouts while aligning with the momentum from the March 5th sales report.
-
-🛑 STOP   $965.28
-Stop loss placed at 965.28, which is approximately 4% below entry and sits below the prior week's consolidation zone and technical floor, respecting the 7% maximum cap for breakout setups.
-
-🎯 TP1    $1045.00
-First target at 1045.00 captures a return to the 52-week high range. Second target at 1095.00 allows for discovery in new all-time high territory, representing a roughly 9% gain from entry." data-ticker="COST">Costco is showing fundamental strength with comp sales acceleration and membership resilience. The technical setup near the $1000.00 level offers a clear breako…</td></tr><tr class="trow"><td class="sym" onclick="showChart('PLTR')">⬜ PLTR</td><td style="color:#aaa;font-size:11px;text-align:center;">25</td><td><span style="color:#ffd700;font-weight:700;">70%</span></td><td style="color:#00d4ff;font-size:11px;">$155.00</td><td style="color:#ff8c00;font-size:11px;">$145.00</td><td style="color:#7fff00;font-size:11px;">$185.00</td><td style="color:#888;font-size:10px;">Mean Reversion</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="Thesis remains valid. Price action has strengthened the case for a momentum trend, but the initial low-risk pullback entry at $150 was missed. The conditional is now adjusted for entry at a potentially higher support level.
-
-📍 ENTRY  $155.00
-Entering slightly above current levels ($137.19) to ensure the $136.80 support level holds and upward momentum is confirmed before committing capital in a risk-off environment.
-
-🛑 STOP   $145.00
-Placed below the $130 psychological level and giving enough room for volatility around the 50% retracement support zone. A break below this invalidates the bounce thesis.
-
-🎯 TP1    $185.00
-TP1 targets the midpoint of the recent breakdown range, securing a 2:1 reward-to-risk ratio. TP2 aligns perfectly with the analyst mean price target of $184.49." data-ticker="PLTR">Thesis remains valid. Price action has strengthened the case for a momentum trend, but the initial low-risk pullback entry at $150 was missed. The conditional i…</td></tr><tr class="trow"><td class="sym" onclick="showChart('SFM')">⬜ SFM</td><td style="color:#aaa;font-size:11px;text-align:center;">25</td><td><span style="color:#ffd700;font-weight:700;">70%</span></td><td style="color:#00d4ff;font-size:11px;">$81.00</td><td style="color:#ff8c00;font-size:11px;">$75.50</td><td style="color:#7fff00;font-size:11px;">$88.50</td><td style="color:#888;font-size:10px;">Momentum</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="SFM is benefiting from a 'health trend revival' and a positive sentiment shift on social platforms, combined with a 15.8% short interest that could fuel a squeeze. Despite a high VIX, the stock's 21.9% monthly performance and low forward P/E of 13.4 make it an attractive momentum target in a rotation toward quality staples.
-
-📍 ENTRY  $81.00
-An entry at $81.00 provides confirmation of a break above the psychological $80.25 resistance level, ensuring the momentum from the previous week carries into the new session.
-
-🛑 STOP   $75.50
-A stop loss at $75.50 is placed 6.79% below the entry, which is within the 7% mandate and sits just below the recent 1-week support level to protect against a trend reversal.
-
-🎯 TP1    $88.50
-Target TP1 at $88.50 captures the initial momentum extension, while TP2 at $93.00 aligns with the analyst mean price target and expected psychological resistance near the $92-$95 zone." data-ticker="SFM">SFM is benefiting from a 'health trend revival' and a positive sentiment shift on social platforms, combined with a 15.8% short interest that could fuel a squee…</td></tr><tr class="trow"><td class="sym" onclick="showChart('JPM')">⬜ JPM</td><td style="color:#aaa;font-size:11px;text-align:center;">25</td><td><span style="color:#ffd700;font-weight:700;">65%</span></td><td style="color:#00d4ff;font-size:11px;">$295.00</td><td style="color:#ff8c00;font-size:11px;">$277.30</td><td style="color:#7fff00;font-size:11px;">$310.00</td><td style="color:#888;font-size:10px;">Momentum</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="Despite a risk-off regime, unusual flow and a rotation to value signal banking strength. We are taking a speculative, short-term momentum trade on JPM anticipating a bounce from its recent 8.9% pullback.
-
-📍 ENTRY  $295.00
-Entering at $295.00 requires a slight upward confirmation of the Hound's rotation signal following the recent pullback.
-
-🛑 STOP   $277.30
-A stop at $277.30 limits risk to exactly 6% below the entry, respecting the momentum tag hard cap.
-
-🎯 TP1    $310.00
-Initial trim at $310.00 captures the first leg of the reversal, with a final target of $325.00 near previous resistance." data-ticker="JPM">Despite a risk-off regime, unusual flow and a rotation to value signal banking strength. We are taking a speculative, short-term momentum trade on JPM anticipat…</td></tr><tr class="trow"><td class="sym" onclick="showChart('HAL')">⬜ HAL</td><td style="color:#aaa;font-size:11px;text-align:center;">25</td><td><span style="color:#ffd700;font-weight:700;">65%</span></td><td style="color:#00d4ff;font-size:11px;">$34.25</td><td style="color:#ff8c00;font-size:11px;">$32.25</td><td style="color:#7fff00;font-size:11px;">$36.00</td><td style="color:#888;font-size:10px;">Momentum</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="This is a short-term speculative play on an energy rotation and potential short squeeze highlighted by Hound intelligence. Despite mixed internal signals like a high put/call ratio, the strong forward P/E and macro shift away from megacaps present an asymmetric momentum setup.
-
-📍 ENTRY  $34.25
-Entering at 34.25 requires a break above the recent consolidation level of $34, confirming the rotation thesis before committing capital.
-
-🛑 STOP   $32.25
-A stop loss at 32.25 limits downside to roughly 5.8% from the entry, staying within the maximum 7% threshold for momentum setups while allowing for normal volatility.
-
-🎯 TP1    $36.00
-Taking initial profits at 36.00 secures gains near the analyst mean target, with a final target at 37.00 matching the 52-week high resistance." data-ticker="HAL">This is a short-term speculative play on an energy rotation and potential short squeeze highlighted by Hound intelligence. Despite mixed internal signals like a…</td></tr><tr class="trow"><td class="sym" onclick="showChart('BAC')">⬜ BAC</td><td style="color:#aaa;font-size:11px;text-align:center;">25</td><td><span style="color:#ffd700;font-weight:700;">65%</span></td><td style="color:#00d4ff;font-size:11px;">$49.25</td><td style="color:#ff8c00;font-size:11px;">$47.50</td><td style="color:#7fff00;font-size:11px;">$52.50</td><td style="color:#888;font-size:10px;">Breakout</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="BAC is fundamentally cheap at a forward P/E &lt; 10 following a sharp monthly drawdown. Grok signals suggest a sector rotation into financials and social buzz around a regional bank recovery; an entry above 49.25 confirms this momentum shift while maintaining a tight risk profile.
-
-📍 ENTRY  $49.25
-Entry at 49.25 triggers upon clearing the recent consolidation range, confirming the 'breakout' tag and signaling that the -13.8% monthly slide has bottomed and momentum is shifting bullish.
-
-🛑 STOP   $47.50
-Stop loss at 47.50 is placed just below the current support level of 48.64, representing a ~3.5% risk from entry and staying well within the 7% cap for breakout setups.
-
-🎯 TP1    $52.50
-TP1 at 52.50 targets a recovery to the psychological $50 level and subsequent resistance, while TP2 at 55.00 captures the full rotation back toward the 52-week highs based on analyst consensus upside." data-ticker="BAC">BAC is fundamentally cheap at a forward P/E < 10 following a sharp monthly drawdown. Grok signals suggest a sector rotation into financials and social buzz arou…</td></tr><tr class="trow"><td class="sym" onclick="showChart('DIS')">⬜ DIS</td><td style="color:#aaa;font-size:11px;text-align:center;">25</td><td><span style="color:#ffd700;font-weight:700;">65%</span></td><td style="color:#00d4ff;font-size:11px;">$100.50</td><td style="color:#ff8c00;font-size:11px;">$94.47</td><td style="color:#7fff00;font-size:11px;">$108.54</td><td style="color:#888;font-size:10px;">Mean Reversion</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="Disney is currently undervalued relative to its analyst consensus price targets and is showing positive momentum signs via streaming subscriber growth despite broader market pressure. This mean-reversion trade captures a bounce off critical psychological support at $100.
-
-📍 ENTRY  $100.50
-Entry at $100.50 aligns with the psychological support level of $100, providing a tactical entry point just above the recent low of $80.10 and the current price of $101.54.
-
-🛑 STOP   $94.47
-The stop loss at $94.47 represents a ~6% drawdown from the $100.50 entry, staying well within the mean-reversion maximum threshold of 8% while providing room for volatility." data-ticker="DIS">Disney is currently undervalued relative to its analyst consensus price targets and is showing positive momentum signs via streaming subscriber growth despite b…</td></tr><tr class="trow"><td class="sym" onclick="showChart('FROG')">⬜ FROG</td><td style="color:#aaa;font-size:11px;text-align:center;">25</td><td><span style="color:#ffd700;font-weight:700;">65%</span></td><td style="color:#00d4ff;font-size:11px;">$40.50</td><td style="color:#ff8c00;font-size:11px;">$37.66</td><td style="color:#7fff00;font-size:11px;">$46.57</td><td style="color:#888;font-size:10px;">Mean Reversion</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="FROG is a tactical play based on enterprise software rotation and anomalous social sentiment metrics. The trade benefits from an oversold condition following a 20.8% monthly decline, with sufficient liquidity to initiate a small position ahead of a potential technical mean-reversion.
-
-📍 ENTRY  $40.50
-The entry at $40.50 aligns with recent close support, offering a tight base to manage risk while capturing potential rotation momentum.
-
-🛑 STOP   $37.66
-Setting the stop at $37.66 (7% below the entry price of $40.50) adheres to the strict mean-reversion drawdown discipline and provides a buffer below the recent $40.59 price point.
-
-🎯 TP1    $46.57
-TP1 at $46.57 targets the immediate resistance area formed during the recent sell-off. TP2 at $52.00 aligns with the analyst consensus low, representing a conservative recovery target." data-ticker="FROG">FROG is a tactical play based on enterprise software rotation and anomalous social sentiment metrics. The trade benefits from an oversold condition following a …</td></tr><tr class="trow"><td class="sym" onclick="showChart('DOCU')">⬜ DOCU</td><td style="color:#aaa;font-size:11px;text-align:center;">25</td><td><span style="color:#ffd700;font-weight:700;">65%</span></td><td style="color:#00d4ff;font-size:11px;">$49.50</td><td style="color:#ff8c00;font-size:11px;">$44.55</td><td style="color:#7fff00;font-size:11px;">$54.45</td><td style="color:#888;font-size:10px;">Earnings Play</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="DOCU is exhibiting signs of a potential short squeeze with 9.2% of float shorted and building social media momentum. Entering a small position now allows us to capture the pre-earnings drift leading into the March 17th catalyst.
-
-📍 ENTRY  $49.50
-Entry is set slightly above the current $48.69 level to confirm a breakout of the immediate consolidation range, signaling buyers are stepping in before the event.
-
-🛑 STOP   $44.55
-[AUTO-CAPPED from $44.55 to $44.55] Original stop exceeded the 10% strategy limit for 'earnings-play' setups. The $44.55 stop represents a 10% decline from the entry price, acting as a strict capital preservation limit consistent with the high-volatility nature of pre-earnings plays.
-
-🎯 TP1    $54.45
-Take profit 1 ($54.45) targets a 10% move to lock in gains before the event; take profit 2 ($60.00) aligns with psychological resistance levels if the short squeeze intensifies." data-ticker="DOCU">DOCU is exhibiting signs of a potential short squeeze with 9.2% of float shorted and building social media momentum. Entering a small position now allows us to …</td></tr><tr class="trow"><td class="sym" onclick="showChart('ZM')">⬜ ZM</td><td style="color:#aaa;font-size:11px;text-align:center;">25</td><td><span style="color:#ffd700;font-weight:700;">65%</span></td><td style="color:#00d4ff;font-size:11px;">$78.50</td><td style="color:#ff8c00;font-size:11px;">$73.50</td><td style="color:#7fff00;font-size:11px;">$84.00</td><td style="color:#888;font-size:10px;">Momentum</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="ZM is seeing a spike in retail and X chatter regarding an upcoming AI meeting tools upgrade. Despite a high VIX and risk-off macro environment, its low P/E of 12.5 and massive free cash flow provide a valuation floor, making this a viable short-term momentum play if it can clear near-term resistance.
-
-📍 ENTRY  $78.50
-Requires a push to 78.5 to confirm the recent weekly bounce is sustaining momentum against the broader risk-off market.
-
-🛑 STOP   $73.50
-A strict stop at 73.5 protects capital if the narrative fails, keeping risk within the 7 percent momentum threshold in a high VIX environment.
-
-🎯 TP1    $84.00
-Scaling out starts at 84.0 to secure quick gains, with a final target of 89.0 near recent technical resistance." data-ticker="ZM">ZM is seeing a spike in retail and X chatter regarding an upcoming AI meeting tools upgrade. Despite a high VIX and risk-off macro environment, its low P/E of 1…</td></tr><tr class="trow"><td class="sym" onclick="showChart('AFRM')">⬜ AFRM</td><td style="color:#aaa;font-size:11px;text-align:center;">25</td><td><span style="color:#ffd700;font-weight:700;">65%</span></td><td style="color:#00d4ff;font-size:11px;">$52.50</td><td style="color:#ff8c00;font-size:11px;">$49.00</td><td style="color:#7fff00;font-size:11px;">$58.00</td><td style="color:#888;font-size:10px;">Breakout</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="AFRM presents a speculative, short-term breakout opportunity driven by social media buzz, high implied volatility, and a potential short squeeze. Despite a risk-off macro environment, its strong 1-week performance and bullish options positioning suggest a tactical momentum play if it can clear key overhead resistance.
-
-📍 ENTRY  $52.50
-Entering at 52.50 confirms a breakout above the recently tested pivot point, ensuring we only participate if the stock demonstrates upward momentum and clears local resistance.
-
-🛑 STOP   $49.00
-A stop at 49.00 is approximately 6.6% below the entry, strictly adhering to the maximum 7% stop-loss rule for breakout setups while allowing normal intraday volatility to play out.
-
-🎯 TP1    $58.00
-Scaling out with TP1 at 58.00 secures early gains on a ~10% momentum push, while TP2 at 65.00 captures a larger swing toward the analyst consensus mean." data-ticker="AFRM">AFRM presents a speculative, short-term breakout opportunity driven by social media buzz, high implied volatility, and a potential short squeeze. Despite a risk…</td></tr><tr class="trow"><td class="sym" onclick="showChart('GEVO')">⬜ GEVO</td><td style="color:#aaa;font-size:11px;text-align:center;">25</td><td><span style="color:#ffd700;font-weight:700;">62%</span></td><td style="color:#00d4ff;font-size:11px;">$2.26</td><td style="color:#ff8c00;font-size:11px;">$1.85</td><td style="color:#7fff00;font-size:11px;">$2.60</td><td style="color:#888;font-size:10px;">Earnings Play</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="Post-earnings momentum is confirmed by high volume and a strong recovery from intraday lows; waiting for a secondary breakout to clear the volatility wick.
-
-📍 ENTRY  $2.26
-Entering at 1.95 ensures we only commit capital if the stock proves post-earnings bullish momentum by breaking above immediate near-term resistance, rather than catching a falling knife.
-
-🛑 STOP   $1.85
-A stop at 1.76 provides a 9.7% cushion, respecting the strict 10% max stop for earnings plays while keeping risk tight on this highly volatile micro-cap.
-
-🎯 TP1    $2.60
-Taking partial profits at 2.30 secures early gains on post-earnings spikes, with a final target of 2.90 just under the 52-week high of $2.95." data-ticker="GEVO">Post-earnings momentum is confirmed by high volume and a strong recovery from intraday lows; waiting for a secondary breakout to clear the volatility wick.</td></tr><tr class="trow"><td class="sym" onclick="showChart('NEM')">⬜ NEM</td><td style="color:#aaa;font-size:11px;text-align:center;">15</td><td><span style="color:#00ff88;font-weight:700;">75%</span></td><td style="color:#00d4ff;font-size:11px;">$117.00</td><td style="color:#ff8c00;font-size:11px;">$109.00</td><td style="color:#7fff00;font-size:11px;">$128.00</td><td style="color:#888;font-size:10px;">Momentum</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="NEM presents a compelling short-term speculative opportunity driven by gold miner rotation amid a risk-off macro regime. Strong X chatter and a notably bullish options setup (Put/Call OI ratio of 0.61) support a momentum play despite the recent 1-week price pullback.
-
-📍 ENTRY  $117.00
-Entering at $117.0 requires price to push above the $116.29 close, confirming upward momentum before committing capital.
-
-🛑 STOP   $109.00
-A stop loss at $109.0 risks approximately 6.8%, strictly adhering to the maximum 7% momentum stop limit while allowing room for high IV fluctuations.
-
-🎯 TP1    $128.00
-Initial partial exit at $128.0 to secure quick gains, with a final target of $134.0 just below the 52-week high of $134.88." data-ticker="NEM">NEM presents a compelling short-term speculative opportunity driven by gold miner rotation amid a risk-off macro regime. Strong X chatter and a notably bullish …</td></tr><tr class="trow"><td class="sym" onclick="showChart('CVX')">⬜ CVX</td><td style="color:#aaa;font-size:11px;text-align:center;">15</td><td><span style="color:#ffd700;font-weight:700;">70%</span></td><td style="color:#00d4ff;font-size:11px;">$192.50</td><td style="color:#ff8c00;font-size:11px;">$183.00</td><td style="color:#7fff00;font-size:11px;">$200.00</td><td style="color:#888;font-size:10px;">Breakout</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="CVX is positioned for a technical breakout above its 52-week high, supported by an energy sector rotation and bullish options flow (P/C ratio 0.60). Despite elevated VIX and insider selling, the short-term momentum signals suggest a tactical long opportunity if resistance is breached.
-
-📍 ENTRY  $192.50
-Entering at 192.5 confirms a clean breakout above the 52-week high of $192.41, ensuring momentum is established before committing capital.
-
-🛑 STOP   $183.00
-A stop at 183.0 limits downside to roughly 4.9% and places our exit below recent consolidation levels, invalidating the breakout.
-
-🎯 TP1    $200.00
-Taking partial profits at 200.0 secures gains at a major psychological level, while holding the remainder for the analyst high of $212.00." data-ticker="CVX">CVX is positioned for a technical breakout above its 52-week high, supported by an energy sector rotation and bullish options flow (P/C ratio 0.60). Despite ele…</td></tr><tr class="trow"><td class="sym" onclick="showChart('EOSE')">⬜ EOSE</td><td style="color:#aaa;font-size:11px;text-align:center;">15</td><td><span style="color:#ffd700;font-weight:700;">70%</span></td><td style="color:#00d4ff;font-size:11px;">$6.25</td><td style="color:#ff8c00;font-size:11px;">$5.85</td><td style="color:#7fff00;font-size:11px;">$7.50</td><td style="color:#888;font-size:10px;">Breakout</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="EOSE presents a high-risk, high-reward short squeeze setup fueled by 28% short interest, elevated X chatter, and DOE funding rumors. Because fundamentals are weak and the macro regime is risk-off, this is strictly a short-term momentum trade sized small to capture the options-driven upside.
-
-📍 ENTRY  $6.25
-Requiring an entry at 6.25 ensures we only buy if the price breaks above near-term consolidation and confirms the upward momentum heading into the week.
-
-🛑 STOP   $5.85
-Placing the stop at 5.85 keeps the risk at 6.4% below entry, which complies strictly with the 7% maximum stop rule for breakout setups while guarding against high cash burn risks.
-
-🎯 TP1    $7.50
-Initial scale-out at 7.50 secures quick profits if the short squeeze triggers, leaving the remainder to run toward 9.00 amid high implied volatility." data-ticker="EOSE">EOSE presents a high-risk, high-reward short squeeze setup fueled by 28% short interest, elevated X chatter, and DOE funding rumors. Because fundamentals are we…</td></tr><tr class="trow"><td class="sym" onclick="showChart('CEG')">⬜ CEG</td><td style="color:#aaa;font-size:11px;text-align:center;">15</td><td><span style="color:#ffd700;font-weight:700;">65%</span></td><td style="color:#00d4ff;font-size:11px;">$322.00</td><td style="color:#ff8c00;font-size:11px;">$305.00</td><td style="color:#7fff00;font-size:11px;">$350.00</td><td style="color:#888;font-size:10px;">Momentum</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="CEG offers a unique intersection of defensive utility characteristics and high-growth AI data center power demand. With a bullish options put/call ratio of 0.55 and recent 17% monthly gains, this pullback presents a calculated momentum entry if price reclaims near-term resistance.
-
-📍 ENTRY  $322.00
-Waiting for a reclaim of 322.00 confirms that the recent pullback has stabilized and buyer momentum is resuming before the next open.
-
-🛑 STOP   $305.00
-A stop at 305.00 provides a 5.2% cushion, adhering to the strict sub-7% momentum limit while guarding against a broader breakdown.
-
-🎯 TP1    $350.00
-Initial scaling out at 350.00 secures early momentum profits, with a final target of 393.93 aligning precisely with the mean analyst price target." data-ticker="CEG">CEG offers a unique intersection of defensive utility characteristics and high-growth AI data center power demand. With a bullish options put/call ratio of 0.55…</td></tr><tr class="trow"><td class="sym" onclick="showChart('GLD')">⬜ GLD</td><td style="color:#aaa;font-size:11px;text-align:center;">—</td><td><span style="color:#00ff88;font-weight:700;">85%</span></td><td style="color:#00d4ff;font-size:11px;">$470.00</td><td style="color:#ff8c00;font-size:11px;">$445.00</td><td style="color:#7fff00;font-size:11px;">$495.00</td><td style="color:#888;font-size:10px;">Defensive Hedge</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="The broader market is currently in a confirmed risk-off regime with an elevated VIX of 29.49, signaling significant structural stress. GLD options show massive bullish positioning with a Put/Call OI ratio of 0.41, suggesting institutions are heavily hedging with gold upside. Entering a small defensive position here protects the broader portfolio against further equity deterioration.
-
-📍 ENTRY  $470.00
-Setting a limit order at 470.0 to capture minor weakness or a slight pullback from the weekend closing price of 473.51.
-
-🛑 STOP   $445.00
-A strict stop loss of 445.0 is placed below recent consolidation, representing a 5.3% risk, which strictly adheres to the maximum 6% limit for a defensive-hedge.
-
-🎯 TP1    $495.00
-Taking partial profits at 495.0 to lock in gains near recent resistance, while holding the remainder for a test of the 52-week high at 509.7." data-ticker="GLD">The broader market is currently in a confirmed risk-off regime with an elevated VIX of 29.49, signaling significant structural stress. GLD options show massive …</td></tr><tr class="trow"><td class="sym" onclick="showChart('ORCL')">⬜ ORCL</td><td style="color:#aaa;font-size:11px;text-align:center;">—</td><td><span style="color:#00ff88;font-weight:700;">85%</span></td><td style="color:#00d4ff;font-size:11px;">$153.50</td><td style="color:#ff8c00;font-size:11px;">$142.50</td><td style="color:#7fff00;font-size:11px;">$168.00</td><td style="color:#888;font-size:10px;">Earnings Play</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="ORCL is seeing a massive X chatter spike and unusual bullish options flow (Put/Call OI 0.67) ahead of its 2026-03-10 earnings. With hyperscaler spend rotating towards enterprise AI databases, ORCL presents a highly asymmetric short-term earnings setup.
-
-📍 ENTRY  $153.50
-Entering at $153.50 confirms bullish momentum carrying over from the previous week's 5.2% gain, securing position just before the earnings volatility crush.
-
-🛑 STOP   $142.50
-A hard stop at $142.50 limits downside to roughly 7.1%, strictly respecting the earnings-play max 10% limit while accommodating the 111.7% ATM IV expected noise.
-
-🎯 TP1    $168.00
-TP1 at $168.00 captures a +9.4% implied post-earnings upside move. TP2 at $185.00 provides extended runner potential if AI database dominance narrative triggers a strong gap and go." data-ticker="ORCL">ORCL is seeing a massive X chatter spike and unusual bullish options flow (Put/Call OI 0.67) ahead of its 2026-03-10 earnings. With hyperscaler spend rotating t…</td></tr><tr class="trow"><td class="sym" onclick="showChart('WDAY')">⬜ WDAY</td><td style="color:#aaa;font-size:11px;text-align:center;">—</td><td><span style="color:#00ff88;font-weight:700;">82%</span></td><td style="color:#00d4ff;font-size:11px;">$155.00</td><td style="color:#ff8c00;font-size:11px;">$145.00</td><td style="color:#7fff00;font-size:11px;">$172.00</td><td style="color:#888;font-size:10px;">Breakout</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="WDAY is exhibiting strong relative strength (+12.9% week) and high Grok Alpha (91/100) driven by enterprise AI adoption buzz and a very recent 8-K filing. Despite a risk-off macro regime, the forward P/E of 12x against a trailing 58x suggests the market is pricing in the massive 59% earnings growth, creating a high-conviction momentum setup.
-
-📍 ENTRY  $155.00
-Entering at $155.00 ensures we are buying strength and clearing the psychological $150 level, confirming that the recent momentum has follow-through rather than being a 'sell-the-news' event from the 8-K filing.
-
-🛑 STOP   $145.00
-A stop loss at $145.00 is roughly 6.45% below the entry, which is within the 7% hard cap for breakout trades. It sits just below the recent support level established prior to the 12.9% weekly surge.
-
-🎯 TP1    $172.00
-TP1 at $172.00 captures a portion of the move at a significant technical milestone. TP2 at $186.00 aligns with the current analyst mean price target ($186.49)." data-ticker="WDAY">WDAY is exhibiting strong relative strength (+12.9% week) and high Grok Alpha (91/100) driven by enterprise AI adoption buzz and a very recent 8-K filing. Despi…</td></tr><tr class="trow"><td class="sym" onclick="showChart('FANG')">⬜ FANG</td><td style="color:#aaa;font-size:11px;text-align:center;">0</td><td><span style="color:#00ff88;font-weight:700;">80%</span></td><td style="color:#00d4ff;font-size:11px;">$183.50</td><td style="color:#ff8c00;font-size:11px;">$175.90</td><td style="color:#7fff00;font-size:11px;">$195.00</td><td style="color:#888;font-size:10px;">Breakout</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="The trade is a conditional bet on a technical breakout above the 52-week high. Strong analyst consensus and high short interest provide potential fuel for the move, but it is gated by strict macro conditions (VIX &lt; 25) due to the current risk-off regime and mixed fundamental signals.
-
-📍 ENTRY  $183.50
-Entry is set just above the 52-week high ($183.36) to confirm a technical breakout before committing capital.
-
-🛑 STOP   $175.90
-Stop is placed just below the current price and recent consolidation area. It represents a tight stop for a breakout attempt, offering a defined risk of approximately 4.1% from the entry point.
-
-🎯 TP1    $195.00
-TP1 at $195.00 offers a &gt;1.5:1 risk/reward ratio. TP2 at $220.00 targets the upper range of analyst price targets, capturing the full potential of the breakout move." data-ticker="FANG">The trade is a conditional bet on a technical breakout above the 52-week high. Strong analyst consensus and high short interest provide potential fuel for the m…</td></tr><tr class="trow"><td class="sym" onclick="showChart('SQ')">⬜ SQ</td><td style="color:#aaa;font-size:11px;text-align:center;">—</td><td><span style="color:#00ff88;font-weight:700;">76%</span></td><td style="color:#00d4ff;font-size:11px;">$87.80</td><td style="color:#ff8c00;font-size:11px;">$81.70</td><td style="color:#7fff00;font-size:11px;">$98.00</td><td style="color:#888;font-size:10px;">Breakout</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="SQ is benefiting from a 'triple catalyst': restructuring-driven margin expansion (4,000 job cuts), robust Cash App growth (59M monthly actives), and Bitcoin-related momentum. After digesting its 20% post-earnings gain, a breakout above $87.80 signals the next leg of structural fintech recovery.
-
-📍 ENTRY  $87.80
-Entry at 87.80 clears the high-volume resistance zone between $87.41 and $87.50 identified in technical charts, providing necessary confirmation of sustained demand before committing capital.
-
-🛑 STOP   $81.70
-The stop_loss of 81.70 is placed 6.95% below the entry price, situated just below the primary support level of $82.01, adhering to the 7% cap for breakout setups while allowing for normal high-beta volatility.
-
-🎯 TP1    $98.00
-take_profit_1 at 98.00 targets the upper psychological and technical resistance band identified in early March. take_profit_2 at 105.00 targets a full recovery of the 2024-2025 highs following the restructuring momentum." data-ticker="SQ">SQ is benefiting from a 'triple catalyst': restructuring-driven margin expansion (4,000 job cuts), robust Cash App growth (59M monthly actives), and Bitcoin-rel…</td></tr><tr class="trow"><td class="sym" onclick="showChart('BEAM')">⬜ BEAM</td><td style="color:#aaa;font-size:11px;text-align:center;">0</td><td><span style="color:#00ff88;font-weight:700;">75%</span></td><td style="color:#00d4ff;font-size:11px;">$26.50</td><td style="color:#ff8c00;font-size:11px;">$25.00</td><td style="color:#7fff00;font-size:11px;">$32.00</td><td style="color:#888;font-size:10px;">Mean Reversion</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="Fundamental strength play transitioning from a macro-sensitive mean-reversion to a company-specific growth/recovery thesis. Strategic financing and earnings growth have significantly derisked the equity, justifying an entry even in a high-volatility environment.
-
-📍 ENTRY  $26.50
-Entry is set just above the lowest consensus analyst price target of $26.00, which is expected to act as a strong psychological and technical support level for a mean-reversion bounce.
-
-🛑 STOP   $25.00
-Placed firmly below the $26.00 support level. A daily close below this price would invalidate the support thesis and indicate the market has ignored the lowest analyst valuation.
-
-🎯 TP1    $32.00
-TP1 ($30.50) targets a recovery to the price zone from before the recent week's pullback. TP2 ($35.75) targets the area just below the 52-week high, aiming to capitalize on a potential trend continuation or short squeeze." data-ticker="BEAM">Fundamental strength play transitioning from a macro-sensitive mean-reversion to a company-specific growth/recovery thesis. Strategic financing and earnings gro…</td></tr><tr class="trow"><td class="sym" onclick="showChart('BYND')">⬜ BYND</td><td style="color:#aaa;font-size:11px;text-align:center;">0</td><td><span style="color:#00ff88;font-weight:700;">75%</span></td><td style="color:#00d4ff;font-size:11px;">$0.82</td><td style="color:#ff8c00;font-size:11px;">$0.75</td><td style="color:#7fff00;font-size:11px;">$1.10</td><td style="color:#888;font-size:10px;">Earnings Play</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="BYND is positioned for a high-volatility short squeeze with 32.8% short interest heading into its Q4 earnings on Monday. With retail interest spiking on X and a heavily skewed call option OI ratio (0.12), even a marginal earnings beat could trigger a massive momentum squeeze. This is strictly a short-term, small-size asymmetric play.
-
-📍 ENTRY  $0.82
-Setting entry at 0.82 to ensure we clear recent micro-resistance and confirm upside momentum heading into the Monday earnings print.
-
-🛑 STOP   $0.75
-A strict stop at 0.75 keeps risk tight at approximately 8.5% below entry, respecting the earnings-play max 10% threshold while allowing for high IV chop.
-
-🎯 TP1    $1.10
-Taking initial profits at 1.10 into the initial short squeeze volatility, leaving a runner for a full gap fill toward 1.50." data-ticker="BYND">BYND is positioned for a high-volatility short squeeze with 32.8% short interest heading into its Q4 earnings on Monday. With retail interest spiking on X and a…</td></tr><tr class="trow"><td class="sym" onclick="showChart('ENVX')">⬜ ENVX</td><td style="color:#aaa;font-size:11px;text-align:center;">0</td><td><span style="color:#00ff88;font-weight:700;">75%</span></td><td style="color:#00d4ff;font-size:11px;">$5.10</td><td style="color:#ff8c00;font-size:11px;">$4.74</td><td style="color:#7fff00;font-size:11px;">$6.00</td><td style="color:#888;font-size:10px;">Breakout</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="ENVX is a highly shorted (35.7%) battery innovator sitting at 52-week lows with exploding retail chatter and bullish options flow indicating a potential squeeze. By waiting for a technical breakout above $5.10, we can ride the idiosyncratic momentum while keeping a tight stop below absolute lows.
-
-📍 ENTRY  $5.10
-An entry at $5.10 confirms a break above psychological resistance and recent short-term consolidation, ensuring we do not catch a falling knife.
-
-🛑 STOP   $4.74
-[AUTO-CAPPED from $4.74 to $4.74] Original stop exceeded the 7% strategy limit for 'breakout' setups. A stop at $4.74 provides a strict 7% risk allowance (max for breakout) and sits logically below the recent 52-week absolute low of $4.84.
-
-🎯 TP1    $6.00
-Taking partial profits at $6.00 captures the initial volatility of a short squeeze, while $7.50 targets a larger mean reversion toward historical support zones." data-ticker="ENVX">ENVX is a highly shorted (35.7%) battery innovator sitting at 52-week lows with exploding retail chatter and bullish options flow indicating a potential squeeze…</td></tr><tr class="trow"><td class="sym" onclick="showChart('GME')">⬜ GME</td><td style="color:#aaa;font-size:11px;text-align:center;">—</td><td><span style="color:#00ff88;font-weight:700;">75%</span></td><td style="color:#00d4ff;font-size:11px;">$25.50</td><td style="color:#ff8c00;font-size:11px;">$23.25</td><td style="color:#7fff00;font-size:11px;">$29.50</td><td style="color:#888;font-size:10px;">Earnings Play</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="GME shows dramatic +226.8% YoY earnings growth and a highly bullish 0.27 Put/Call OI ratio ahead of its March 24th earnings. By setting a conditional entry above current levels, we aim to capture an anticipatory pre-earnings volatility run-up while strictly defining risk in a difficult macro environment.
-
-📍 ENTRY  $25.50
-Entering at $25.50 confirms upward momentum and clearing of near-term resistance, preventing us from catching a falling knife in a risk-off tape.
-
-🛑 STOP   $23.25
-A strict stop at $23.25 provides an 8.8% cushion, adhering to the sub-10% requirement for an earnings play while allowing for GME's natural beta.
-
-🎯 TP1    $29.50
-Taking initial profits at $29.50 secures gains on the pre-earnings volatility pump, with the remaining tranche held for a test of the $34.00 zone near 52-week highs." data-ticker="GME">GME shows dramatic +226.8% YoY earnings growth and a highly bullish 0.27 Put/Call OI ratio ahead of its March 24th earnings. By setting a conditional entry abov…</td></tr><tr class="trow"><td class="sym" onclick="showChart('HUT')">⬜ HUT</td><td style="color:#aaa;font-size:11px;text-align:center;">—</td><td><span style="color:#00ff88;font-weight:700;">75%</span></td><td style="color:#00d4ff;font-size:11px;">$48.00</td><td style="color:#ff8c00;font-size:11px;">$46.00</td><td style="color:#7fff00;font-size:11px;">$55.00</td><td style="color:#888;font-size:10px;">Momentum</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="HUT presents a compelling short-term momentum setup fueled by a 3x surge in X chatter and a high 16% short interest, creating prime conditions for a squeeze. Despite a recent pullback and high IV, the low-cost energy edge and rotation into BTC miners justify a small, tightly-managed speculative entry.
-
-📍 ENTRY  $48.00
-Entering at $48.00 to confirm an upward momentum shift at the Monday open following the weekend chatter and recent pullback.
-
-🛑 STOP   $46.00
-Strict stop placed at $46.00 to adhere to tight risk controls (4.1% risk) given the extremely high 133% put IV and elevated VIX.
-
-🎯 TP1    $55.00
-First target set at $55.00 to secure partial gains near the lowest analyst price target, with a final target at $60.00 to capture further short squeeze upside." data-ticker="HUT">HUT presents a compelling short-term momentum setup fueled by a 3x surge in X chatter and a high 16% short interest, creating prime conditions for a squeeze. De…</td></tr><tr class="trow"><td class="sym" onclick="showChart('INTC')">⬜ INTC</td><td style="color:#aaa;font-size:11px;text-align:center;">—</td><td><span style="color:#00ff88;font-weight:700;">75%</span></td><td style="color:#00d4ff;font-size:11px;">$44.50</td><td style="color:#ff8c00;font-size:11px;">$41.50</td><td style="color:#7fff00;font-size:11px;">$48.50</td><td style="color:#888;font-size:10px;">Breakout</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="INTC is exhibiting strong social velocity and rotation signals over the weekend based on AI and foundry narratives. Despite weak fundamentals and an elevated VIX, the heavily skewed Put/Call OI ratio of 0.60 and high chatter make this a viable short-term momentum trade if price action confirms the breakout next week.
-
-📍 ENTRY  $44.50
-An entry at 44.50 ensures we only commit capital if the stock demonstrates clear upward momentum at the Monday open, confirming the weekend social chatter regarding foundry wins.
-
-🛑 STOP   $41.50
-A stop at 41.50 is approximately 6.7% below the entry, keeping risk strictly within the 7% maximum for breakout plays while allowing room for high-IV volatility.
-
-🎯 TP1    $48.50
-Taking initial profits at 48.50 aligns with the analyst consensus mean target, while holding the remainder for a potential squeeze toward 52.50 near the 52-week high." data-ticker="INTC">INTC is exhibiting strong social velocity and rotation signals over the weekend based on AI and foundry narratives. Despite weak fundamentals and an elevated VI…</td></tr><tr class="trow"><td class="sym" onclick="showChart('JOBY')">⬜ JOBY</td><td style="color:#aaa;font-size:11px;text-align:center;">—</td><td><span style="color:#00ff88;font-weight:700;">75%</span></td><td style="color:#00d4ff;font-size:11px;">$10.15</td><td style="color:#ff8c00;font-size:11px;">$9.45</td><td style="color:#7fff00;font-size:11px;">$11.50</td><td style="color:#888;font-size:10px;">Breakout</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="JOBY is flashing a short-term speculative setup driven by a 5x spike in social chatter, accelerating FAA certification rumors, and a fresh Friday evening 8-K. The options market leans bullish (0.69 P/C ratio) despite high implied volatility, making this a prime momentum breakout candidate if it clears $10.15.
-
-📍 ENTRY  $10.15
-A psychological and technical breakout above $10.15 confirms the momentum from the recent 8-K and FAA rumors, ensuring we don't buy into a gap-and-trap.
-
-🛑 STOP   $9.45
-Placing the stop at $9.45 strictly adheres to the sub-7% maximum allowable loss for a breakout trade, risking roughly 6.9% from entry.
-
-🎯 TP1    $11.50
-Scaling out begins at $11.50 to secure quick gains on the high-IV momentum spike, with a final exit at $12.50 approaching the analyst mean price target." data-ticker="JOBY">JOBY is flashing a short-term speculative setup driven by a 5x spike in social chatter, accelerating FAA certification rumors, and a fresh Friday evening 8-K. T…</td></tr><tr class="trow"><td class="sym" onclick="showChart('OKTA')">⬜ OKTA</td><td style="color:#aaa;font-size:11px;text-align:center;">—</td><td><span style="color:#00ff88;font-weight:700;">75%</span></td><td style="color:#00d4ff;font-size:11px;">$81.00</td><td style="color:#ff8c00;font-size:11px;">$75.50</td><td style="color:#7fff00;font-size:11px;">$89.00</td><td style="color:#888;font-size:10px;">Momentum</td><td class="has-thesis" style="color:#666;font-size:10px;max-width:280px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="OKTA is positioned as a short-term speculative momentum play driven by cybersecurity sector rotation and retail chatter. Despite a bearish insider profile, the recent 1-week relative strength and bullish options flow (Put/Call OI 0.80) support a quick long trade. The strategy capitalizes on immediate momentum while maintaining a tight leash due to the broader risk-off regime.
-
-📍 ENTRY  $81.00
-Entering at 81.0 to confirm continuation of the recent weekly momentum, ensuring we do not buy into a weekend gap down.
-
-🛑 STOP   $75.50
-Stop loss placed at 75.5, which is approximately 6.8% below the 81.0 entry, adhering to the max 7% rule for momentum plays and protecting against a breakdown of the recent weekly trend.
-
-🎯 TP1    $89.00
-Initial take profit at 89.0 to secure gains on a quick volatility spike, with a secondary target of 95.0 if the rotation thesis fully materializes." data-ticker="OKTA">OKTA is positioned as a short-term speculative momentum play driven by cybersecurity sector rotation and retail chatter. Despite a bearish insider profile, the …</td></tr></tbody>
+        <tbody><tr><td colspan="8" style="color:#555;text-align:center;padding:20px;">No active conditionals</td></tr></tbody>
       </table>
     </div>
   </div>
 </div>
 
-<!-- ═══ NEWS · CONGRESSIONAL ═══ -->
-<div class="grid-mid">
-
+<!-- ═══ NEWS ═══ -->
+<div class="grid-full">
   <div class="panel">
     <div class="panel-title">News Intelligence &mdash; Recent Signals</div>
-    <div class="news-scroll"><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#666;font-size:10px;">3/07 09:53 PM ET <span onclick="sendCommand('/update')" style="cursor:pointer;margin-left:5px;color:#555;" title="Rerun Analysis">&#8635;</span></span><span style="color:#ffd700;font-size:13px;font-weight:700;">45.9</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><div><span style="color:#888;font-weight:700;font-size:12px;">—</span></div></div><div style="font-size:11px;color:#555;">5 articles &middot; 0 breaking</div><div style="font-size:11px;color:#777;margin-top:4px;">Bearish: 0%, Bullish: 20%, Neutral: 80%</div></div><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#666;font-size:10px;">3/07 09:38 PM ET <span onclick="sendCommand('/update')" style="cursor:pointer;margin-left:5px;color:#555;" title="Rerun Analysis">&#8635;</span></span><span style="color:#888;font-size:13px;font-weight:700;">34.6</span><span style="color:#aaa;font-size:11px;">TECH CRASH</span><div><span style="color:#888;font-weight:700;font-size:12px;">—</span></div></div><div style="font-size:11px;color:#555;">55 articles &middot; 0 breaking</div><div style="font-size:11px;color:#777;margin-top:4px;">Bearish: 16%, Bullish: 42%, Neutral: 42%</div></div><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#666;font-size:10px;">3/07 09:12 PM ET <span onclick="sendCommand('/update')" style="cursor:pointer;margin-left:5px;color:#555;" title="Rerun Analysis">&#8635;</span></span><span style="color:#888;font-size:13px;font-weight:700;">34.8</span><span style="color:#aaa;font-size:11px;">TECH CRASH</span><div><span style="color:#888;font-weight:700;font-size:12px;">—</span></div></div><div style="font-size:11px;color:#555;">48 articles &middot; 0 breaking</div><div style="font-size:11px;color:#777;margin-top:4px;">Bearish: 15%, Bullish: 40%, Neutral: 46%</div></div><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#666;font-size:10px;">3/07 08:57 PM ET <span onclick="sendCommand('/update')" style="cursor:pointer;margin-left:5px;color:#555;" title="Rerun Analysis">&#8635;</span></span><span style="color:#888;font-size:13px;font-weight:700;">34.6</span><span style="color:#aaa;font-size:11px;">TECH CRASH</span><div><span style="color:#888;font-weight:700;font-size:12px;">—</span></div></div><div style="font-size:11px;color:#555;">53 articles &middot; 0 breaking</div><div style="font-size:11px;color:#777;margin-top:4px;">Bearish: 19%, Bullish: 40%, Neutral: 42%</div></div><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#666;font-size:10px;">3/07 08:42 PM ET <span onclick="sendCommand('/update')" style="cursor:pointer;margin-left:5px;color:#555;" title="Rerun Analysis">&#8635;</span></span><span style="color:#888;font-size:13px;font-weight:700;">35.0</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><div><span style="color:#888;font-weight:700;font-size:12px;">—</span></div></div><div style="font-size:11px;color:#555;">57 articles &middot; 0 breaking</div><div style="font-size:11px;color:#777;margin-top:4px;">Bearish: 19%, Bullish: 40%, Neutral: 40%</div></div><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#666;font-size:10px;">3/07 08:26 PM ET <span onclick="sendCommand('/update')" style="cursor:pointer;margin-left:5px;color:#555;" title="Rerun Analysis">&#8635;</span></span><span style="color:#888;font-size:13px;font-weight:700;">38.5</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><div><span style="color:#888;font-weight:700;font-size:12px;">—</span></div></div><div style="font-size:11px;color:#555;">66 articles &middot; 0 breaking</div><div style="font-size:11px;color:#777;margin-top:4px;">Bearish: 23%, Bullish: 38%, Neutral: 39%</div></div></div>
+    <div class="news-scroll"><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#666;font-size:10px;">3/08 09:58 AM ET <span onclick="sendCommand('/update')" style="cursor:pointer;margin-left:5px;color:#555;" title="Rerun Analysis">&#8635;</span></span><span style="color:#ffd700;font-size:13px;font-weight:700;">47.9</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><div><span style="color:#ffd700;font-weight:700;font-size:12px;">WAIT</span></div></div><div style="font-size:11px;color:#555;">35 articles &middot; 0 breaking</div><div style="font-size:11px;color:#888;margin-top:4px;font-style:italic;">The reported 60% collapse in Iraqi oil output combined with a seven-day standstill in the Strait of Hormuz transforms a geopolitic…</div></div><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#666;font-size:10px;">3/08 09:57 AM ET <span onclick="sendCommand('/update')" style="cursor:pointer;margin-left:5px;color:#555;" title="Rerun Analysis">&#8635;</span></span><span style="color:#ffd700;font-size:13px;font-weight:700;">47.6</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><div><span style="color:#ffd700;font-weight:700;font-size:12px;">WAIT</span></div></div><div style="font-size:11px;color:#555;">34 articles &middot; 0 breaking</div><div style="font-size:11px;color:#888;margin-top:4px;font-style:italic;">The fundamental landscape has shifted from 'uncertainty' to 'crisis' following the confirmed 60% drop in Iraqi output and the exte…</div></div><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#666;font-size:10px;">3/08 09:56 AM ET <span onclick="sendCommand('/update')" style="cursor:pointer;margin-left:5px;color:#555;" title="Rerun Analysis">&#8635;</span></span><span style="color:#ffd700;font-size:13px;font-weight:700;">47.6</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><div><span style="color:#ffd700;font-weight:700;font-size:12px;">WAIT</span></div></div><div style="font-size:11px;color:#555;">34 articles &middot; 0 breaking</div><div style="font-size:11px;color:#888;margin-top:4px;font-style:italic;">My assessment is driven by the empirical collapse of physical supply (Iraq -60%) combined with the VIX term structure being in dee…</div></div><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#666;font-size:10px;">3/08 09:54 AM ET <span onclick="sendCommand('/update')" style="cursor:pointer;margin-left:5px;color:#555;" title="Rerun Analysis">&#8635;</span></span><span style="color:#ffd700;font-size:13px;font-weight:700;">47.6</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><div><span style="color:#ffd700;font-weight:700;font-size:12px;">WAIT</span></div></div><div style="font-size:11px;color:#555;">34 articles &middot; 0 breaking</div><div style="font-size:11px;color:#888;margin-top:4px;font-style:italic;">The escalation over the weekend has shifted the crisis from a localized conflict to a structural energy deficit, evidenced by the …</div></div></div>
   </div>
-
-  <div class="panel">
-    <div class="panel-title">Congressional Intelligence</div>
-    <div style="margin-bottom:14px;">
-      <div class="micro-label" style="margin-bottom:6px;">Cluster Buy Signals</div>
-      <table>
-        <thead><tr><th>Ticker</th><th>Strength</th><th>Count</th><th>$ Volume</th><th>Flag</th><th>Date</th></tr></thead>
-        <tbody><tr><td colspan="6" style="color:#555;text-align:center;padding:16px;">No cluster signals (S3 data intermittent)</td></tr></tbody>
-      </table>
-    </div>
-    <div>
-      <div class="micro-label" style="margin-bottom:6px;">Recent Disclosures</div>
-      <div class="scroll-wrap" style="max-height:180px;">
-        <table>
-          <thead><tr><th>Trade</th><th>Politician</th><th>Party &bull; Chamber</th><th>Amount</th><th>Date</th></tr></thead>
-          <tbody><tr><td colspan="5" style="color:#555;text-align:center;padding:16px;">No congressional trades recorded</td></tr></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-
 </div>
 
 <!-- ═══ GROK HOUND ═══ -->
@@ -1011,7 +675,7 @@ Initial take profit at 89.0 to secure gains on a quick volatility spike, with a 
         <thead><tr>
           <th>Ticker</th><th>Alpha Score</th><th>Alpha Thesis</th><th>Suggestion</th><th>Found</th><th>Action</th>
         </tr></thead>
-        <tbody><tr class="trow"><td class="sym" onclick="showChart('ETSY')">ETSY</td><td style="color:#ffd700;font-weight:700;">72</td><td style="color:#ddd;font-size:11px;">Undervalued ecomm rotation play with improving margins, high short interest, and spiking X buzz ahead of earnings.</td><td><span style="color:#888;font-weight:700;font-size:12px;">ADD_TO_WATCH</span></td><td style="color:#666;font-size:11px;">03/07</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('ETSY')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('ETSY')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('PGR')">PGR</td><td style="color:#ffd700;font-weight:700;">72</td><td style="color:#ddd;font-size:11px;">Insurance short squeeze setup with premium hikes and catastrophe lull, retail piling in on X</td><td><span style="color:#888;font-weight:700;font-size:12px;">MONITOR</span></td><td style="color:#666;font-size:11px;">03/06</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('PGR')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('PGR')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('WMT')">WMT</td><td style="color:#ffd700;font-weight:700;">72</td><td style="color:#ddd;font-size:11px;">Defensive retail rotation play with X velocity on consumer staples strength amid macro uncertainty</td><td><span style="color:#888;font-weight:700;font-size:12px;">ADD_TO_WATCH</span></td><td style="color:#666;font-size:11px;">03/07</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('WMT')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('WMT')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('CMG')">CMG</td><td style="color:#ffd700;font-weight:700;">72</td><td style="color:#ddd;font-size:11px;">Post-split retail velocity accelerating with strong consumer momentum signals on X</td><td><span style="color:#888;font-weight:700;font-size:12px;">MONITOR</span></td><td style="color:#666;font-size:11px;">03/07</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('CMG')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('CMG')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('LI')">LI</td><td style="color:#ffd700;font-weight:700;">72</td><td style="color:#ddd;font-size:11px;">Li Auto surging deliveries +30% YoY, ADR discount to peers with unusual flow on trade optimism.</td><td><span style="color:#888;font-weight:700;font-size:12px;">MONITOR</span></td><td style="color:#666;font-size:11px;">03/08</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('LI')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('LI')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('RBRK')">RBRK</td><td style="color:#ffd700;font-weight:700;">71</td><td style="color:#ddd;font-size:11px;">Cybersecurity IPO with accelerating revenue growth and retail momentum building</td><td><span style="color:#888;font-weight:700;font-size:12px;">MONITOR</span></td><td style="color:#666;font-size:11px;">03/06</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('RBRK')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('RBRK')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('KLAC')">KLAC</td><td style="color:#ffd700;font-weight:700;">71</td><td style="color:#ddd;font-size:11px;">Wafer fab equip with asymmetric upside from foundry expansion chatter</td><td><span style="color:#888;font-weight:700;font-size:12px;">ADD_TO_WATCH</span></td><td style="color:#666;font-size:11px;">03/06</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('KLAC')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('KLAC')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('OPRA')">OPRA</td><td style="color:#ffd700;font-weight:700;">71</td><td style="color:#ddd;font-size:11px;">Browser stock popping on ad revenue beat whispers and China exposure unwind, unusual flow.</td><td><span style="color:#888;font-weight:700;font-size:12px;">ADD_TO_WATCH</span></td><td style="color:#666;font-size:11px;">03/06</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('OPRA')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('OPRA')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('WULF')">WULF</td><td style="color:#ffd700;font-weight:700;">71</td><td style="color:#ddd;font-size:11px;">Zero-carbon mining edge with nuclear partnerships teased on X, asymmetric upside on energy transition catalyst.</td><td><span style="color:#888;font-weight:700;font-size:12px;">MONITOR</span></td><td style="color:#666;font-size:11px;">03/07</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('WULF')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('WULF')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('TSCO')">TSCO</td><td style="color:#ffd700;font-weight:700;">71</td><td style="color:#ddd;font-size:11px;">Rural retail strength with catalyst from spring buying season, short squeeze potential</td><td><span style="color:#888;font-weight:700;font-size:12px;">MONITOR</span></td><td style="color:#666;font-size:11px;">03/07</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('TSCO')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('TSCO')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr></tbody>
+        <tbody><tr><td colspan="6" style="color:#555;text-align:center;padding:16px;">🐕 Hound is still hunting...</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -1031,16 +695,6 @@ Initial take profit at 89.0 to secure gains on a quick volatility spike, with a 
         <div style="color:#666;font-size:10px;margin-top:3px;">5-component scoring: sentiment &middot; concentration &middot; urgency &middot; confidence &middot; specificity &middot; Flash+Pro only fires on new articles or breaking</div>
       </div>
       <div class="stat">
-        <div class="stat-label">FRED Macro Tracker</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; ACTIVE &mdash; Score 47/100 &middot; every ~60 min</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">9 indicators: yield curve &middot; fed funds &middot; unemployment &middot; M2 &middot; HY spreads &middot; consumer sentiment &middot; DEFCON modifier</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Congressional Tracker</div>
-        <div style="color:#ffd700;font-size:11px;">&#9888;&#65039; S3 intermittent &mdash; Capitol Trades fallback</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">House + Senate disclosures &middot; cluster detection (3+ politicians/30 days) &middot; bipartisan signal weighting</div>
-      </div>
-      <div class="stat">
         <div class="stat-label">Acquisition Pipeline</div>
         <div style="color:#00ff88;font-size:11px;">&#9679; ACTIVE &mdash; hourly verifier &middot; DEFCON 1-2: every 15 min</div>
         <div style="color:#666;font-size:10px;margin-top:3px;">Researcher &rarr; Analyst (3.1 Pro → 3 Flash → 2.5 Pro) &rarr; Verifier (Flash · hourly / 15-min at DEFCON 1-2) &rarr; Conditionals &middot; deep checks: 9 AM · 12:30 PM · 4:30 PM</div>
@@ -1049,7 +703,7 @@ Initial take profit at 89.0 to secure gains on a quick volatility spike, with a 
         <div class="stat-label">🦮 Grok Hound &mdash; Alpha Scanner</div>
         <div style="color:#ff8c00;font-size:11px;">&#9679; grok-4-1-fast-reasoning &middot; X.com momentum feed &middot; hourly cycles</div>
         <div style="color:#666;font-size:10px;margin-top:3px;">5-signal scoring (sentiment &middot; concentration &middot; urgency &middot; confidence &middot; specificity) &middot; auto-promotes &ge;75 alpha &middot; feeds researcher &rarr; analyst pipeline</div>
-        <div style="color:#555;font-size:10px;margin-top:2px;">Last run: 03/07 09:12 PM</div>
+        <div style="color:#555;font-size:10px;margin-top:2px;">Last run: No runs yet</div>
       </div>
     </div>
   </div>
@@ -1078,18 +732,9 @@ Initial take profit at 89.0 to secure gains on a quick volatility spike, with a 
         <div style="color:#666;font-size:10px;margin-top:3px;">Catches all CLI failures &middot; separate quota pool from OAuth &middot; 1500/d &middot; 120 RPM</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Grok 4.1 &mdash; Primary Deep Dive</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; grok-4-1-fast-reasoning &middot; X-Powered &middot; Native live search</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">&#120143; Elevated signal deep analysis &middot; Real-time data gap resolution &middot; Daily close briefing</div>
-      </div>
-
-      <div class="stat">
-        <div class="stat-label">&#120143; Grok Usage &mdash; Since Midnight UTC</div>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
-          <span style="color:#aaa;font-size:9px;">grok-4-1-fast-reasoning &nbsp;&middot;&nbsp; pay-per-token</span>
-          <span style="color:#555;font-size:10px;font-weight:600;">0 calls &nbsp;&middot;&nbsp; 0 in &nbsp;&middot;&nbsp; 0 out</span>
-        </div>
-        <div style="color:#444;font-size:9px;">deep_dives: 0 &nbsp;&middot;&nbsp; briefings: 0 &nbsp;&middot;&nbsp; total tok: 0</div>
+        <div class="stat-label">Grok 4.1 &mdash; Parallel Analyst</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; grok-4-1-fast-reasoning &middot; X-Powered</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">&#120143; Daily Second Opinion &middot; Real-time X.com sentiment audit &middot; Contrarian signal detection &middot; Veto participant</div>
       </div>
 
       <div class="stat">
@@ -1098,42 +743,42 @@ Initial take profit at 89.0 to secure gains on a quick volatility spike, with a 
         <div style="margin-bottom:8px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
             <span style="color:#aaa;font-size:9px;">3.1 Pro Preview ★ REASONING (250/d, 25 RPM)</span>
-            <span style="color:#00ff88;font-size:10px;font-weight:600;">0/250 &nbsp;·&nbsp; 0% &nbsp;·&nbsp; OK</span>
+            <span style="color:#00ff88;font-size:10px;font-weight:600;">4/250 &nbsp;·&nbsp; 2% &nbsp;·&nbsp; OK</span>
           </div>
-          <div style="background:#1a1a2e;border-radius:3px;height:5px;overflow:hidden;">
-            <div style="width:0%;height:5px;background:#00ff88;border-radius:3px;transition:width 0.3s;"></div>
+          <div style="background:#1a0f06;border-radius:3px;height:5px;overflow:hidden;">
+            <div style="width:1%;height:5px;background:#00ff88;border-radius:3px;transition:width 0.3s;"></div>
           </div>
-          <div style="color:#444;font-size:9px;margin-top:1px;">in: 0 tok &nbsp;·&nbsp; out: 0 tok &nbsp;·&nbsp; no calls &nbsp;·&nbsp; resets at midnight UTC (8h 29m)</div>
+          <div style="color:#444;font-size:9px;margin-top:1px;">in: 28,812 tok &nbsp;·&nbsp; out: 2,492 tok &nbsp;·&nbsp; 🔐cli:4 &nbsp;·&nbsp; resets at midnight UTC (2h 40m)</div>
         </div>
         <div style="margin-bottom:8px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
             <span style="color:#aaa;font-size:9px;">3 Flash ★ FAST (1500/d, 120 RPM)</span>
-            <span style="color:#00ff88;font-size:10px;font-weight:600;">81/1500 &nbsp;·&nbsp; 5% &nbsp;·&nbsp; OK</span>
+            <span style="color:#00ff88;font-size:10px;font-weight:600;">8/1500 &nbsp;·&nbsp; 1% &nbsp;·&nbsp; OK</span>
           </div>
-          <div style="background:#1a1a2e;border-radius:3px;height:5px;overflow:hidden;">
-            <div style="width:5%;height:5px;background:#00ff88;border-radius:3px;transition:width 0.3s;"></div>
+          <div style="background:#1a0f06;border-radius:3px;height:5px;overflow:hidden;">
+            <div style="width:0%;height:5px;background:#00ff88;border-radius:3px;transition:width 0.3s;"></div>
           </div>
-          <div style="color:#444;font-size:9px;margin-top:1px;">in: 1,881,166 tok &nbsp;·&nbsp; out: 52,504 tok &nbsp;·&nbsp; 🔐cli:81 &nbsp;·&nbsp; resets at midnight UTC (8h 29m)</div>
+          <div style="color:#444;font-size:9px;margin-top:1px;">in: 73,457 tok &nbsp;·&nbsp; out: 4,907 tok &nbsp;·&nbsp; 🔐cli:8 &nbsp;·&nbsp; resets at midnight UTC (2h 40m)</div>
         </div>
         <div style="margin-bottom:8px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
             <span style="color:#aaa;font-size:9px;">2.5 Pro ↩ CLI FALLBACK (1500/d, 120 RPM)</span>
             <span style="color:#00ff88;font-size:10px;font-weight:600;">0/1500 &nbsp;·&nbsp; 0% &nbsp;·&nbsp; OK</span>
           </div>
-          <div style="background:#1a1a2e;border-radius:3px;height:5px;overflow:hidden;">
+          <div style="background:#1a0f06;border-radius:3px;height:5px;overflow:hidden;">
             <div style="width:0%;height:5px;background:#00ff88;border-radius:3px;transition:width 0.3s;"></div>
           </div>
-          <div style="color:#444;font-size:9px;margin-top:1px;">in: 0 tok &nbsp;·&nbsp; out: 0 tok &nbsp;·&nbsp; no calls &nbsp;·&nbsp; resets at midnight UTC (8h 29m)</div>
+          <div style="color:#444;font-size:9px;margin-top:1px;">in: 0 tok &nbsp;·&nbsp; out: 0 tok &nbsp;·&nbsp; no calls &nbsp;·&nbsp; resets at midnight UTC (2h 40m)</div>
         </div>
         <div style="margin-bottom:8px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
             <span style="color:#aaa;font-size:9px;">3.1 Flash Lite ↩ REST FALLBACK (1500/d, 120 RPM)</span>
             <span style="color:#00ff88;font-size:10px;font-weight:600;">0/1500 &nbsp;·&nbsp; 0% &nbsp;·&nbsp; OK</span>
           </div>
-          <div style="background:#1a1a2e;border-radius:3px;height:5px;overflow:hidden;">
+          <div style="background:#1a0f06;border-radius:3px;height:5px;overflow:hidden;">
             <div style="width:0%;height:5px;background:#00ff88;border-radius:3px;transition:width 0.3s;"></div>
           </div>
-          <div style="color:#444;font-size:9px;margin-top:1px;">in: 0 tok &nbsp;·&nbsp; out: 0 tok &nbsp;·&nbsp; no calls &nbsp;·&nbsp; resets at midnight UTC (8h 29m)</div>
+          <div style="color:#444;font-size:9px;margin-top:1px;">in: 0 tok &nbsp;·&nbsp; out: 0 tok &nbsp;·&nbsp; no calls &nbsp;·&nbsp; resets at midnight UTC (2h 40m)</div>
         </div>
       </div>
 
@@ -1150,22 +795,22 @@ Initial take profit at 89.0 to secure gains on a quick volatility spike, with a 
     <div style="display:flex;flex-direction:column;gap:8px;">
       <div class="stat">
         <div class="stat-label">DEFCON System</div>
-        <div style="color:#ff8c00;font-size:11px;">&#9679; D4 &mdash; DEFENSIVE &middot; Macro modifier: +0.0</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Signal-driven 1&ndash;5 scale &middot; news + yield + VIX + macro composite &middot; escalation AND de-escalation tracked</div>
+        <div style="color:#ffd700;font-size:11px;">&#9679; D3 &mdash; CAUTIOUS</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Signal-driven 1&ndash;5 scale &middot; news + crypto regime score &middot; escalation AND de-escalation tracked</div>
       </div>
       <div class="stat">
         <div class="stat-label">Broker Agent &mdash; SEMI_AUTO</div>
         <div style="color:#00ff88;font-size:11px;">&#9679; Buys DEFCON 1&ndash;2 &middot; conditional entries &middot; autonomous exits</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Watch tags: breakout &middot; momentum &middot; mean-reversion &middot; defensive-hedge &middot; macro-hedge &middot; earnings-play &middot; rebound</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Watch tags: breakout &middot; momentum &middot; mean-reversion &middot; btc-beta &middot; macro-hedge &middot; defi-play &middot; rebound</div>
       </div>
       <div class="stat">
         <div class="stat-label">Pre-Purchase Gate</div>
         <div style="color:#00ff88;font-size:11px;">&#9679; Pro 3 veto at trigger time &middot; fail-open</div>
-        <div style="color:#666;font-size:10px;margin-top:3px;">Live DEFCON + news score + macro score + VIX &middot; vetoed entries stay active and retry next cycle</div>
+        <div style="color:#666;font-size:10px;margin-top:3px;">Live DEFCON + news score + crypto regime score &middot; vetoed entries stay active and retry next cycle</div>
       </div>
       <div class="stat">
         <div class="stat-label">Position Sizing &amp; Commands</div>
-        <div style="color:#aaa;font-size:11px;">Base $10K &middot; Min $3K &middot; Max $20K &middot; 3 open &middot; $31,696 deployed</div>
+        <div style="color:#aaa;font-size:11px;">Base $10K &middot; Min $3K &middot; Max $20K &middot; 0 open &middot; $0 deployed</div>
         <div style="color:#666;font-size:10px;margin-top:3px;">Slack: /buy &middot; /sell &middot; /hold &middot; /briefing &middot; /status &middot; IPC file bridge &middot; full override</div>
       </div>
     </div>
@@ -1176,12 +821,11 @@ Initial take profit at 89.0 to secure gains on a quick volatility spike, with a 
 <!-- ═══ DATA LAYER ═══ -->
 <div style="margin-top:16px;">
   <div class="panel" style="border-color:#2a2a3a;">
-    <div class="panel-title" style="color:#888;">&#128451; Data Layer &mdash; SQLite WAL &middot; 5746 active rows across 6 tables &middot; 5 performance indexes &middot; 3 SQL views</div>
+    <div class="panel-title" style="color:#888;">&#128451; Data Layer &mdash; SQLite WAL &middot; 12 active rows across 6 tables &middot; 5 performance indexes &middot; 3 SQL views</div>
     <div style="display:flex;gap:24px;flex-wrap:wrap;margin-top:6px;">
       <div style="color:#555;font-size:10px;">&#128202; signal_monitoring &mdash; 15-min cycle snapshots</div>
       <div style="color:#555;font-size:10px;">&#128240; news_signals &mdash; scored article batches + Flash JSON</div>
       <div style="color:#555;font-size:10px;">&#129504; gemini_analysis &mdash; Flash + Pro reasoning records</div>
-      <div style="color:#555;font-size:10px;">&#128200; macro_indicators &mdash; FRED snapshots</div>
       <div style="color:#555;font-size:10px;">&#128203; daily_briefings &mdash; morning &middot; midday &middot; close synthesis</div>
       <div style="color:#555;font-size:10px;">&#127919; conditional_tracking &mdash; watch-tagged entry conditionals</div>
       <div style="color:#555;font-size:10px;">&#128065;&#65039; v_active_positions &middot; v_active_conditionals &middot; v_daily_signal_summary</div>
@@ -1189,7 +833,7 @@ Initial take profit at 89.0 to secure gains on a quick volatility spike, with a 
   </div>
 </div>
 
-<div class="footer">HIGHTRADE &middot; PAPER TRADING &middot; NOT FINANCIAL ADVICE &middot; 2026-03-08 08:30:37 PDT</div>
+<div class="footer">&#8383; highCRYPTO &middot; PAPER TRADING &middot; NOT FINANCIAL ADVICE &middot; 2026-03-08 14:19:13 PDT</div>
 </div>
 
 <!-- ═══ CHART MODAL ═══ -->
