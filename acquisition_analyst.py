@@ -34,6 +34,7 @@ CONFIDENCE_THRESHOLD       = 0.70   # minimum to promote to broker (standard pip
 HOUND_CONFIDENCE_THRESHOLD = 0.60   # lower bar for Grok Hound speculative picks
 MAX_POSITION_PCT           = 0.20   # hard cap: max 20% of capital in any single trade
 MAX_ANALYST_TICKERS        = 10     # per-run cap — keep high enough to drain queue, low enough to respect RPM pacing
+MAX_HORIZON_DAYS           = 5      # hard cap: never hold beyond 5 days — this is a flip-and-bank strategy
 
 
 # ── Prompt template ────────────────────────────────────────────────────────────
@@ -73,15 +74,43 @@ _ANALYST_JSON_TEMPLATE = """{
   "catalyst_failure_pct": null
 }"""
 
+# ── Trading strategy mandate (injected into every analyst prompt) ──────────────
+# This is the single source of truth for what kind of trades we want.
+# All LLMs (analyst, verifier, hound) must be aligned to this strategy.
+_STRATEGY_MANDATE = """
+══════════════════════════════════════════════════════
+TRADING STRATEGY — READ THIS BEFORE EVERYTHING ELSE
+══════════════════════════════════════════════════════
+This is a SHORT-TERM MOMENTUM / SWING TRADING system. The goal is to:
+  1. Buy dips or breakouts with a clear, immediate catalyst
+  2. Ride the wave for 1–5 days maximum
+  3. Flip the position and bank the profit — then redeploy into the next setup
+  4. NEVER lock capital in long recovery plays waiting for macro to turn
+
+HARD RULES — DO NOT VIOLATE:
+  ❌ NO mean-reversion plays on mega-cap tech (NVDA, AAPL, MSFT, GOOGL, META, AMZN, TSLA)
+     unless there is a specific, named catalyst firing within the NEXT 48 HOURS.
+     "It's cheap vs. its 52-week high" is NOT a thesis — it's a recovery bet. Skip it.
+  ❌ NO time_horizon_days > 5 — ever. Hard cap. If the setup needs more time, it's the wrong setup.
+  ❌ NO "wait for macro recovery" theses. If the bull case requires the market to stabilize first,
+     that's a hold, not a trade. We don't hold cash hostage.
+  ✅ DO target: momentum setups with volume, short squeezes, earnings reactions, rotation plays,
+     catalyst windows, crisis commodities (USO, XLE), or sector flips with clear triggers.
+  ✅ DO prefer: smaller/mid-cap names with higher volatility and tighter catalyst windows.
+  ✅ DO set entry conditions that can be verified TODAY, not next week.
+"""
+
+
 # Maximum stop loss % per watch tag (hard ceiling enforced in code + prompt)
 STOP_MAX_PCT = {
     'breakout':       0.07,   #  7% — tight; if it breaks out, it shouldn't retreat
     'mean-reversion': 0.08,   #  8% — a bit more room for support to hold
-    'momentum':       0.07,   #  7% — trend should stay intact, no deep retrace
-    'defensive-hedge':0.06,   #  6% — insurance, not a gamble; small size, tight stop
-    'macro-hedge':    0.06,   #  6% — hedges are directional bets; control the loss
-    'earnings-play':  0.10,   # 10% — some event volatility tolerance, still bounded
-    'rebound':        0.06,   #  6% — re-entry on a broken name; tight by design
+    'momentum':        0.07,   #  7% — trend should stay intact, no deep retrace
+    'defensive-hedge': 0.06,   #  6% — insurance, not a gamble; small size, tight stop
+    'macro-hedge':     0.06,   #  6% — hedges are directional bets; control the loss
+    'earnings-play':   0.10,   # 10% — some event volatility tolerance, still bounded
+    'rebound':         0.06,   #  6% — re-entry on a broken name; tight by design
+    'crisis-commodity':0.10,   # 10% — commodity/energy crisis play; wider for vol
 }
 _DEFAULT_STOP_MAX_PCT = 0.08  # fallback for unknown tags
 
@@ -130,6 +159,16 @@ never significantly wider. High-volatility names require SMALLER SIZE, not a big
   rebound        — Post-stop-loss recovery attempt on a previously held ticker.
                    Entry: on bottoming signal. Stop: ≤6% below entry. Size: reduced (half of normal).
                    Conditions: must see exhaustion of selling before re-entry.
+
+  crisis-commodity — Direct commodity or energy play during an active macro crisis
+                   (e.g. USO during oil supply shock, XLE during energy crisis, GLD during
+                   geopolitical flight-to-safety). The crisis itself IS the catalyst — a strict
+                   new-high breakout is NOT required. The broker applies a crisis entry floor
+                   (up to 8% below target at DEFCON 3, 12% at DEFCON ≤ 2), so set entry
+                   conditions that reflect the CURRENT price environment, not a future breakout.
+                   Stop: ≤10% below entry (wider for commodity volatility). Size: standard.
+                   Use ONLY when: (1) DEFCON ≤ 3, (2) the ticker is a direct commodity/energy
+                   play, and (3) the macro crisis is the primary driver of the thesis.
 """
 
 
@@ -166,7 +205,8 @@ def _get_hound_context(ticker: str, conn: sqlite3.Connection) -> Optional[Dict]:
 
 def _build_analyst_prompt(ticker: str, research: Dict,
                            prior_gaps: Optional[List[str]] = None,
-                           hound_context: Optional[Dict] = None) -> str:
+                           hound_context: Optional[Dict] = None,
+                           extra_context: Optional[Dict] = None) -> str:
     """Build the Gemini 3 Pro prompt from gathered research data."""
 
     # Price context
@@ -331,13 +371,38 @@ def _build_analyst_prompt(ticker: str, research: Dict,
     if news_count == 0 and news_zero:
         news_count_str = f"0 — {news_zero}"
 
+    # Crisis context from orchestrator live_state
+    _ctx        = extra_context or {}
+    defcon_level = _ctx.get('defcon_level', research.get('defcon_level', 5))
+    live_news    = _ctx.get('news_score',   research.get('news_score', 0))
+
     signals_block = (
         f"  News mentions (30d): {news_count_str}\n"
         f"  News sentiment avg:  {f'{news_sent:.1f}/100' if isinstance(news_sent, float) else 'N/A'}\n"
         f"  Congressional signal strength: {cong_strength:.0f}\n"
         f"  Congressional buy count:       {cong_buys}\n"
         f"  Macro composite score:         {macro_score}\n"
+        f"  System DEFCON level:           {defcon_level}/5  (1=buy crisis, 5=peacetime)\n"
+        f"  System news score:             {live_news:.0f}/100\n"
     )
+
+    # Build crisis guidance block when the system is in elevated crisis mode
+    _crisis_guidance = ""
+    if isinstance(defcon_level, (int, float)) and defcon_level <= 3:
+        _crisis_guidance = (
+            f"══════════════════════════════════════════════════════\n"
+            f"⚠️  CRISIS MODE ACTIVE — DEFCON {defcon_level} / news_score {live_news:.0f}\n"
+            f"══════════════════════════════════════════════════════\n"
+            f"The system is currently in an elevated crisis regime. For {ticker}, consider:\n"
+            f"  • If this is a direct commodity/energy/crisis play (USO, XLE, GLD, oil, gas),\n"
+            f"    assign watch_tag='crisis-commodity'. The broker will apply a crisis entry\n"
+            f"    floor (8% below target at DEFCON 3, 12% at DEFCON ≤ 2), so you do NOT\n"
+            f"    need to require a strict new-high breakout as an entry condition.\n"
+            f"  • Set entry_price_target near the CURRENT price — the crisis is confirmed.\n"
+            f"    Entry conditions should be verifiable NOW, not contingent on a future move.\n"
+            f"  • Widen stop loss slightly (up to 10%) to handle commodity volatility.\n"
+            f"  • If the ticker is NOT a direct crisis play, use normal watch_tag logic.\n\n"
+        )
 
     import gemini_client as _gc
     _session_block = _gc.market_context_block()
@@ -366,7 +431,7 @@ def _build_analyst_prompt(ticker: str, research: Dict,
             f"  Do NOT over-anchor on P/E ratios, analyst price targets, or earnings dates.\n"
             f"  The edge here is the Hound's real-time signal (X velocity, short squeeze, rotation).\n"
             f"  Position size: SMALL (3–7% of cash) — asymmetric bet, not a core position.\n"
-            f"  Time horizon: SHORT (5–15 days) — follow the catalyst window, then exit.\n"
+            f"  Time horizon: SHORT (1–5 days) — follow the catalyst window, then exit fast.\n"
             f"  Preferred watch_tag: momentum or breakout.\n"
             f"  Confidence threshold: 0.60 (lower bar applies — you are sizing small to match the risk).\n"
             f"  Only set should_enter=true if research_confidence >= 0.60.\n\n"
@@ -378,6 +443,7 @@ def _build_analyst_prompt(ticker: str, research: Dict,
         f"Your job: determine whether to set a CONDITIONAL ENTRY ORDER on {ticker}.\n\n"
         f"This is a paper trading system. Be precise and specific — no vague answers.\n"
         f"If you recommend entering, every price level must be a real number.\n\n"
+        f"{_STRATEGY_MANDATE}\n"
         f"{_session_block}\n"
         f"{_hound_block}"
         f"══════════════════════════════════════════════════════\n"
@@ -421,6 +487,7 @@ def _build_analyst_prompt(ticker: str, research: Dict,
         f"══════════════════════════════════════════════════════\n"
         f"{signals_block}\n"
         f"{_WATCH_TAG_DEFINITIONS}\n"
+        f"{_crisis_guidance}"
         f"══════════════════════════════════════════════════════\n"
         f"YOUR TASK\n"
         f"══════════════════════════════════════════════════════\n"
@@ -431,6 +498,8 @@ def _build_analyst_prompt(ticker: str, research: Dict,
         f"  4. Where is the stop loss? (must be a specific price, not a percentage)\n"
         f"  5. Where are the take-profit targets? (TP1 for partial exit, TP2 for full)\n"
         f"  6. What % of available cash? (0.0–{MAX_POSITION_PCT:.2f}, sized per your watch_tag guidance)\n"
+        f"  6b. Time horizon: MAXIMUM {MAX_HORIZON_DAYS} days. This is a flip-and-bank strategy.\n"
+        f"      If the thesis needs more than 5 days to play out, set should_enter=false.\n"
         f"  7. What specific, VERIFIABLE conditions must be TRUE at the time of entry?\n"
         f"     (Include numeric thresholds wherever possible: VIX < X, macro_score > Y, etc.)\n"
         f"  8. What would invalidate this thesis entirely?\n"
@@ -561,7 +630,8 @@ def _parse_analyst_response(text: str) -> Dict:
 
 # ── Analyst core ───────────────────────────────────────────────────────────────
 
-def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection) -> Optional[Dict]:
+def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection,
+                   extra_context: Optional[Dict] = None) -> Optional[Dict]:
     """
     Run Gemini 3 Pro analysis on a researched ticker.
     Returns the parsed analyst result dict, or None on failure.
@@ -594,7 +664,7 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection) -> Opt
                     f"action={hound_context.get('action_suggestion')}) — applying Hound strategy frame")
 
     prompt = _build_analyst_prompt(ticker, research, prior_gaps=prior_gaps or None,
-                                   hound_context=hound_context)
+                                   hound_context=hound_context, extra_context=extra_context)
 
     # ── Gemini call (quota + fallback handled internally by call()) ──
     try:
@@ -701,7 +771,7 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection) -> Opt
                 result.get('take_profit_rationale'),
                 min(float(result.get('position_size_pct', 0.05)), MAX_POSITION_PCT),
                 result.get('position_size_rationale'),
-                result.get('time_horizon_days'),
+                min(int(result.get('time_horizon_days') or MAX_HORIZON_DAYS), MAX_HORIZON_DAYS),
                 json.dumps(result.get('entry_conditions', [])),
                 json.dumps(result.get('invalidation_conditions', [])),
                 result.get('thesis_summary'),
@@ -798,7 +868,7 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection) -> Opt
 
 # ── Pipeline entry point ───────────────────────────────────────────────────────
 
-def run_analyst_cycle() -> List[Dict]:
+def run_analyst_cycle(extra_context: Optional[Dict] = None) -> List[Dict]:
     """
     Main pipeline function called by orchestrator.
 
@@ -807,6 +877,7 @@ def run_analyst_cycle() -> List[Dict]:
     3. Write conditionals to conditional_tracking if above threshold
     4. Return list of analysis results
 
+    extra_context: optional dict with {defcon_level, news_score} from orchestrator live state.
     Returns list of result dicts (one per ticker processed).
     """
     date_str = datetime.now().strftime('%Y-%m-%d')
@@ -841,7 +912,7 @@ def run_analyst_cycle() -> List[Dict]:
     results = []
     for i, research in enumerate(ready):
         ticker = research['ticker']
-        result = analyze_ticker(ticker, research, conn)
+        result = analyze_ticker(ticker, research, conn, extra_context=extra_context)
         if result:
             results.append(result)
         # RPM pacing is now handled automatically inside gemini_client._call_via_cli

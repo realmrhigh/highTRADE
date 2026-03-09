@@ -205,15 +205,39 @@ def _build_verifier_prompt(cond: Dict, current_price: Optional[float],
     elif watch_tag != 'untagged':
         tag_context = f"\n  Entry type: {watch_tag}\n"
 
+    # Pull time horizon from conditional
+    time_horizon = cond.get('time_horizon_days') or 5
+
+    # Strategy misalignment check
+    _stale_flag = ''
+    try:
+        created_dt = datetime.strptime(cond.get('date_created', ''), '%Y-%m-%d')
+        days_old = (datetime.now() - created_dt).days
+        if days_old >= time_horizon:
+            _stale_flag = (
+                f"\n⏰ STALE ALERT: This conditional was set {days_old} day(s) ago "
+                f"with a {time_horizon}-day time horizon. It has EXPIRED its window.\n"
+                f"   Unless the thesis has a new catalyst, verdict should be 'invalidate'.\n"
+            )
+    except Exception:
+        days_old = 0
+
     return (
         f"You are a trading system verifier. Today is {datetime.now().strftime('%Y-%m-%d')}.\n"
         f"A Gemini 3 Pro analyst set a conditional entry on {ticker} on {date_set}.\n"
-        f"Your job: quickly decide if this conditional is still VALID.\n"
-        f"{status_note}{tag_context}\n"
+        f"Your job: quickly decide if this conditional is still VALID.\n\n"
+        f"STRATEGY ALIGNMENT CHECK — verify against this before anything else:\n"
+        f"  This is a FLIP-AND-BANK system. Max hold = 5 days. We do NOT hold recovery plays.\n"
+        f"  Flag or invalidate if ANY of these are true:\n"
+        f"  • The thesis relies on 'waiting for macro to stabilize / market to recover'\n"
+        f"  • The time horizon is > 5 days or the conditional is already past its window\n"
+        f"  • The setup is a mega-cap mean-reversion (NVDA/MSFT/GOOGL/AAPL) with no specific 48h catalyst\n"
+        f"  • The price hasn't moved toward the entry target in {min(time_horizon, 3)} or more days\n\n"
+        f"{status_note}{tag_context}{_stale_flag}\n"
         f"CONDITIONAL SUMMARY\n"
         f"  Thesis: {thesis}\n"
         f"  Entry target: ${entry_tgt}  |  Stop: ${stop}  |  TP1: ${tp1}\n"
-        f"  Watch tag: {watch_tag}  |  Original confidence: {confidence:.2f}\n\n"
+        f"  Watch tag: {watch_tag}  |  Time horizon: {time_horizon} days  |  Original confidence: {confidence:.2f}\n\n"
         f"ENTRY CONDITIONS\n{cond_text}\n\n"
         f"INVALIDATION TRIGGERS\n{inv_text}\n\n"
         f"CURRENT STATE ({datetime.now().strftime('%Y-%m-%d')})\n"
@@ -221,7 +245,7 @@ def _build_verifier_prompt(cond: Dict, current_price: Optional[float],
         f"{macro_text}\n"
         f"RECENT NEWS MENTIONS\n{news_text}\n\n"
         f"VERDICT OPTIONS:\n"
-        f"  confirm    — thesis intact, conditional still valid\n"
+        f"  confirm    — thesis intact, conditional still valid, catalyst is imminent\n"
         f"  flag       — concern raised, analyst should review, but don't kill it yet\n"
         f"  invalidate — a core invalidation condition has triggered OR thesis has clearly failed\n\n"
         f"CRITICAL: If your verdict is 'invalidate', you MUST provide corrected conditionals.\n"

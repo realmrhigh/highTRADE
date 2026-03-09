@@ -781,7 +781,10 @@ class HighTradeOrchestrator:
                         from acquisition_researcher import run_research_cycle
                         from acquisition_analyst import run_analyst_cycle
                         researched = run_research_cycle()
-                        run_analyst_cycle()   # always — don't gate on researched
+                        run_analyst_cycle(extra_context={   # always — don't gate on researched
+                            'defcon_level': self.monitor.defcon_level,
+                            'news_score':   _news_score,
+                        })
                     except Exception as e:
                         logger.warning(f"  🔬 Pipeline auto-trigger failed: {e}")
 
@@ -796,6 +799,7 @@ class HighTradeOrchestrator:
             # Calculate and record
             logger.info("📈 Calculating signal scores...")
             _news_score = news_signal.get('news_score', 0) if news_signal else 0
+            self._last_news_score = _news_score   # persist for pipeline calls mid-cycle
             signal_scores = self.monitor.calculate_signal_scores(yield_data, vix_data, market_data, news_score=_news_score)
             # Fetch briefing signal quality for DEFCON nudge
             _briefing_sq = None
@@ -1988,7 +1992,10 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
         # (items from prior research runs, hound auto-promotes, manual adds, etc.)
         try:
             from acquisition_analyst import run_analyst_cycle
-            results = run_analyst_cycle()
+            results = run_analyst_cycle(extra_context={
+                'defcon_level': self.monitor.defcon_level,
+                'news_score':   getattr(self, '_last_news_score', 0),
+            })
             if results:
                 promoted = [
                     r.get('_ticker') for r in results

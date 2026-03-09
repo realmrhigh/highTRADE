@@ -35,10 +35,17 @@ TRAILING_STOP_PCT = 0.03   # 3% from peak — matches paper_trading.STOP_LOSS de
 UPSIDE_TRIGGER_TAGS = {'breakout'}
 
 # Tags exempt from risk-off entry penalty (their thesis IS the crisis)
-RISK_OFF_EXEMPT_TAGS = {'breakout', 'defensive-hedge', 'macro-hedge'}
+RISK_OFF_EXEMPT_TAGS = {'breakout', 'defensive-hedge', 'macro-hedge', 'crisis-commodity'}
 
 # Max extension above target for breakout triggers (don't chase >10% above target)
 BREAKOUT_MAX_EXTENSION = 0.10
+
+# ─── Crisis weighting: hedge / commodity entry authority ──────────────────────
+# During an active crisis (DEFCON ≤ 3), these tags get a relaxed entry floor so
+# the system doesn't miss a move waiting for a strict breakout confirmation.
+CRISIS_HEDGE_TAGS      = {'crisis-commodity', 'defensive-hedge', 'macro-hedge'}
+CRISIS_ENTRY_BUFFER_D3 = 0.08   # Allow entry up to 8% below target at DEFCON 3 + news ≥ 50
+CRISIS_ENTRY_BUFFER_D2 = 0.12   # Allow entry up to 12% below target at DEFCON ≤ 2
 
 
 # ─── Rebound Watchlist ────────────────────────────────────────────────────────
@@ -1151,6 +1158,20 @@ class BrokerDecisionEngine:
         import gemini_client as _gc
         _session_ctx = _gc.market_context_block(vix=float(vix) if vix else None)
 
+        # Analyst consensus: how many times has this ticker been recommended in 7 days?
+        try:
+            import sqlite3 as _sq3
+            from pathlib import Path as _Path
+            _cdb = _sq3.connect(str(_Path(__file__).parent / 'trading_data' / 'trading_history.db'))
+            consensus_count = _cdb.execute(
+                "SELECT COUNT(*) FROM conditional_tracking "
+                "WHERE ticker=? AND created_at >= datetime('now','-7 days')",
+                (ticker,)
+            ).fetchone()[0]
+            _cdb.close()
+        except Exception:
+            consensus_count = 0
+
         # Fetch existing holdings for this ticker so the gate can see our exposure
         holdings, holdings_text = self._get_holdings_context([ticker])
 
@@ -1179,7 +1200,8 @@ class BrokerDecisionEngine:
             f"  VIX: {vix}\n"
             f"  DEFCON: {defcon}/5\n"
             f"  News score: {news_score}/100\n"
-            f"  Macro composite score: {macro_score}/100\n\n"
+            f"  Macro composite score: {macro_score}/100\n"
+            f"  Analyst consensus (last 7d): {consensus_count} recommendation(s) for {ticker}\n\n"
             f"LATEST BRIEFING RISK ASSESSMENT:\n"
             f"  Biggest risk: {biggest_risk or 'N/A'}\n"
             f"  Entry conditions (briefing): {entry_conds_briefing or 'N/A'}\n"
@@ -1261,13 +1283,20 @@ class BrokerDecisionEngine:
         try:
             conn = sqlite3.connect(str(db_path))
             conn.row_factory = sqlite3.Row
+            # Ensure gate_vetoed_until column exists (added to prevent re-running gate
+            # every cycle for perpetually-triggered but vetoed conditionals)
+            try:
+                conn.execute("ALTER TABLE conditional_tracking ADD COLUMN gate_vetoed_until TEXT")
+                conn.commit()
+            except Exception:
+                pass  # column already exists
             cursor = conn.execute("""
                 SELECT id, ticker, date_created, entry_price_target,
                        stop_loss, take_profit_1, take_profit_2,
                        position_size_pct, time_horizon_days,
                        thesis_summary, research_confidence,
                        entry_conditions_json, invalidation_conditions_json,
-                       watch_tag, watch_tag_rationale
+                       watch_tag, watch_tag_rationale, gate_vetoed_until
                 FROM conditional_tracking
                 WHERE status = 'active'
                 ORDER BY research_confidence DESC
@@ -1284,6 +1313,18 @@ class BrokerDecisionEngine:
             cond_id     = cond['id']
             entry_target = cond.get('entry_price_target')
             horizon_days = cond.get('time_horizon_days') or 30
+
+            # Skip gate if still in veto cooldown (prevents re-running gate every cycle
+            # for conditionals whose price is perpetually triggered but gate vetoes entry)
+            vetoed_until_str = cond.get('gate_vetoed_until')
+            if vetoed_until_str:
+                try:
+                    vetoed_until = datetime.fromisoformat(vetoed_until_str)
+                    if now < vetoed_until:
+                        logger.debug(f"  ⏩ {ticker} gate veto cooldown active until {vetoed_until_str[:16]} — skipping")
+                        continue
+                except Exception:
+                    pass
 
             # Check expiry
             try:
@@ -1338,6 +1379,27 @@ class BrokerDecisionEngine:
                 # Breakout: trigger when price confirms above target (capped at 10% extension)
                 max_price = entry_target * (1 + BREAKOUT_MAX_EXTENSION)
                 price_triggered = current_price >= effective_target and current_price <= max_price
+
+                # ── Crisis authority: relax entry floor for hedge/commodity tags ──
+                # During an active crisis (DEFCON ≤ 3, elevated news), don't require
+                # a strict breakout confirmation — the crisis IS the catalyst.
+                if not price_triggered and watch_tag in CRISIS_HEDGE_TAGS:
+                    _defcon = int(live_state.get('defcon', 5))
+                    _news   = float(live_state.get('news_score', 0))
+                    if _defcon <= 2:
+                        crisis_floor = effective_target * (1 - CRISIS_ENTRY_BUFFER_D2)
+                    elif _defcon <= 3 and _news >= 50:
+                        crisis_floor = effective_target * (1 - CRISIS_ENTRY_BUFFER_D3)
+                    else:
+                        crisis_floor = None
+
+                    if crisis_floor and current_price >= crisis_floor and current_price <= max_price:
+                        price_triggered = True
+                        logger.info(
+                            f"  🚨 {ticker}: CRISIS ENTRY — DEFCON {_defcon}, "
+                            f"news_score {_news:.0f} — entering at ${current_price:.2f} "
+                            f"(target ${effective_target:.2f}, crisis floor ${crisis_floor:.2f})"
+                        )
             else:
                 # Pullback/dip entries: trigger when price drops to or below target
                 price_triggered = current_price <= effective_target
@@ -1375,7 +1437,17 @@ class BrokerDecisionEngine:
                 if not gate.get('approve', True):
                     veto = gate.get('veto_reason', 'unspecified')
                     logger.warning(f"  🚫 {ticker} VETOED by pre-purchase gate: {veto}")
-                    # Leave as active — will retry next cycle when conditions change
+                    # Set 2-hour cooldown so we don't re-run the gate every 15-min cycle
+                    # while the price remains triggered but conditions haven't changed
+                    _veto_until = (now + timedelta(hours=2)).isoformat()
+                    try:
+                        conn.execute(
+                            "UPDATE conditional_tracking SET gate_vetoed_until=?, updated_at=? WHERE id=?",
+                            (_veto_until, now.isoformat(), cond_id)
+                        )
+                        conn.commit()
+                    except Exception:
+                        pass
                     continue
 
                 logger.info(
