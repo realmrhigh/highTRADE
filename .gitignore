@@ -62,6 +62,9 @@ credentials.json
 *.bak
 *.cache
 
+# Claude agent worktrees (not for version control)
+.claude/worktrees/
+
 # Jupyter Notebooks
 .ipynb_checkpoints/
 
