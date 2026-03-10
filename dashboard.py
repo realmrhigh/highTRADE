@@ -115,6 +115,7 @@ def fetch_daily_briefings():
     with _conn() as db:
         rows = db.execute("""
             SELECT date, model_key, market_regime, regime_confidence,
+                   trading_stance,
                    headline_summary, key_themes_json, biggest_risk,
                    biggest_opportunity, signal_quality, macro_alignment,
                    portfolio_assessment, watchlist_json, defcon_forecast,
@@ -494,6 +495,21 @@ def regime_badge(regime):
         f'<span style="background:{color}22;color:{color};border:1px solid {color};'
         f'border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;'
         f'letter-spacing:1px;text-transform:uppercase;">{regime or "—"}</span>'
+    )
+
+def stance_badge(stance):
+    colors = {
+        'AGGRESSIVE': '#00ff88',
+        'NORMAL':     '#00d4ff',
+        'CAUTIOUS':   '#ffd700',
+        'DEFENSIVE':  '#ff4444',
+    }
+    s = (stance or 'NORMAL').upper()
+    color = colors.get(s, '#888')
+    return (
+        f'<span style="background:{color}22;color:{color};border:1px solid {color};'
+        f'border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;'
+        f'letter-spacing:1px;">{s}</span>'
     )
 
 def exit_badge(reason):
@@ -1049,7 +1065,7 @@ def build_model_card(b, title, icon):
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-shrink:0;">'
         f'<div class="card-label">{icon} {title}</div>'
         '<div style="display:flex;gap:8px;align-items:center;">'
-        f'{regime_badge(b.get("market_regime"))}'
+        f'{regime_badge(b.get("market_regime"))} {stance_badge(b.get("trading_stance", "NORMAL"))}'
         f'<span style="color:{conf_c};font-weight:700;font-size:13px;">{conf:.0%}</span>'
         '</div></div>'
         
@@ -1364,13 +1380,14 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
     if close_fired:
         _close_summary = (latest_b.get('headline_summary') or '')[:280]
         _close_regime  = latest_b.get('market_regime', 'unknown')
+        _close_stance  = latest_b.get('trading_stance', 'NORMAL')
         _close_conf    = float(latest_b.get('model_confidence') or 0)
         close_card = (
             f'<div class="model-card" style="border-color:#c084fc33;display:flex;flex-direction:column;">'
             f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-shrink:0;">'
             f'<div class="card-label" style="font-size:11px;">📋 CLOSE DEEP DIVE</div>'
             f'<div style="color:#888;font-size:10px;">4:30 PM · {(latest_b.get("created_at") or "")[:16].replace("T"," ")}</div></div>'
-            f'<div style="color:#999;font-size:10px;margin-bottom:6px;">{regime_badge(_close_regime)} conf={_close_conf:.0%}</div>'
+            f'<div style="color:#999;font-size:10px;margin-bottom:6px;">{regime_badge(_close_regime)} {stance_badge(_close_stance)} conf={_close_conf:.0%}</div>'
             f'<div style="color:#ccc;font-size:11px;line-height:1.6;flex:1;">{_close_summary}{"..." if len(latest_b.get("headline_summary","")) > 280 else ""}</div>'
             f'</div>'
         )

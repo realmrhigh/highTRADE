@@ -601,17 +601,24 @@ class AlertSystem:
             # Silent failure for logging - don't disrupt main flow
             return False
 
-    def send_acquisition_alert(self, message: str) -> bool:
-        """Send acquisition conditional notification to #logs-silent (no push notification).
+    def send_acquisition_alert(self, message: str, primary: bool = False) -> bool:
+        """Send acquisition conditional notification.
+
+        primary=False → #logs-silent (pipeline noise, full_auto confirmations).
+        primary=True  → #hightrade  (semi_auto triggers that need user /buy action).
 
         Bypasses the log_events filter in send_silent_log — acquisition alerts
-        always go to the silent channel regardless of the config list.
+        always go to the target channel regardless of the config list.
         """
-        logging_config = self.config.get('channels', {}).get('slack_logging', {})
-        if not logging_config.get('enabled', False):
+        if primary:
+            channel_config = self.config.get('channels', {}).get('slack', {})
+        else:
+            channel_config = self.config.get('channels', {}).get('slack_logging', {})
+
+        if not channel_config.get('enabled', False):
             return False
 
-        webhook_url = logging_config.get('webhook_url')
+        webhook_url = channel_config.get('webhook_url')
         if not webhook_url or 'PLACEHOLDER' in webhook_url:
             return False
 

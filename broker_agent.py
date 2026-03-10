@@ -169,6 +169,7 @@ def get_latest_briefing_context(db_path: str = None, scope: str = 'all') -> Tupl
         # Most recent briefing (any type) from today or yesterday
         row = conn.execute("""
             SELECT model_key, date, market_regime, regime_confidence,
+                   trading_stance,
                    headline_summary, biggest_risk, biggest_opportunity,
                    signal_quality, macro_alignment, congressional_alpha,
                    portfolio_assessment, entry_conditions, defcon_forecast,
@@ -239,6 +240,7 @@ def get_latest_briefing_context(db_path: str = None, scope: str = 'all') -> Tupl
         if scope in ('all', 'risk'):
             lines.append(f"  Market regime: {briefing.get('market_regime', '?')} "
                          f"(confidence: {briefing.get('regime_confidence', '?')})")
+            lines.append(f"  Trading stance: {briefing.get('trading_stance', 'NORMAL')}")
             lines.append(f"  Biggest risk: {briefing.get('biggest_risk', 'N/A')}")
             lines.append(f"  Biggest opportunity: {briefing.get('biggest_opportunity', 'N/A')}")
             lines.append(f"  Signal quality: {briefing.get('signal_quality', 'N/A')}")
@@ -1175,13 +1177,57 @@ class BrokerDecisionEngine:
         # Fetch existing holdings for this ticker so the gate can see our exposure
         holdings, holdings_text = self._get_holdings_context([ticker])
 
-        # Fetch latest briefing risk assessment
+        # Fetch latest briefing risk assessment + trading stance
         briefing, briefing_risk_text = self._get_briefing_context(scope='risk')
         biggest_risk = briefing.get('biggest_risk', '')
         entry_conds_briefing = briefing.get('entry_conditions', '')
         market_regime = briefing.get('market_regime', 'unknown')
         regime_confidence = briefing.get('regime_confidence', '?')
         signal_quality = briefing.get('signal_quality', '')
+        trading_stance = (briefing.get('trading_stance') or 'NORMAL').upper()
+        if trading_stance not in ('AGGRESSIVE', 'NORMAL', 'CAUTIOUS', 'DEFENSIVE'):
+            trading_stance = 'NORMAL'
+
+        # ── Stance-dependent gate instructions ───────────────────────────
+        stance_instructions = {
+            'AGGRESSIVE': (
+                "STANCE: AGGRESSIVE — market conditions favor new entries.\n"
+                "RULES:\n"
+                "  - ONLY check invalidation conditions. If any invalidation is triggered, VETO.\n"
+                "  - Entry conditions are INFORMATIONAL ONLY — do NOT veto for unmet entry conditions.\n"
+                "  - Briefing risk is context only — do NOT veto based on broad market caution.\n"
+                "  - Still check holdings for concentration risk.\n"
+            ),
+            'NORMAL': (
+                "STANCE: NORMAL — standard gate behavior.\n"
+                "RULES:\n"
+                "  - Check entry conditions: a PARTIAL pass is acceptable (majority met is fine).\n"
+                "  - Check invalidation conditions: any triggered = VETO.\n"
+                "  - Briefing risk is ADVISORY CONTEXT ONLY — do NOT veto based on broad market\n"
+                "    caution, geopolitical warnings, or general uncertainty.\n"
+                "  - Only veto on briefing risk if it DIRECTLY threatens this specific ticker's thesis.\n"
+                "  - Still check holdings for concentration risk.\n"
+            ),
+            'CAUTIOUS': (
+                "STANCE: CAUTIOUS — elevated caution, tighter filter.\n"
+                "RULES:\n"
+                "  - ALL entry conditions must be met — no partial credit.\n"
+                "  - Check invalidation conditions: any triggered = VETO.\n"
+                "  - Briefing risk can contribute to a veto ONLY if the risk is DIRECTLY RELEVANT\n"
+                "    to this ticker's sector or thesis (e.g. an oil shock vetoing an energy stock).\n"
+                "    Broad macro caution alone is NOT grounds for veto.\n"
+                "  - Still check holdings for concentration risk.\n"
+            ),
+            'DEFENSIVE': (
+                "STANCE: DEFENSIVE — maximum caution, very few entries should pass.\n"
+                "RULES:\n"
+                "  - ALL entry conditions must be met.\n"
+                "  - Check invalidation conditions: any triggered = VETO.\n"
+                "  - Broad macro/geopolitical risk from the briefing CAN be used as veto grounds,\n"
+                "    even if not directly specific to this ticker.\n"
+                "  - Still check holdings for concentration risk.\n"
+            ),
+        }
 
         prompt = (
             f"You are a pre-purchase risk gate for an automated paper trading system.\n"
@@ -1192,7 +1238,7 @@ class BrokerDecisionEngine:
             f"TRADE LEVELS:\n"
             f"  Entry target: ${entry_tgt} | Current price: ${current_price:.2f}\n"
             f"  Stop loss: ${stop} | Take profit 1: ${tp1}\n\n"
-            f"ANALYST'S ENTRY CONDITIONS (must ALL be true to enter):\n"
+            f"ANALYST'S ENTRY CONDITIONS:\n"
             f"{entry_conds_text}\n\n"
             f"INVALIDATION CONDITIONS (if any triggered, do NOT enter):\n"
             f"{inval_conds_text}\n\n"
@@ -1202,29 +1248,27 @@ class BrokerDecisionEngine:
             f"  News score: {news_score}/100\n"
             f"  Macro composite score: {macro_score}/100\n"
             f"  Analyst consensus (last 7d): {consensus_count} recommendation(s) for {ticker}\n\n"
-            f"LATEST BRIEFING RISK ASSESSMENT:\n"
+            f"LATEST BRIEFING CONTEXT:\n"
             f"  Biggest risk: {biggest_risk or 'N/A'}\n"
             f"  Entry conditions (briefing): {entry_conds_briefing or 'N/A'}\n"
             f"  Market regime: {market_regime} (confidence: {regime_confidence})\n"
             f"  Signal quality: {signal_quality or 'N/A'}\n\n"
+            f"{stance_instructions[trading_stance]}\n"
             f"YOUR JOB:\n"
-            f"1. Check each entry condition against the live state. Are they met?\n"
-            f"2. Check each invalidation condition. Has any been triggered?\n"
-            f"3. Given the watch_tag '{tag}', does this entry make sense right now?\n"
-            f"4. If we ALREADY hold shares of {ticker}, evaluate whether adding more\n"
-            f"   is warranted (averaging down into strength, thesis reinforcement)\n"
-            f"   or creates excessive concentration risk. Factor existing exposure into\n"
-            f"   your approval/veto decision.\n"
-            f"5. Approve or veto this purchase.\n"
-            f"6. Cross-check against the briefing's risk assessment. If the briefing\n"
-            f"   explicitly warns against this type of entry, factor that heavily.\n\n"
+            f"1. Evaluate each entry condition against live state — mark PASS or FAIL with reason.\n"
+            f"2. Evaluate each invalidation condition — mark TRIGGERED or CLEAR.\n"
+            f"3. If we ALREADY hold {ticker}, evaluate concentration risk.\n"
+            f"4. Apply the stance rules above to decide: approve or veto.\n"
+            f"   IMPORTANT: Follow the stance rules strictly. Do not add extra caution beyond\n"
+            f"   what the stance prescribes. The stance was set by the senior strategist.\n\n"
             f"Respond ONLY in this exact JSON (no other text):\n"
             f'{{\n'
             f'  "approve": true,\n'
             f'  "conditions_met": ["condition 1: PASS/FAIL — reason", "condition 2: PASS/FAIL — reason"],\n'
+            f'  "invalidations_checked": ["invalidation 1: CLEAR/TRIGGERED — reason"],\n'
             f'  "reason": "brief reason for approval (empty if vetoing)",\n'
             f'  "veto_reason": "detailed reason for veto (empty if approving)",\n'
-            f'  "data_gaps": ["<data absent at trigger time that would have made this decision sharper — e.g. \'real-time options flow\', \'volume confirmation not yet available\', \'earnings in 3 days not flagged in entry conditions\'>"] \n'
+            f'  "data_gaps": ["<data absent at trigger time that would have made this decision sharper>"] \n'
             f'}}'
         )
 
@@ -1242,14 +1286,54 @@ class BrokerDecisionEngine:
                     text = parts[-1].strip()
 
             result = json.loads(text.strip())
+
+            # ── Post-processing: enforce stance rules mechanically ────────
+            # Gemini can still be overly cautious. These overrides ensure
+            # the stance rules are applied even if the model hedges.
+            invalidations = result.get('invalidations_checked', [])
+            has_triggered_invalidation = any(
+                'TRIGGERED' in str(i).upper() for i in invalidations
+            )
+            conditions = result.get('conditions_met', [])
+            pass_count = sum(1 for c in conditions if 'PASS' in str(c).upper())
+            fail_count = sum(1 for c in conditions if 'FAIL' in str(c).upper())
+            total_conds = pass_count + fail_count
+
+            # Always veto if an invalidation is triggered (all stances)
+            if has_triggered_invalidation and result.get('approve'):
+                result['approve'] = False
+                result['veto_reason'] = (result.get('veto_reason', '') +
+                    ' [OVERRIDE: invalidation condition triggered]').strip()
+                logger.info(f"  🔒 {ticker}: gate override — invalidation triggered, forcing VETO")
+
+            # AGGRESSIVE: override veto if no invalidations triggered
+            elif trading_stance == 'AGGRESSIVE' and not result.get('approve') and not has_triggered_invalidation:
+                result['approve'] = True
+                result['reason'] = (result.get('reason', '') +
+                    ' [OVERRIDE: AGGRESSIVE stance — no invalidations triggered]').strip()
+                logger.info(f"  🟢 {ticker}: AGGRESSIVE override — approving (no invalidations)")
+
+            # NORMAL: override veto if majority of conditions pass and no invalidations
+            elif trading_stance == 'NORMAL' and not result.get('approve') and not has_triggered_invalidation:
+                if total_conds == 0 or pass_count >= (total_conds / 2):
+                    result['approve'] = True
+                    result['reason'] = (result.get('reason', '') +
+                        f' [OVERRIDE: NORMAL stance — {pass_count}/{total_conds} conditions met, no invalidations]').strip()
+                    logger.info(f"  🟢 {ticker}: NORMAL override — {pass_count}/{total_conds} pass, approving")
+
+            # CAUTIOUS / DEFENSIVE: respect Gemini's veto (no override)
+            # But for CAUTIOUS, strip vetoes that are purely broad-macro
+            # (we can't reliably detect this mechanically, so we trust the prompt)
+
+            result['_stance_applied'] = trading_stance
             return result
 
         except json.JSONDecodeError as e:
             logger.warning(f"  ⚠️  Gate JSON parse failed for {ticker}: {e} — defaulting to APPROVE")
-            return {"approve": True, "reason": "gate parse error — fail-open", "veto_reason": "", "conditions_met": []}
+            return {"approve": True, "reason": "gate parse error — fail-open", "veto_reason": "", "conditions_met": [], "_stance_applied": trading_stance}
         except Exception as e:
             logger.warning(f"  ⚠️  Pre-purchase gate failed for {ticker}: {e} — defaulting to APPROVE")
-            return {"approve": True, "reason": "gate error — fail-open", "veto_reason": "", "conditions_met": []}
+            return {"approve": True, "reason": "gate error — fail-open", "veto_reason": "", "conditions_met": [], "_stance_applied": trading_stance}
 
     def check_acquisition_conditionals(self, live_state: dict = None) -> List[Dict]:
         """
@@ -1352,22 +1436,21 @@ class BrokerDecisionEngine:
             if not current_price or not entry_target:
                 continue
 
-            # ── Briefing regime check: require extra discount in risk-off ────
+            # ── Briefing stance check: DEFENSIVE requires extra price discount ──
             effective_target = entry_target
             watch_tag = (cond.get('watch_tag') or 'untagged').lower()
             try:
                 briefing_ctx, _ = self._get_briefing_context(scope='risk')
-                _regime = briefing_ctx.get('market_regime', '')
-                _conf = float(briefing_ctx.get('model_confidence', 0) or 0)
-                if _regime == 'risk-off' and _conf > 0.7 and watch_tag not in RISK_OFF_EXEMPT_TAGS:
+                _stance = (briefing_ctx.get('trading_stance') or 'NORMAL').upper()
+                if _stance == 'DEFENSIVE' and watch_tag not in RISK_OFF_EXEMPT_TAGS:
                     effective_target = entry_target * 0.98  # Require 2% extra discount
                     logger.info(
-                        f"  ⚠️  {ticker}: risk-off regime (conf={_conf:.2f}) — "
+                        f"  ⚠️  {ticker}: DEFENSIVE stance — "
                         f"tightening entry ${entry_target:.2f} → ${effective_target:.2f}"
                     )
-                elif _regime == 'risk-off' and _conf > 0.7 and watch_tag in RISK_OFF_EXEMPT_TAGS:
+                elif _stance == 'DEFENSIVE' and watch_tag in RISK_OFF_EXEMPT_TAGS:
                     logger.info(
-                        f"  ℹ️  {ticker}: risk-off regime but [{watch_tag}] exempt from penalty"
+                        f"  ℹ️  {ticker}: DEFENSIVE stance but [{watch_tag}] exempt from penalty"
                     )
             except Exception:
                 pass
@@ -1441,7 +1524,8 @@ class BrokerDecisionEngine:
 
                 if not gate.get('approve', True):
                     veto = gate.get('veto_reason', 'unspecified')
-                    logger.warning(f"  🚫 {ticker} VETOED by pre-purchase gate: {veto}")
+                    _gate_stance = gate.get('_stance_applied', '?')
+                    logger.warning(f"  🚫 {ticker} VETOED by pre-purchase gate [{_gate_stance}]: {veto}")
                     # Set 2-hour cooldown so we don't re-run the gate every 15-min cycle
                     # while the price remains triggered but conditions haven't changed
                     _veto_until = (now + timedelta(hours=2)).isoformat()
@@ -1455,8 +1539,9 @@ class BrokerDecisionEngine:
                         pass
                     continue
 
+                _gate_stance = gate.get('_stance_applied', '?')
                 logger.info(
-                    f"  ✅ {ticker} gate APPROVED: {gate.get('reason', 'conditions met')}"
+                    f"  ✅ {ticker} gate APPROVED [{_gate_stance}]: {gate.get('reason', 'conditions met')}"
                 )
                 gate_gaps = gate.get('data_gaps', [])
                 if gate_gaps:
@@ -1973,8 +2058,11 @@ class AutonomousBroker:
                 f"📋 Entry conditions met:\n{cond_text}\n\n"
                 f"💡 Thesis: {thesis}"
             )
-            # Route to #logs-silent — acquisition pipeline noise, not a trade signal
-            self.notification_engine.alerts.send_acquisition_alert(message)
+            # Semi-auto (awaiting /buy) → #hightrade so user sees it
+            # Full-auto (executed)     → #logs-silent (confirmation noise)
+            self.notification_engine.alerts.send_acquisition_alert(
+                message, primary=not executed
+            )
         except Exception as e:
             logger.warning(f"Acquisition notification failed: {e}")
 

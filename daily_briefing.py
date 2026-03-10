@@ -262,6 +262,7 @@ def _gather_daily_context(db_path: str, date_str: str = None) -> Dict:
 _JSON_TEMPLATE = """{
   "market_regime": "one of: risk-on / risk-off / neutral / transitioning",
   "regime_confidence": 0.0,
+  "trading_stance": "one of: AGGRESSIVE / NORMAL / CAUTIOUS / DEFENSIVE",
   "headline_summary": "2-3 sentence summary of today's most important market story",
   "key_themes": ["theme1", "theme2", "theme3"],
   "biggest_risk_today": "specific risk factor with evidence from data",
@@ -461,6 +462,14 @@ def _build_daily_prompt(ctx: Dict) -> str:
         "IMPORTANT: You MUST populate every single field in the JSON. "
         "Do not leave any field as a placeholder or empty string. "
         "regime_confidence and model_confidence must be actual numbers 0.0-1.0.\n\n"
+        "TRADING STANCE (controls how the pre-purchase gate behaves tomorrow):\n"
+        "  AGGRESSIVE  — market conditions favor new entries; gate only checks invalidation conditions, entry conditions relaxed.\n"
+        "  NORMAL      — standard gate; entry conditions checked but partial pass is acceptable (e.g. 2 of 3 met).\n"
+        "  CAUTIOUS    — ALL analyst entry conditions must be met; briefing risk can veto only if directly relevant to the specific ticker/sector.\n"
+        "  DEFENSIVE   — ALL entry conditions must be met + extra price discount required; broad macro risk can blanket-veto new entries.\n"
+        "Choose the stance that fits the current regime, signal quality, and risk environment. "
+        "CAUTIOUS and DEFENSIVE should be reserved for genuine deterioration — not just uncertainty or mixed signals. "
+        "Transitioning regimes with decent signal quality typically warrant NORMAL.\n\n"
         "For position_actions: produce one entry per open position with a specific recommendation. "
         "adjusted_stop_pct is the stop as a percentage below current price (negative number, "
         "e.g. -2.5 means stop at 2.5% below current price). adjusted_tp_pct is the target as a "
@@ -605,6 +614,7 @@ def _save_to_db(date_str: str, ctx: Dict, results: Dict):
             model_id        TEXT,
             market_regime   TEXT,
             regime_confidence REAL,
+            trading_stance  TEXT,
             headline_summary TEXT,
             key_themes_json TEXT,
             biggest_risk    TEXT,
@@ -635,18 +645,20 @@ def _save_to_db(date_str: str, ctx: Dict, results: Dict):
             cursor.execute("""
                 INSERT OR REPLACE INTO daily_briefings
                 (date, model_key, model_id, market_regime, regime_confidence,
+                 trading_stance,
                  headline_summary, key_themes_json, biggest_risk, biggest_opportunity,
                  signal_quality, macro_alignment, congressional_alpha,
                  portfolio_assessment, watchlist_json, entry_conditions,
                  defcon_forecast, reasoning_chain, model_confidence,
                  input_tokens, output_tokens, full_response_json, data_gaps_json)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 date_str,
                 model_key,
                 result.get('_model', ''),
                 result.get('market_regime', ''),
                 result.get('regime_confidence', 0),
+                result.get('trading_stance', 'NORMAL'),
                 result.get('headline_summary', ''),
                 json.dumps(result.get('key_themes', [])),
                 result.get('biggest_risk_today', ''),
