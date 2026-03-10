@@ -320,6 +320,24 @@ class PaperTradingEngine:
         except (TypeError, ValueError):
             return default
 
+    @staticmethod
+    def _broker_order_accepted(result: Optional[Dict[str, Any]]) -> bool:
+        """Return True only when the broker acknowledged the order submission."""
+        if not isinstance(result, dict) or not result.get('ok'):
+            return False
+
+        order = result.get('order') or {}
+        status = str(order.get('status') or '').lower()
+        accepted_statuses = {
+            'accepted', 'new', 'pending_new', 'partially_filled', 'filled', 'done_for_day'
+        }
+
+        if status:
+            return status in accepted_statuses
+
+        # Test doubles may not provide Alpaca status fields; treat explicit ok as accepted.
+        return True
+
     def _sync_open_positions_from_alpaca(self) -> None:
         """Mirror Alpaca open positions into local trade_records so manual broker trades appear system-wide."""
         if not self.alpaca.is_configured:
@@ -367,32 +385,6 @@ class PaperTradingEngine:
                     continue
 
                 if local_qty == 0:
-                    # Check if this symbol was recently closed (pending sell at broker).
-                    # If so, skip import — Alpaca still shows it because the sell order
-                    # hasn't filled yet (e.g., submitted after market close).
-                    self.cursor.execute('''
-                        SELECT trade_id, exit_date, exit_time
-                        FROM trade_records
-                        WHERE asset_symbol = ? AND status = 'closed'
-                        ORDER BY exit_date DESC, exit_time DESC
-                        LIMIT 1
-                    ''', (symbol,))
-                    recent_close = self.cursor.fetchone()
-                    if recent_close:
-                        close_dt_str = f"{recent_close[1]} {recent_close[2] or '00:00:00'}"
-                        try:
-                            close_dt = datetime.strptime(close_dt_str, '%Y-%m-%d %H:%M:%S')
-                            hours_since_close = (now - close_dt).total_seconds() / 3600
-                            if hours_since_close < 18:
-                                # Closed less than 18 hours ago — likely a pending sell
-                                logger.info(
-                                    f"  ℹ️  Skipping Alpaca import for {symbol}: "
-                                    f"closed {hours_since_close:.1f}h ago (pending sell)"
-                                )
-                                continue
-                        except (ValueError, TypeError):
-                            pass  # Can't parse date — fall through to import
-
                     inferred_size = market_value if market_value > 0 else round(avg_entry * qty, 2)
                     self.cursor.execute('''
                     INSERT INTO trade_records
@@ -835,7 +827,7 @@ class PaperTradingEngine:
             shares = trade['shares']
             alpaca_result = self.alpaca.place_order(symbol, shares, 'sell')
 
-            if self.alpaca.is_configured and not alpaca_result.get('ok'):
+            if self.alpaca.is_configured and not self._broker_order_accepted(alpaca_result):
                 # Alpaca sell failed — try cancelling stuck orders and retry
                 alpaca_err = alpaca_result.get('error', 'unknown')
                 logger.warning(f"⚠️  Alpaca sell failed for {symbol}: {alpaca_err} — cancelling stuck orders and retrying")
@@ -848,10 +840,14 @@ class PaperTradingEngine:
                     )
                     import time; time.sleep(0.5)
                     alpaca_result = self.alpaca.place_order(symbol, shares, 'sell')
-                    if not alpaca_result.get('ok'):
+                    if not self._broker_order_accepted(alpaca_result):
                         logger.error(f"🚫 Alpaca sell retry also failed for {symbol}: {alpaca_result.get('error')}")
                 except Exception as _re:
                     logger.error(f"🚫 Alpaca cancel+retry failed for {symbol}: {_re}")
+
+            if self.alpaca.is_configured and not self._broker_order_accepted(alpaca_result):
+                logger.error(f"❌ Refusing to close local position for {symbol}: broker sell not accepted")
+                return False
 
             # Update trade record in DB
             self.cursor.execute('''
@@ -1248,7 +1244,7 @@ class PaperTradingEngine:
             # Mirror to Alpaca FIRST — try broker before committing DB
             alpaca_result = self.alpaca.place_order(ticker, shares, 'sell')
 
-            if self.alpaca.is_configured and not alpaca_result.get('ok'):
+            if self.alpaca.is_configured and not self._broker_order_accepted(alpaca_result):
                 alpaca_err = alpaca_result.get('error', 'unknown')
                 logger.warning(f"⚠️  Alpaca sell failed for {ticker}: {alpaca_err} — cancelling stuck orders and retrying")
                 try:
@@ -1260,10 +1256,17 @@ class PaperTradingEngine:
                     )
                     import time; time.sleep(0.5)
                     alpaca_result = self.alpaca.place_order(ticker, shares, 'sell')
-                    if not alpaca_result.get('ok'):
+                    if not self._broker_order_accepted(alpaca_result):
                         logger.error(f"🚫 Alpaca sell retry also failed for {ticker}: {alpaca_result.get('error')}")
                 except Exception as _re:
                     logger.error(f"🚫 Alpaca cancel+retry failed for {ticker}: {_re}")
+
+            if self.alpaca.is_configured and not self._broker_order_accepted(alpaca_result):
+                logger.error(f"❌ Refusing to close local position for {ticker}: broker sell not accepted")
+                return {
+                    'ok': False,
+                    'message': f'Broker sell was not accepted for {ticker}; local position remains open.'
+                }
 
             self.cursor.execute('''
                 UPDATE trade_records

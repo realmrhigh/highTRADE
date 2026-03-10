@@ -194,6 +194,17 @@ class FakeAlpaca:
         return {'ok': True, 'order': {'symbol': symbol, 'qty': qty, 'side': side}}
 
 
+class FakeAlpacaWithSellResponses(FakeAlpaca):
+    def __init__(self, sell_responses, positions=None, account=None, configured=True):
+        super().__init__(positions=positions, account=account, configured=configured)
+        self._sell_responses = list(sell_responses)
+
+    def place_order(self, symbol, qty, side):
+        if side == 'sell' and self._sell_responses:
+            return self._sell_responses.pop(0)
+        return super().place_order(symbol, qty, side)
+
+
 def test_sync_imports_manual_alpaca_position(tmp_path):
     db_path = tmp_path / 'sync_import.db'
     _create_test_db(db_path)
@@ -260,6 +271,118 @@ def test_sync_closes_local_position_missing_at_alpaca(tmp_path):
     assert row['status'] == 'closed'
     assert row['exit_reason'] == 'manual'
     assert row['profit_loss_dollars'] == 30.0
+
+
+def test_sync_reimports_recently_closed_broker_position(tmp_path):
+    db_path = tmp_path / 'sync_recent_close.db'
+    _create_test_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute('''
+        INSERT INTO trade_records (
+            crisis_id, asset_symbol, entry_date, entry_time, entry_price,
+            entry_signal_score, defcon_at_entry, shares, position_size_dollars,
+            exit_date, exit_time, exit_price, exit_reason, profit_loss_dollars,
+            profit_loss_percent, holding_hours, notes, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (0, 'GOOGL', '2026-03-09', '09:00:00', 300.0, 0, 5, 10, 3000.0,
+          '2026-03-09', '09:30:00', 303.0, 'manual', 30.0, 1.0, 0.5, 'locally closed', 'closed'))
+    conn.commit()
+    conn.close()
+
+    engine = PaperTradingEngine(db_path=db_path)
+    engine.alpaca = FakeAlpaca(
+        positions=[{
+            'symbol': 'GOOGL',
+            'qty': '10',
+            'avg_entry_price': '300.00',
+            'market_value': '3010.00',
+        }],
+        account=None,
+    )
+
+    positions = engine.get_open_positions()
+    googl_positions = [p for p in positions if p['asset_symbol'] == 'GOOGL']
+    assert len(googl_positions) == 1
+    assert googl_positions[0]['shares'] == 10
+
+
+def test_manual_sell_does_not_close_locally_when_broker_rejects(tmp_path):
+    db_path = tmp_path / 'manual_sell_reject.db'
+    _create_test_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute('''
+        INSERT INTO trade_records (
+            crisis_id, asset_symbol, entry_date, entry_time, entry_price,
+            entry_signal_score, defcon_at_entry, shares, position_size_dollars,
+            exit_reason, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (0, 'AAPL', '2026-03-09', '10:00:00', 200.0, 0, 5, 5, 1000.0, None, 'open'))
+    conn.commit()
+    conn.close()
+
+    engine = PaperTradingEngine(db_path=db_path)
+    engine.alpaca = FakeAlpacaWithSellResponses([
+        {'ok': False, 'error': 'wash trade rejection'},
+        {'ok': False, 'error': 'wash trade rejection again'},
+    ])
+    engine._get_current_price = lambda ticker: 201.0
+
+    result = engine.manual_sell('AAPL')
+    assert result['ok'] is False
+    assert 'local position remains open' in result['message']
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT status, exit_date, exit_price FROM trade_records WHERE asset_symbol='AAPL'")
+    row = dict(cur.fetchone())
+    conn.close()
+
+    assert row['status'] == 'open'
+    assert row['exit_date'] is None
+    assert row['exit_price'] is None
+
+
+def test_exit_position_returns_false_when_broker_rejects(tmp_path):
+    db_path = tmp_path / 'exit_position_reject.db'
+    _create_test_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute('''
+        INSERT INTO trade_records (
+            crisis_id, asset_symbol, entry_date, entry_time, entry_price,
+            entry_signal_score, defcon_at_entry, shares, position_size_dollars,
+            exit_reason, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (0, 'MSFT', '2026-03-09', '10:00:00', 400.0, 0, 5, 3, 1200.0, None, 'open'))
+    trade_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+
+    engine = PaperTradingEngine(db_path=db_path)
+    engine.alpaca = FakeAlpacaWithSellResponses([
+        {'ok': False, 'error': 'broker unavailable'},
+        {'ok': False, 'error': 'broker unavailable retry'},
+    ])
+
+    ok = engine.exit_position(trade_id, 'manual', exit_price=410.0)
+    assert ok is False
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT status, exit_date, exit_price FROM trade_records WHERE trade_id=?", (trade_id,))
+    row = dict(cur.fetchone())
+    conn.close()
+
+    assert row['status'] == 'open'
+    assert row['exit_date'] is None
+    assert row['exit_price'] is None
 
 
 if __name__ == '__main__':
