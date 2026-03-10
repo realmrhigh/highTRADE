@@ -1213,11 +1213,29 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
         _st_feed = _sh.get('feed', '?').upper()
         _st_details = _sh.get('details', {})
         _st_reconnects = _st_details.get('reconnects', 0)
+        _st_last_error = _st_details.get('last_error') or '—'
+        _st_last_tick = _st_details.get('last_tick_at') or ''
+        _st_last_trigger_at = _st_details.get('last_trigger_at') or ''
+        _st_last_trigger_ticker = _st_details.get('last_trigger_ticker') or ''
+        _st_last_trigger_type = _st_details.get('last_trigger_type') or ''
         _st_ts = _sh.get('timestamp', '')
         try:
             _st_ts_display = _utc_to_local(_st_ts) if _st_ts else '—'
         except Exception:
             _st_ts_display = _st_ts or '—'
+        try:
+            _st_last_tick_display = _utc_to_local(_st_last_tick) if _st_last_tick else '—'
+        except Exception:
+            _st_last_tick_display = _st_last_tick or '—'
+        try:
+            _st_last_trigger_display = _utc_to_local(_st_last_trigger_at) if _st_last_trigger_at else '—'
+        except Exception:
+            _st_last_trigger_display = _st_last_trigger_at or '—'
+
+        if _st_last_trigger_ticker:
+            _st_trigger_summary = f"{_st_last_trigger_ticker} — {_st_last_trigger_type or 'trigger'} @ {_st_last_trigger_display}"
+        else:
+            _st_trigger_summary = 'No trigger recorded yet'
 
         stream_html = f"""
       <div class="stat">
@@ -1233,6 +1251,9 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
           <span title="Reconnections">&#128260; {_st_reconnects} reconnects</span>
           {'<span style="color:#ff4444;">&#9888; ' + str(_st_errors) + ' errors</span>' if _st_errors > 0 else ''}
         </div>
+                <div style="color:#888;font-size:10px;margin-top:5px;">Last tick: {_st_last_tick_display}</div>
+                <div style="color:#888;font-size:10px;margin-top:2px;">Last trigger: {_st_trigger_summary}</div>
+                <div style="color:{'#ff6b6b' if _st_last_error != '—' else '#666'};font-size:10px;margin-top:2px;">Reason: {_st_last_error}</div>
         <div style="color:#555;font-size:9px;margin-top:3px;">Last health log: {_st_ts_display}</div>
       </div>"""
 

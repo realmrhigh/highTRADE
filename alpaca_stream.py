@@ -27,6 +27,7 @@ Usage from orchestrator:
 import asyncio
 import json
 import logging
+import importlib.util
 import os
 import sqlite3
 import threading
@@ -104,6 +105,9 @@ class RealtimeMonitor:
             'status': 'initializing',
             'started_at': None,
             'last_tick_at': None,
+            'last_trigger_at': None,
+            'last_trigger_ticker': None,
+            'last_trigger_type': None,
             'ticks_received': 0,
             'ticks_per_sec': 0.0,
             'subscribed_tickers': 0,
@@ -123,9 +127,18 @@ class RealtimeMonitor:
 
     def start(self):
         """Start the real-time monitor in a background thread."""
+        if not self._sdk_available():
+            logger.warning(
+                "⚠️  RealtimeMonitor: Alpaca SDK not installed (`alpaca-py`) — stream disabled"
+            )
+            self._stats['status'] = 'disabled (alpaca-py missing)'
+            self._stats['last_error'] = 'alpaca-py package not installed'
+            return
+
         if not self._configured:
             logger.warning("⚠️  RealtimeMonitor: ALPACA_API_KEY / ALPACA_SECRET_KEY not set — stream disabled")
             self._stats['status'] = 'disabled (no API keys)'
+            self._stats['last_error'] = 'missing ALPACA_API_KEY / ALPACA_SECRET_KEY'
             return
 
         if self._thread and self._thread.is_alive():
@@ -174,6 +187,10 @@ class RealtimeMonitor:
     def force_refresh(self):
         """Force a subscription refresh on next cycle (e.g. after new conditional added)."""
         self._refresh_subscriptions()
+
+    def _sdk_available(self) -> bool:
+        """Return True when the Alpaca SDK is importable in the active runtime."""
+        return importlib.util.find_spec('alpaca') is not None
 
     # ── Background Thread ─────────────────────────────────────────────────────
 
@@ -275,13 +292,15 @@ class RealtimeMonitor:
                 new_tickers = self._subscribed_tickers - old_tickers
                 removed_tickers = old_tickers - self._subscribed_tickers
 
-                if new_tickers:
-                    logger.info(f"🔴 Stream: adding {len(new_tickers)} tickers: {', '.join(sorted(new_tickers))}")
-                    self._stream.subscribe_trades(self._on_trade, *new_tickers)
-
+                # Remove first, then add — prevents hitting the symbol limit (405)
+                # when swapping tickers at capacity.
                 if removed_tickers:
                     logger.info(f"🔴 Stream: removing {len(removed_tickers)} tickers: {', '.join(sorted(removed_tickers))}")
                     self._stream.unsubscribe_trades(*removed_tickers)
+
+                if new_tickers:
+                    logger.info(f"🔴 Stream: adding {len(new_tickers)} tickers: {', '.join(sorted(new_tickers))}")
+                    self._stream.subscribe_trades(self._on_trade, *new_tickers)
 
             except Exception as e:
                 logger.warning(f"🔴 Subscription refresh failed: {e}")
@@ -537,6 +556,9 @@ class RealtimeMonitor:
 
             self._last_trigger_time[ticker] = now
             self._stats['entry_triggers'] += 1
+            self._stats['last_trigger_at'] = datetime.now().isoformat()
+            self._stats['last_trigger_ticker'] = ticker
+            self._stats['last_trigger_type'] = 'entry'
 
             if is_upside:
                 trigger_desc = f"${price:.2f} >= target ${entry_target:.2f} (breakout)"
@@ -637,6 +659,9 @@ class RealtimeMonitor:
                 return
             self._last_trigger_time[f"exit_{ticker}"] = now
             self._stats['exit_triggers'] += 1
+            self._stats['last_trigger_at'] = datetime.now().isoformat()
+            self._stats['last_trigger_ticker'] = ticker
+            self._stats['last_trigger_type'] = 'thesis_floor'
 
             pnl_pct = (price - entry_price) / entry_price * 100
             logger.warning(
@@ -653,6 +678,9 @@ class RealtimeMonitor:
                 return
             self._last_trigger_time[f"exit_{ticker}"] = now
             self._stats['exit_triggers'] += 1
+            self._stats['last_trigger_at'] = datetime.now().isoformat()
+            self._stats['last_trigger_ticker'] = ticker
+            self._stats['last_trigger_type'] = 'trailing_stop'
 
             pnl_pct = (price - entry_price) / entry_price * 100
             logger.warning(
@@ -669,6 +697,9 @@ class RealtimeMonitor:
                 return
             self._last_trigger_time[f"exit_{ticker}"] = now
             self._stats['exit_triggers'] += 1
+            self._stats['last_trigger_at'] = datetime.now().isoformat()
+            self._stats['last_trigger_ticker'] = ticker
+            self._stats['last_trigger_type'] = 'take_profit'
 
             pnl_pct = (price - entry_price) / entry_price * 100
             logger.info(
@@ -790,6 +821,10 @@ class RealtimeMonitor:
                     'positions_watched': status.get('positions_watched', 0),
                     'reconnects': status.get('reconnects', 0),
                     'last_error': status.get('last_error'),
+                    'last_tick_at': status.get('last_tick_at'),
+                    'last_trigger_at': status.get('last_trigger_at'),
+                    'last_trigger_ticker': status.get('last_trigger_ticker'),
+                    'last_trigger_type': status.get('last_trigger_type'),
                 }),
             ))
             # Keep only last 24h of health records
