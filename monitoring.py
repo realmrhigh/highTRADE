@@ -13,12 +13,13 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import time
 
+from fred_macro import _load_fred_api_key
+
 # Use SCRIPT_DIR to ensure we're in the correct project directory
 SCRIPT_DIR = Path(__file__).parent.resolve()
 DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
 
 # FRED API - Federal Reserve Economic Data (free tier)
-FRED_API_KEY = os.environ.get('FRED_API_KEY', '')  # Set FRED_API_KEY env var — never hardcode
 FRED_ENDPOINTS = {
     'DGS10': 'DGS10',      # 10-Year Treasury Constant Maturity
     'VIXCLS': 'VIXCLS',    # VIX
@@ -52,8 +53,13 @@ class SignalMonitor:
     def fetch_bond_yield(self):
         """Fetch 10-year bond yield from FRED API"""
         try:
+            api_key = _load_fred_api_key() or ''
+            if not api_key:
+                print("  FRED API Error: missing API key")
+                return None
+
             url = (f"https://api.stlouisfed.org/fred/series/observations"
-                   f"?series_id=DGS10&api_key={FRED_API_KEY}"
+                   f"?series_id=DGS10&api_key={api_key}"
                    f"&file_type=json&sort_order=desc&limit=5")
             response = requests.get(url, timeout=10)
             if response.status_code == 200:
