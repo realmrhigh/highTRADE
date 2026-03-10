@@ -1353,7 +1353,6 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
     hound_rows     = build_hound_rows(hound_candidates)
     cong_cl_rows   = build_cong_cluster_rows(cong_clusters)
     cong_tr_rows   = build_cong_trade_rows(cong_trades)
-    reasoning_card = build_model_card(latest_b, 'REASONING (Gemini 3.1)', '🔬')
     grok_card      = build_model_card(latest_grok, 'DEEP DIVE (Grok 4.1)', '𝕏')
 
     # Daily schedule intraday cards
@@ -1995,17 +1994,15 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
 <!-- ═══ DAILY ANALYSIS SCHEDULE ═══ -->
 <div class="section-head">&#128197; Daily Analysis Schedule &mdash; {_today_str}</div>
 
-<div class="grid-three" style="margin-bottom:0;">
+<div class="grid-mid" style="margin-bottom:0;">
   {morning_card}
   {midday_card}
-  {close_card}
 </div>
 
 <!-- ═══ CLOSE DEEP DIVE — FULL ANALYSIS ═══ -->
 <div class="section-head" style="margin-top:18px;">&#129504; Close Deep Dive &mdash; {close_date_str}</div>
 
-<div class="grid-mid">
-  {reasoning_card}
+<div class="grid-full">
   {grok_card}
 </div>
 
