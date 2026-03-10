@@ -35,6 +35,10 @@ class SignalMonitor:
         self.last_vix = 18.5
         self.last_sp500 = 5000.0
         self.cycle_count = 0
+        # Wind-down state for gradual de-escalation
+        self.previous_defcon = 5
+        self.defcon_hold_cycles = 0
+        self.is_winding_down = False
 
     def connect(self):
         """Connect to database"""
@@ -161,7 +165,8 @@ class SignalMonitor:
 
     def calculate_defcon_level(self, signal_scores, market_data, news_signal=None,
                                flash_forecast=None, macro_modifier=None,
-                               briefing_signal_quality=None):
+                               briefing_signal_quality=None,
+                               deescalation_score=None):
         """Determine DEFCON level based on signal clustering, news override, and Claude analysis"""
         composite_score = sum(signal_scores.values()) / len(signal_scores) if signal_scores else 0
 
@@ -211,6 +216,10 @@ class SignalMonitor:
                 _nudge += 1   # more defensive
             elif any(w in _sq for w in ('strong', 'high quality', 'consistent', 'actionable')):
                 _nudge -= 1   # more willing to act
+        # Geopolitical de-escalation nudge: strong de-escalation signal
+        # pushes DEFCON toward peacetime (higher number = less aggressive buying)
+        if deescalation_score is not None and deescalation_score >= 40:
+            _nudge += 1
         _nudge = max(-1, min(1, _nudge))   # clamp combined nudge to ±1
         base_defcon = max(1, min(5, base_defcon + _nudge))
         if _nudge != 0:
@@ -266,6 +275,32 @@ class SignalMonitor:
                 self.defcon_level = recommended_defcon
                 return self.defcon_level, composite_score
 
+        # ── DEFCON step-limiting: gradual de-escalation ──────────────────
+        # Escalation (DEFCON going DOWN toward 1) can jump freely for safety.
+        # De-escalation (DEFCON going UP toward 5) is capped at +1 per cycle.
+        if base_defcon > self.previous_defcon:
+            # De-escalating: cap at +1 per cycle
+            capped_defcon = self.previous_defcon + 1
+            if base_defcon > capped_defcon:
+                import logging as _logging
+                _logging.getLogger(__name__).info(
+                    f"  🔄 Wind-down: raw DEFCON {base_defcon} capped to {capped_defcon} "
+                    f"(max +1 per cycle from {self.previous_defcon})"
+                )
+                base_defcon = capped_defcon
+            self.is_winding_down = True
+            self.defcon_hold_cycles += 1
+        elif base_defcon < self.previous_defcon:
+            # Escalation — cancel any wind-down, allow free jump
+            self.is_winding_down = False
+            self.defcon_hold_cycles = 0
+        else:
+            # Same level — if we were winding down, we've stabilized
+            if self.is_winding_down:
+                self.is_winding_down = False
+                self.defcon_hold_cycles = 0
+
+        self.previous_defcon = base_defcon
         self.defcon_level = base_defcon
         return self.defcon_level, composite_score
 

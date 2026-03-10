@@ -28,6 +28,42 @@ SECTOR_ETFS = {
 
 BENCHMARK = 'SPY'
 
+# Crisis-type → sector preferences
+# Maps crisis regimes to which sectors to FAVOR, AVOID, and ROTATE TO on de-escalation
+CRISIS_SECTOR_MAP = {
+    'geopolitical_trade': {
+        'favor': ['Energy', 'Industrials', 'Materials'],
+        'avoid': ['Technology', 'Consumer Discretionary'],
+        'deescalation_rotate_to': ['Technology', 'Consumer Discretionary', 'Communication Services'],
+    },
+    'inflation_rate': {
+        'favor': ['Energy', 'Materials', 'Financials'],
+        'avoid': ['Utilities', 'Real Estate'],
+        'deescalation_rotate_to': ['Technology', 'Real Estate', 'Utilities'],
+    },
+    'tech_crash': {
+        'favor': ['Consumer Staples', 'Utilities', 'Health Care'],
+        'avoid': ['Technology', 'Communication Services'],
+        'deescalation_rotate_to': ['Technology', 'Communication Services'],
+    },
+    'liquidity_credit': {
+        'favor': ['Consumer Staples', 'Utilities', 'Health Care'],
+        'avoid': ['Financials', 'Real Estate'],
+        'deescalation_rotate_to': ['Financials', 'Technology'],
+    },
+    'pandemic_health': {
+        'favor': ['Health Care', 'Technology', 'Communication Services'],
+        'avoid': ['Industrials', 'Energy'],
+        'deescalation_rotate_to': ['Industrials', 'Energy', 'Consumer Discretionary'],
+    },
+    'market_correction': {
+        'favor': ['Consumer Staples', 'Utilities', 'Health Care'],
+        'avoid': ['Consumer Discretionary', 'Technology'],
+        'deescalation_rotate_to': ['Technology', 'Consumer Discretionary', 'Financials'],
+    },
+}
+
+
 class SectorRotationAnalyzer:
     """Analyzes relative strength and rotation across equity sectors."""
 
@@ -82,6 +118,81 @@ class SectorRotationAnalyzer:
         except Exception as e:
             logger.error(f"  ❌ Sector rotation analysis failed: {e}")
             return {}
+
+    def get_sector_context(self, crisis_type: str, defcon_level: int,
+                           is_winding_down: bool = False,
+                           deescalation_score: float = 0.0) -> Dict:
+        """
+        Generate sector guidance based on current crisis type and DEFCON phase.
+
+        Returns dict with favored_sectors, avoided_sectors, rotation_guidance (text),
+        and phase description.
+        """
+        rotation_data = self.get_rotation_data()
+
+        mapping = CRISIS_SECTOR_MAP.get(crisis_type, CRISIS_SECTOR_MAP['market_correction'])
+
+        if is_winding_down or deescalation_score >= 40:
+            # During wind-down or de-escalation: rotate toward growth/recovery sectors
+            favored = mapping.get('deescalation_rotate_to', mapping['favor'])
+            avoided = []  # Less restrictive during de-escalation
+            phase = 'de-escalation / wind-down'
+        elif defcon_level <= 2:
+            # Deep crisis: favor defensive/crisis sectors
+            favored = mapping['favor']
+            avoided = mapping['avoid']
+            phase = 'crisis (DEFCON 1-2)'
+        elif defcon_level == 3:
+            # Moderate stress: favor crisis sectors but less restrictive
+            favored = mapping['favor']
+            avoided = mapping['avoid'][:1]  # Only avoid the weakest
+            phase = 'elevated (DEFCON 3)'
+        else:
+            # Peacetime: no sector bias, follow relative strength
+            if rotation_data and rotation_data.get('sectors'):
+                top_3 = [s['name'] for s in rotation_data['sectors'][:3]]
+                favored = top_3
+            else:
+                favored = []
+            avoided = []
+            phase = 'peacetime (DEFCON 4-5)'
+
+        # Cross-reference with actual relative strength data
+        strong_sectors = []
+        weak_sectors = []
+        if rotation_data and rotation_data.get('sectors'):
+            for s in rotation_data['sectors']:
+                if s['rel_1w'] > 0.5:
+                    strong_sectors.append(s['name'])
+                elif s['rel_1w'] < -0.5:
+                    weak_sectors.append(s['name'])
+
+        # Build text guidance for prompt injection
+        guidance_lines = [
+            f"SECTOR ROTATION CONTEXT (phase: {phase}):",
+            f"  Crisis type: {crisis_type}",
+            f"  Favored sectors: {', '.join(favored) if favored else 'No specific bias'}",
+            f"  Sectors to avoid: {', '.join(avoided) if avoided else 'None'}",
+        ]
+        if strong_sectors:
+            guidance_lines.append(f"  Strong relative strength (1w): {', '.join(strong_sectors[:3])}")
+        if weak_sectors:
+            guidance_lines.append(f"  Weak relative strength (1w): {', '.join(weak_sectors[:3])}")
+        if is_winding_down:
+            guidance_lines.append(
+                "  ** WIND-DOWN ACTIVE: Prefer rotating INTO growth/recovery sectors. "
+                "Avoid initiating new defensive/crisis positions.**"
+            )
+
+        return {
+            'favored_sectors': favored,
+            'avoided_sectors': avoided,
+            'strong_by_momentum': strong_sectors,
+            'weak_by_momentum': weak_sectors,
+            'phase': phase,
+            'rotation_guidance': '\n'.join(guidance_lines),
+            'sector_data': rotation_data,
+        }
 
     def _calculate_perf(self, series: pd.Series) -> Dict:
         """Calculate % change over various timeframes."""

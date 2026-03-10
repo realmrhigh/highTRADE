@@ -103,6 +103,7 @@ class NewsSignalGenerator:
             'signal_concentration': score_components.get('signal_concentration', 0.0),
             'crisis_distribution': batch_result.get('crisis_distribution', {}),
             'keyword_hits': keyword_hits,
+            'deescalation_score': batch_result.get('avg_deescalation_score', 0.0),
             '_batch_results': batch_result['results']  # Cache for reuse — avoids redundant analyze_batch calls
         }
 

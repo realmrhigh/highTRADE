@@ -277,6 +277,17 @@ class AlertSystem:
                     f"Signal Score: {data.get('signal_score', 0):.1f}/100"
                 )
 
+            elif event_type == 'wind_down':
+                defcon = data.get('defcon', '?')
+                cycles = data.get('wind_down_cycles', 0)
+                deesc = data.get('deescalation_score', 0)
+                text = (
+                    f"🔄 WIND-DOWN ACTIVE — DEFCON {defcon}/5\n"
+                    f"De-escalating gradually (cycle {cycles})\n"
+                    f"De-escalation score: {deesc:.0f}/100\n"
+                    f"New position sizing: 50% of normal"
+                )
+
             elif event_type == 'trade_entry':
                 text = (
                     f"📈 Trade Entry\n"

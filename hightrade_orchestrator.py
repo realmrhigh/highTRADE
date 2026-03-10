@@ -180,6 +180,7 @@ class HighTradeOrchestrator:
             self.fred_enabled = False
 
         self.previous_defcon = self._load_last_defcon()
+        self.monitor.previous_defcon = self.previous_defcon  # sync step-limiter
         self.monitoring_cycles = 0
         self.alerts_sent = 0
         self.pending_trade_alerts = []
@@ -781,9 +782,26 @@ class HighTradeOrchestrator:
                         from acquisition_researcher import run_research_cycle
                         from acquisition_analyst import run_analyst_cycle
                         researched = run_research_cycle()
+                        # Generate sector context for analyst
+                        _sector_ctx = ''
+                        try:
+                            _crisis_type = news_signal.get('dominant_crisis_type', 'market_correction') if news_signal else 'market_correction'
+                            _sc = self.sector_analyzer.get_sector_context(
+                                crisis_type=_crisis_type,
+                                defcon_level=self.monitor.defcon_level,
+                                is_winding_down=_is_winding_down,
+                                deescalation_score=_deesc_score,
+                            )
+                            _sector_ctx = _sc.get('rotation_guidance', '')
+                        except Exception as _se:
+                            logger.warning(f"Sector context failed: {_se}")
+
                         run_analyst_cycle(extra_context={   # always — don't gate on researched
                             'defcon_level': self.monitor.defcon_level,
                             'news_score':   _news_score,
+                            'is_winding_down': _is_winding_down,
+                            'deescalation_score': _deesc_score,
+                            'sector_guidance': _sector_ctx,
                         })
                     except Exception as e:
                         logger.warning(f"  🔬 Pipeline auto-trigger failed: {e}")
@@ -799,7 +817,8 @@ class HighTradeOrchestrator:
             # Calculate and record
             logger.info("📈 Calculating signal scores...")
             _news_score = news_signal.get('news_score', 0) if news_signal else 0
-            self._last_news_score = _news_score   # persist for pipeline calls mid-cycle
+            self._last_news_score = _news_score     # persist for pipeline calls mid-cycle
+            self._last_deesc_score = news_signal.get('deescalation_score', 0) if news_signal else 0
             signal_scores = self.monitor.calculate_signal_scores(yield_data, vix_data, market_data, news_score=_news_score)
             # Fetch briefing signal quality for DEFCON nudge
             _briefing_sq = None
@@ -810,18 +829,29 @@ class HighTradeOrchestrator:
             except Exception:
                 pass
 
+            _deesc_score = news_signal.get('deescalation_score', 0) if news_signal else 0
+
             current_defcon, signal_score = self.monitor.calculate_defcon_level(
                 signal_scores, market_data, news_signal,
                 flash_forecast=getattr(self, '_last_flash_forecast', None),
                 macro_modifier=macro_result.get('defcon_modifier') if macro_result else None,
                 briefing_signal_quality=_briefing_sq,
+                deescalation_score=_deesc_score,
             )
+
+            # Read wind-down state from monitor (set by step-limiting logic)
+            _is_winding_down = getattr(self.monitor, 'is_winding_down', False)
+            _wind_down_cycles = getattr(self.monitor, 'defcon_hold_cycles', 0)
 
             logger.info(f"  📊 Bond Yield Spike Score: {signal_scores.get('bond_yield_spike', 0):.1f}")
             logger.info(f"  📊 VIX Spike Score: {signal_scores.get('vix_spike', 0):.1f}")
             logger.info(f"  📊 Market Drawdown Score: {signal_scores.get('market_drawdown', 0):.1f}")
             logger.info(f"  📊 News Signal Score: {signal_scores.get('news_signal', 0):.1f}")
             logger.info(f"  📊 Composite Score: {signal_score:.1f}/100")
+            if _deesc_score > 0:
+                logger.info(f"  📊 De-escalation Score: {_deesc_score:.1f}/100")
+            if _is_winding_down:
+                logger.info(f"  🔄 Wind-down active (cycle {_wind_down_cycles})")
 
             # Record to database
             logger.info("💾 Recording to database...")
@@ -883,6 +913,14 @@ Check dashboard for detailed analysis.
                     'new_defcon': current_defcon,
                     'signal_score': signal_score
                 })
+
+                # Log wind-down transition if active
+                if _is_winding_down:
+                    self.alerts.send_silent_log('wind_down', {
+                        'defcon': current_defcon,
+                        'wind_down_cycles': _wind_down_cycles,
+                        'deescalation_score': _deesc_score,
+                    })
 
                 # Broker agent decides on trades (DEFCON 1-3: crisis + dip buying)
                 if self.cmd_processor.should_skip_trades:
@@ -972,6 +1010,8 @@ Check dashboard for detailed analysis.
                         'defcon': current_defcon,
                         'news_score': locals().get('score') or 0,
                         'macro_score': self._get_latest_macro_score(),
+                        'is_winding_down': _is_winding_down,
+                        'deescalation_score': _deesc_score,
                     }
                     acq_entries = self.broker.process_acquisition_conditionals(live_state=live_state)
                     if acq_entries > 0:
@@ -1992,9 +2032,25 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
         # (items from prior research runs, hound auto-promotes, manual adds, etc.)
         try:
             from acquisition_analyst import run_analyst_cycle
+            # Generate sector context for analyst
+            _sector_ctx2 = ''
+            try:
+                _sc2 = self.sector_analyzer.get_sector_context(
+                    crisis_type='market_correction',  # generic fallback for pipeline runs
+                    defcon_level=self.monitor.defcon_level,
+                    is_winding_down=getattr(self.monitor, 'is_winding_down', False),
+                    deescalation_score=getattr(self, '_last_deesc_score', 0),
+                )
+                _sector_ctx2 = _sc2.get('rotation_guidance', '')
+            except Exception:
+                pass
+
             results = run_analyst_cycle(extra_context={
                 'defcon_level': self.monitor.defcon_level,
                 'news_score':   getattr(self, '_last_news_score', 0),
+                'is_winding_down': getattr(self.monitor, 'is_winding_down', False),
+                'deescalation_score': getattr(self, '_last_deesc_score', 0),
+                'sector_guidance': _sector_ctx2,
             })
             if results:
                 promoted = [

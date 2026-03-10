@@ -386,6 +386,19 @@ def _build_analyst_prompt(ticker: str, research: Dict,
         f"  System news score:             {live_news:.0f}/100\n"
     )
 
+    # Build sector rotation guidance block
+    _sector_block = ""
+    _sector_guidance = _ctx.get('sector_guidance', '')
+    if _sector_guidance:
+        _sector_block = (
+            f"══════════════════════════════════════════════════════\n"
+            f"SECTOR ROTATION GUIDANCE\n"
+            f"══════════════════════════════════════════════════════\n"
+            f"{_sector_guidance}\n"
+            f"Consider whether {ticker} aligns with the currently favored sectors.\n"
+            f"If it falls in an 'avoid' sector, you need STRONGER conviction to proceed.\n\n"
+        )
+
     # Build crisis guidance block when the system is in elevated crisis mode
     _crisis_guidance = ""
     if isinstance(defcon_level, (int, float)) and defcon_level <= 3:
@@ -487,6 +500,7 @@ def _build_analyst_prompt(ticker: str, research: Dict,
         f"══════════════════════════════════════════════════════\n"
         f"{signals_block}\n"
         f"{_WATCH_TAG_DEFINITIONS}\n"
+        f"{_sector_block}"
         f"{_crisis_guidance}"
         f"══════════════════════════════════════════════════════\n"
         f"YOUR TASK\n"

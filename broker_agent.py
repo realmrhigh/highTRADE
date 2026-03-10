@@ -1414,6 +1414,11 @@ class BrokerDecisionEngine:
                 effective_pct  = min(raw_pct * confidence, MAX_PCT)
                 position_dollars = available_cash * effective_pct
 
+                # Wind-down sizing reduction: 50% during gradual de-escalation
+                if live_state.get('is_winding_down', False):
+                    position_dollars = position_dollars * 0.50
+                    logger.info(f"  🔄 {ticker}: wind-down active — position size halved to ${position_dollars:,.0f}")
+
                 if position_dollars < 100:
                     logger.warning(f"  ⚠️  {ticker} position too small (${position_dollars:.0f}) — skipping")
                     continue

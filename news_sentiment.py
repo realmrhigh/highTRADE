@@ -20,7 +20,9 @@ CRISIS_PATTERNS = {
         'rationale': 'Rotate to broad diversification during tech correction'
     },
     'geopolitical_trade': {
-        'keywords': ['tariff', 'trade war', 'china', 'supply chain', 'sanctions'],
+        'keywords': ['tariff', 'trade war', 'china', 'supply chain', 'sanctions',
+                     'oil embargo', 'military', 'invasion', 'escalation',
+                     'retaliation', 'blockade', 'conflict'],
         'rationale': 'Tech companies resilient to tariffs; focus on IP-based business models'
     },
     'liquidity_credit': {
@@ -39,6 +41,25 @@ CRISIS_PATTERNS = {
         'keywords': ['correction', 'selloff', 'drawdown', 'decline', 'drop', 'crash'],
         'rationale': 'Flight to mega-cap quality and defensive positioning'
     }
+}
+
+# De-escalation indicators — detect when geopolitical/macro tensions are easing
+DEESCALATION_KEYWORDS = {
+    'geopolitical_trade': [
+        'ceasefire', 'peace talks', 'diplomatic breakthrough', 'truce',
+        'withdrawal', 'trade deal', 'trade agreement', 'de-escalation',
+        'normalization', 'detente', 'sanctions lifted', 'sanctions relief',
+        'tariff reduction', 'tariff rollback', 'diplomatic resolution',
+        'peace agreement', 'oil prices falling', 'oil slide',
+    ],
+    'inflation_rate': [
+        'rate cut', 'dovish', 'pivot', 'easing', 'soft landing',
+        'disinflation', 'inflation cooling',
+    ],
+    'market_correction': [
+        'recovery', 'rebound', 'bounce', 'bottom confirmed',
+        'capitulation over', 'risk-on',
+    ],
 }
 
 
@@ -67,6 +88,7 @@ class SentimentResult:
     confidence: float  # 0-100
     matched_keywords: List[str]
     sentiment_score: float  # -100 to 100
+    deescalation_score: float = 0.0  # 0-100, higher = stronger de-escalation signal
 
 
 class NewsSentimentAnalyzer:
@@ -100,13 +122,17 @@ class NewsSentimentAnalyzer:
         # Determine urgency
         urgency = self._classify_urgency(article, crisis_confidence)
 
+        # Calculate de-escalation signal
+        deescalation_score = self._calculate_deescalation_score(combined_text, crisis_type)
+
         return SentimentResult(
             crisis_type=crisis_type,
             sentiment=sentiment,
             urgency=urgency,
             confidence=crisis_confidence,
             matched_keywords=matched_keywords,
-            sentiment_score=sentiment_score
+            sentiment_score=sentiment_score,
+            deescalation_score=deescalation_score,
         )
 
     def analyze_batch(self, articles: List) -> Dict:
@@ -151,6 +177,9 @@ class NewsSentimentAnalyzer:
         # Average confidence
         avg_confidence = sum(result.confidence for result in results) / len(results)
 
+        # Average de-escalation score across all articles
+        avg_deescalation = sum(r.deescalation_score for r in results) / len(results)
+
         return {
             'total_articles': len(articles),
             'dominant_sentiment': dominant_sentiment,
@@ -159,6 +188,7 @@ class NewsSentimentAnalyzer:
             'avg_confidence': avg_confidence,
             'sentiment_distribution': sentiment_counts,
             'crisis_distribution': crisis_counts,
+            'avg_deescalation_score': avg_deescalation,
             'results': results
         }
 
@@ -199,6 +229,23 @@ class NewsSentimentAnalyzer:
             )
         else:
             return ('market_correction', 30.0, [])
+
+    def _calculate_deescalation_score(self, text: str, crisis_type: str) -> float:
+        """
+        Calculate de-escalation signal strength (0-100).
+        High score = strong de-escalation signal (tensions easing).
+        """
+        deesc_keywords = DEESCALATION_KEYWORDS.get(crisis_type, [])
+        if not deesc_keywords:
+            return 0.0
+
+        matched = [kw for kw in deesc_keywords if kw in text]
+        if not matched:
+            return 0.0
+
+        # Each hit worth 15 points + bonus for unique keyword breadth
+        score = len(matched) * 15 + len(set(matched)) * 10
+        return min(100.0, score)
 
     def _analyze_sentiment(self, text: str) -> Tuple[str, float]:
         """
@@ -328,6 +375,7 @@ if __name__ == '__main__':
         print(f"  Urgency: {result.urgency}")
         print(f"  Confidence: {result.confidence:.1f}/100")
         print(f"  Matched Keywords: {', '.join(result.matched_keywords)}")
+        print(f"  De-escalation Score: {result.deescalation_score:.1f}/100")
 
     # Test batch analysis
     print("\n\nBatch Analysis:")
@@ -340,6 +388,7 @@ if __name__ == '__main__':
     print(f"Average Confidence: {batch_result['avg_confidence']:.1f}/100")
     print(f"Sentiment Distribution: {batch_result['sentiment_distribution']}")
     print(f"Crisis Distribution: {batch_result['crisis_distribution']}")
+    print(f"Avg De-escalation Score: {batch_result['avg_deescalation_score']:.1f}/100")
 
     # Test breaking crisis detection
     print("\n\nBreaking Crisis Detection:")
