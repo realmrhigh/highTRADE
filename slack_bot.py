@@ -23,6 +23,8 @@ import threading
 from pathlib import Path
 from datetime import datetime
 
+from hightrade_cmd import ALIAS_MAP as COMMAND_ALIAS_MAP, COMMANDS
+
 # ─── Paths ────────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).parent.resolve()
 CONFIG_PATH = SCRIPT_DIR / 'trading_data' / 'alert_config.json'
@@ -60,70 +62,38 @@ def get_slack_tokens(config):
 
 # ─── Command routing ─────────────────────────────────────────
 
-# Quick lookup of recognized commands (mirrors hightrade_cmd.py)
-KNOWN_COMMANDS = {
-    '/yes', '/y', '/approve',
-    '/no', '/n', '/reject', '/deny',
-    '/hold', '/pause', '/wait',
-    '/start', '/resume', '/go',
-    '/stop', '/quit', '/shutdown',
-    '/estop', '/emergency', '/kill', '/panic',
-    '/update', '/refresh', '/cycle', '/now',
-    '/status', '/info', '/s',
-    '/portfolio', '/pf', '/positions',
-    '/defcon', '/dc', '/alert',
-    '/trades', '/pending', '/recent',
-    '/broker', '/agent',
-    '/mode',
-    '/interval', '/freq',
-    '/research', '/scan', '/fetch',
-    '/help', '/h', '/?',
-}
+KNOWN_COMMANDS = set(COMMAND_ALIAS_MAP.keys())
+ALIAS_MAP = COMMAND_ALIAS_MAP
 
-# Alias → canonical (same as hightrade_cmd.py)
-ALIAS_MAP = {
-    '/yes': '/yes', '/y': '/yes', '/approve': '/yes',
-    '/no': '/no', '/n': '/no', '/reject': '/no', '/deny': '/no',
-    '/hold': '/hold', '/pause': '/hold', '/wait': '/hold',
-    '/start': '/start', '/resume': '/start', '/go': '/start',
-    '/stop': '/stop', '/quit': '/stop', '/shutdown': '/stop',
-    '/estop': '/estop', '/emergency': '/estop', '/kill': '/estop', '/panic': '/estop',
-    '/update': '/update', '/refresh': '/update', '/cycle': '/update', '/now': '/update',
-    '/status': '/status', '/info': '/status', '/s': '/status',
-    '/portfolio': '/portfolio', '/pf': '/portfolio', '/positions': '/portfolio',
-    '/defcon': '/defcon', '/dc': '/defcon', '/alert': '/defcon',
-    '/trades': '/trades', '/pending': '/trades', '/recent': '/trades',
-    '/broker': '/broker', '/agent': '/broker',
-    '/mode': '/mode',
-    '/interval': '/interval', '/freq': '/interval',
-    '/research': '/research', '/scan': '/research', '/fetch': '/research',
-    '/help': '/help', '/h': '/help', '/?': '/help',
-}
 
-HELP_TEXT = """*HighTrade Slash Commands*
+def _build_help_text() -> str:
+    category_titles = {
+        'decisions': 'Decisions',
+        'control': 'Control',
+        'info': 'Info',
+        'config': 'Config',
+    }
 
-*Decisions*
-`/yes` — Approve pending trade or action
-`/no` — Reject pending trade or action
+    lines = ['*HighTrade Commands*']
+    for category in ('decisions', 'control', 'info', 'config'):
+        category_commands = [
+            (cmd, meta) for cmd, meta in COMMANDS.items()
+            if meta.get('category') == category
+        ]
+        if not category_commands:
+            continue
 
-*Control*
-`/hold` — Pause trading (monitoring continues)
-`/start` — Resume trading
-`/stop` — Graceful shutdown
-`/estop` — Emergency stop (halts everything)
-`/update` — Force immediate monitoring cycle
+        lines.append('')
+        lines.append(f"*{category_titles[category]}*")
+        for cmd, meta in category_commands:
+            lines.append(f"`{cmd}` — {meta['description']}")
 
-*Info*
-`/status` — System status & DEFCON
-`/portfolio` — Open positions & P&L
-`/defcon` — DEFCON level & signals
-`/trades` — Pending trade queue
-`/broker` — Broker agent status
+    lines.append('')
+    lines.append('You can type commands with or without the leading `/` in Slack.')
+    return '\n'.join(lines)
 
-*Config*
-`/mode <disabled|semi_auto|full_auto>` — Change broker mode
-`/interval <minutes>` — Change cycle interval
-"""
+
+HELP_TEXT = _build_help_text()
 
 
 def send_command_to_orchestrator(raw_text: str) -> dict:
