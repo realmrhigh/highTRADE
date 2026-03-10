@@ -1286,45 +1286,6 @@ class BrokerDecisionEngine:
                     text = parts[-1].strip()
 
             result = json.loads(text.strip())
-
-            # ── Post-processing: enforce stance rules mechanically ────────
-            # Gemini can still be overly cautious. These overrides ensure
-            # the stance rules are applied even if the model hedges.
-            invalidations = result.get('invalidations_checked', [])
-            has_triggered_invalidation = any(
-                'TRIGGERED' in str(i).upper() for i in invalidations
-            )
-            conditions = result.get('conditions_met', [])
-            pass_count = sum(1 for c in conditions if 'PASS' in str(c).upper())
-            fail_count = sum(1 for c in conditions if 'FAIL' in str(c).upper())
-            total_conds = pass_count + fail_count
-
-            # Always veto if an invalidation is triggered (all stances)
-            if has_triggered_invalidation and result.get('approve'):
-                result['approve'] = False
-                result['veto_reason'] = (result.get('veto_reason', '') +
-                    ' [OVERRIDE: invalidation condition triggered]').strip()
-                logger.info(f"  🔒 {ticker}: gate override — invalidation triggered, forcing VETO")
-
-            # AGGRESSIVE: override veto if no invalidations triggered
-            elif trading_stance == 'AGGRESSIVE' and not result.get('approve') and not has_triggered_invalidation:
-                result['approve'] = True
-                result['reason'] = (result.get('reason', '') +
-                    ' [OVERRIDE: AGGRESSIVE stance — no invalidations triggered]').strip()
-                logger.info(f"  🟢 {ticker}: AGGRESSIVE override — approving (no invalidations)")
-
-            # NORMAL: override veto if majority of conditions pass and no invalidations
-            elif trading_stance == 'NORMAL' and not result.get('approve') and not has_triggered_invalidation:
-                if total_conds == 0 or pass_count >= (total_conds / 2):
-                    result['approve'] = True
-                    result['reason'] = (result.get('reason', '') +
-                        f' [OVERRIDE: NORMAL stance — {pass_count}/{total_conds} conditions met, no invalidations]').strip()
-                    logger.info(f"  🟢 {ticker}: NORMAL override — {pass_count}/{total_conds} pass, approving")
-
-            # CAUTIOUS / DEFENSIVE: respect Gemini's veto (no override)
-            # But for CAUTIOUS, strip vetoes that are purely broad-macro
-            # (we can't reliably detect this mechanically, so we trust the prompt)
-
             result['_stance_applied'] = trading_stance
             return result
 
