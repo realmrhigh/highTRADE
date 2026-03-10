@@ -322,6 +322,8 @@ class CommandProcessor:
         logger.info(f"📥 Command received: {cmd}" + (f" {args}" if args else ""))
 
         response = self._dispatch(cmd, args)
+        if isinstance(response, dict) and 'command' not in response:
+            response['command'] = cmd
         processed.append({'command': cmd, 'args': args, 'response': response})
 
         # Write response for the waiting client
@@ -771,6 +773,7 @@ class CommandProcessor:
             with open(tmp, 'w') as f:
                 json.dump(response, f, indent=2)
             tmp.rename(RESPONSE_FILE)
+            logger.info(f"📤 Command response written for {response.get('command', 'unknown')}")
         except Exception as e:
             logger.error(f"Failed to write command response: {e}")
 

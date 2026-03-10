@@ -99,6 +99,7 @@ class RealtimeMonitor:
         self._positions: Dict[str, dict] = {}           # ticker → {trade_id, entry, peak, stop, tp1}
         self._last_prices: Dict[str, float] = {}        # ticker → latest price
         self._last_trigger_time: Dict[str, float] = {}  # ticker → time.time() of last trigger
+        self._dispatch_locks: Dict[str, threading.Lock] = defaultdict(threading.Lock)  # per-ticker gate lock
 
         # Stats for dashboard
         self._stats = {
@@ -577,12 +578,22 @@ class RealtimeMonitor:
         """
         Dispatch entry trigger to the broker in a separate thread
         so we don't block the WebSocket handler.
+
+        Uses a per-ticker lock to prevent concurrent gate calls — without this,
+        the 5s debounce + ~20s Gemini Pro gate creates a race where multiple
+        threads all read the conditional as 'active' before any commit lands,
+        causing duplicate Pro calls and duplicate Slack notifications.
         """
         if not self.broker:
             logger.warning(f"🎯 {ticker} triggered but no broker attached — skipping")
             return
 
         def _run():
+            # Per-ticker lock: only one gate call at a time per conditional
+            lock = self._dispatch_locks[ticker]
+            if not lock.acquire(blocking=False):
+                logger.debug(f"🎯 {ticker} dispatch already in progress — skipping duplicate")
+                return
             try:
                 # Build live_state from latest available data
                 live_state = self._build_live_state()
@@ -614,6 +625,8 @@ class RealtimeMonitor:
                 logger.error(f"🔴 Entry trigger dispatch failed for {ticker}: {e}")
                 self._stats['errors'] += 1
                 self._stats['last_error'] = f"dispatch {ticker}: {e}"
+            finally:
+                lock.release()
 
         threading.Thread(target=_run, daemon=True, name=f'trigger-{ticker}').start()
 

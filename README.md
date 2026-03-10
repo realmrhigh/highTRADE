@@ -20,7 +20,7 @@ python3 config_validator.py
 tail -f trading_data/logs/orchestrator_output.log
 
 # Test Slack integration
-# Send "status" in #all-hightrade Slack channel
+# Send "status" in any Slack channel the bot has joined, or DM the bot directly
 ```
 
 ## What's New in v1.1.0 🎉
@@ -106,7 +106,7 @@ launchctl list | grep hightrade   # Check status
 
 ### Slack Bot (launchd)
 - **Label**: `com.hightrade.slackbot`
-- **Function**: Listens for commands in #all-hightrade
+- **Function**: Listens for commands in any joined Slack channel, group DM, or direct message
 - **Log**: `logs/slack_bot.log`
 
 ### MCP Server (Claude Desktop)
@@ -138,7 +138,7 @@ python3 config_validator.py
 ```
 
 ### Slack Commands
-Send these in #all-hightrade channel:
+Send these in any Slack channel the bot has joined, any group DM, or directly to the bot:
 - `status` - System status
 - `portfolio` - View positions
 - `defcon` - DEFCON level details
@@ -146,6 +146,8 @@ Send these in #all-hightrade channel:
 - `hold` - Pause trading
 - `yes` - Approve pending trade
 - `no` - Reject pending trade
+
+You can also mention the bot, for example: `@HighTrade status`
 
 ### Service Management
 ```bash

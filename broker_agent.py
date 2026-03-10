@@ -1538,6 +1538,19 @@ class BrokerDecisionEngine:
                 )
                 gate = self._run_pre_purchase_gate(cond, current_price, live_state)
 
+                # Re-check conditional status after gate call (may take 15-30s).
+                # Another thread (WebSocket dispatch or cycle) may have already
+                # processed this conditional while the gate was running.
+                try:
+                    fresh = conn.execute(
+                        "SELECT status FROM conditional_tracking WHERE id=?", (cond_id,)
+                    ).fetchone()
+                    if fresh and fresh['status'] != 'active':
+                        logger.info(f"  ⏩ {ticker} already processed by another thread (status={fresh['status']}) — skipping")
+                        continue
+                except Exception:
+                    pass
+
                 if not gate.get('approve', True):
                     veto = gate.get('veto_reason', 'unspecified')
                     _gate_stance = gate.get('_stance_applied', '?')
