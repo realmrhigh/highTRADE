@@ -68,6 +68,12 @@ except ImportError:
 
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
+
+def _google_search_grounding_enabled() -> bool:
+    """Return True when Gemini REST calls should include Google Search grounding."""
+    val = os.environ.get("GEMINI_ENABLE_GOOGLE_SEARCH", "").strip().lower()
+    return val in {"1", "true", "yes", "on"}
+
 def _get_api_key() -> str:
     """Re-read GEMINI_API_KEY from .env on every call (hot-reload without restart)."""
     try:
@@ -754,6 +760,8 @@ def _call_via_api(prompt: str, model_id: str, temperature: float,
         'contents': [{'parts': [{'text': prompt}]}],
         'generationConfig': gen_config,
     }
+    if _google_search_grounding_enabled():
+        payload['tools'] = [{'google_search': {}}]
 
     try:
         resp = requests.post(url, json=payload, timeout=180)
@@ -778,12 +786,21 @@ def _call_via_api(prompt: str, model_id: str, temperature: float,
         in_tok  = usage.get('promptTokenCount', 0)
         out_tok = usage.get('candidatesTokenCount', 0)
         tht_tok = usage.get('thoughtsTokenCount', 0)
+        grounding_meta = cand.get('groundingMetadata', {}) or data.get('groundingMetadata', {}) or {}
+        search_queries = grounding_meta.get('webSearchQueries') or grounding_meta.get('searchQueries') or []
+        grounding_chunks = grounding_meta.get('groundingChunks') or []
 
         if not text:
             logger.warning(f"API empty output | finish={cand.get('finishReason')} | thought={tht_tok}tok")
             return None, in_tok, out_tok
 
-        logger.info(f"API OK {model_id} | in={in_tok} thought={tht_tok} out={out_tok}")
+        if search_queries or grounding_chunks:
+            logger.info(
+                f"API OK {model_id} | in={in_tok} thought={tht_tok} out={out_tok} | "
+                f"grounded={len(search_queries)}q/{len(grounding_chunks)}src"
+            )
+        else:
+            logger.info(f"API OK {model_id} | in={in_tok} thought={tht_tok} out={out_tok}")
         return text, in_tok, out_tok
 
     except Exception as e:

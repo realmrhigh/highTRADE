@@ -7,6 +7,7 @@ Analyzes market conditions, makes trade decisions, and executes on your behalf
 import sqlite3
 import json
 import logging
+import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -1127,11 +1128,14 @@ class BrokerDecisionEngine:
     def _run_pre_purchase_gate(self, cond: dict, current_price: float,
                                live_state: dict) -> dict:
         """
-        Run a Gemini 3 Pro check immediately before triggering an acquisition.
+        Run the pre-purchase AI gate before triggering an acquisition.
+        Primary: grounded Gemini 3.1 Pro via REST.
+        Fallback: Grok 4.1 fast reasoning.
         Returns {"approve": bool, "reason": str, "veto_reason": str, "conditions_met": list}.
-        On any error, defaults to APPROVE (fail-open) so a Gemini outage doesn't block all trading.
+        On any error, defaults to APPROVE (fail-open) so an AI outage doesn't block all trading.
         """
         import gemini_client
+        import grok_client
 
         ticker    = cond.get('ticker', '?')
         tag       = cond.get('watch_tag') or 'untagged'
@@ -1272,10 +1276,7 @@ class BrokerDecisionEngine:
             f'}}'
         )
 
-        try:
-            text, in_tok, out_tok = gemini_client.call(prompt=prompt, model_key='balanced', caller='broker_gate')
-
-            # Parse JSON
+        def _parse_gate_json(text: str) -> dict:
             if "```json" in text:
                 text = text.split("```json")[1].split("```")[0].strip()
             elif "```" in text:
@@ -1284,17 +1285,71 @@ class BrokerDecisionEngine:
                 parts = text.split("</think>")
                 if len(parts) > 1:
                     text = parts[-1].strip()
-
             result = json.loads(text.strip())
             result['_stance_applied'] = trading_stance
             return result
 
+        gate_attempts = []
+
+        # Primary: Gemini 3.1 Pro via REST with Google Search grounding enabled.
+        _orig_grounding = os.environ.get('GEMINI_ENABLE_GOOGLE_SEARCH')
+        try:
+            os.environ['GEMINI_ENABLE_GOOGLE_SEARCH'] = '1'
+            text, in_tok, out_tok = gemini_client.call(
+                prompt=prompt,
+                model_key='reasoning',
+                model_id='gemini-3.1-pro-preview',
+                caller='broker_gate',
+            )
+            if text:
+                result = _parse_gate_json(text)
+                result['_gate_model'] = 'gemini-3.1-pro-preview'
+                result['_gate_provider'] = 'google-rest-grounded'
+                result['_gate_tokens'] = {'input': in_tok, 'output': out_tok}
+                return result
+            gate_attempts.append('gemini-3.1-pro-preview: empty response')
         except json.JSONDecodeError as e:
-            logger.warning(f"  ⚠️  Gate JSON parse failed for {ticker}: {e} — defaulting to APPROVE")
-            return {"approve": True, "reason": "gate parse error — fail-open", "veto_reason": "", "conditions_met": [], "_stance_applied": trading_stance}
+            gate_attempts.append(f'gemini-3.1-pro-preview: json parse failed ({e})')
         except Exception as e:
-            logger.warning(f"  ⚠️  Pre-purchase gate failed for {ticker}: {e} — defaulting to APPROVE")
-            return {"approve": True, "reason": "gate error — fail-open", "veto_reason": "", "conditions_met": [], "_stance_applied": trading_stance}
+            gate_attempts.append(f'gemini-3.1-pro-preview: {e}')
+        finally:
+            if _orig_grounding is None:
+                os.environ.pop('GEMINI_ENABLE_GOOGLE_SEARCH', None)
+            else:
+                os.environ['GEMINI_ENABLE_GOOGLE_SEARCH'] = _orig_grounding
+
+        # Fallback: Grok 4.1 fast reasoning.
+        try:
+            text, in_tok, out_tok = grok_client.call(
+                prompt=prompt,
+                model_id='grok-4-1-fast-reasoning',
+                temperature=0.2,
+            )
+            if text:
+                result = _parse_gate_json(text)
+                result['_gate_model'] = 'grok-4-1-fast-reasoning'
+                result['_gate_provider'] = 'xai'
+                result['_gate_tokens'] = {'input': in_tok, 'output': out_tok}
+                result['_gate_fallback_used'] = True
+                result['_gate_attempts'] = gate_attempts
+                return result
+            gate_attempts.append('grok-4-1-fast-reasoning: empty response')
+        except json.JSONDecodeError as e:
+            gate_attempts.append(f'grok-4-1-fast-reasoning: json parse failed ({e})')
+        except Exception as e:
+            gate_attempts.append(f'grok-4-1-fast-reasoning: {e}')
+
+        logger.warning(
+            f"  ⚠️  Pre-purchase gate AI stack failed for {ticker}: {' | '.join(gate_attempts)} — defaulting to APPROVE"
+        )
+        return {
+            "approve": True,
+            "reason": "gate error — fail-open",
+            "veto_reason": "",
+            "conditions_met": [],
+            "_stance_applied": trading_stance,
+            "_gate_attempts": gate_attempts,
+        }
 
     def check_acquisition_conditionals(self, live_state: dict = None) -> List[Dict]:
         """
