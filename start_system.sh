@@ -33,9 +33,9 @@ fi
 # Create logs directory
 mkdir -p trading_data/logs
 
-# Start orchestrator with semi_auto broker mode
-echo -e "\n${GREEN}Starting HighTrade Orchestrator (semi_auto mode)...${NC}"
-nohup /opt/homebrew/bin/python3.11 hightrade_orchestrator.py continuous 15 --broker semi_auto \
+# Start orchestrator using the persisted broker mode unless you pass --broker manually elsewhere
+echo -e "\n${GREEN}Starting HighTrade Orchestrator (persisted broker mode)...${NC}"
+nohup /opt/homebrew/bin/python3.11 hightrade_orchestrator.py continuous 15 \
     > trading_data/logs/orchestrator_output.log \
     2> trading_data/logs/orchestrator_error.log &
 ORCH_PID=$!

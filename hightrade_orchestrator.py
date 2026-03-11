@@ -73,7 +73,7 @@ logger = logging.getLogger(__name__)
 class HighTradeOrchestrator:
     """Main orchestrator for HighTrade system"""
 
-    def __init__(self, broker_mode='semi_auto'):
+    def __init__(self, broker_mode='semi_auto', broker_mode_explicit: bool = False):
         """Initialize orchestrator components
 
         broker_mode options:
@@ -81,9 +81,10 @@ class HighTradeOrchestrator:
           - 'semi_auto': Alerts sent, trades executed with tips
           - 'full_auto': Complete autonomous trading
         """
-        # Allow persisted mode to override the default (but not an explicit CLI arg)
+        # Allow persisted mode to override the default, but never override
+        # an explicit CLI/startup selection.
         try:
-            if CONFIG_PATH.exists():
+            if not broker_mode_explicit and CONFIG_PATH.exists():
                 with open(CONFIG_PATH) as _f:
                     _cfg = json.load(_f)
                 saved_mode = _cfg.get('broker_mode')
@@ -940,33 +941,7 @@ Check dashboard for detailed analysis.
                     crisis_desc = f"DEFCON {current_defcon} escalation - Signal Score: {signal_score:.1f}"
                     market_conditions = {'vix': vix} if vix else {}
 
-                    if self.broker_mode == 'disabled':
-                        # Manual mode: generate alert for user approval
-                        trade_alert = self.paper_trading.generate_trade_alert(
-                            defcon_level=current_defcon,
-                            signal_score=signal_score,
-                            crisis_description=crisis_desc,
-                            market_data=market_conditions
-                        )
-
-                        logger.info("\n" + "="*60)
-                        logger.info("🎯 TRADE ALERT (Multi-Asset Package)")
-                        logger.info("="*60)
-                        logger.info(f"Crisis Type: {trade_alert['crisis_type']}")
-                        logger.info(f"Primary Asset: {trade_alert['assets']['primary_asset']} (50% - ${trade_alert['assets']['primary_size']:,.0f})")
-                        logger.info(f"Secondary Asset: {trade_alert['assets']['secondary_asset']} (30% - ${trade_alert['assets']['secondary_size']:,.0f})")
-                        logger.info(f"Tertiary Asset: {trade_alert['assets']['tertiary_asset']} (20% - ${trade_alert['assets']['tertiary_size']:,.0f})")
-                        logger.info(f"Total Position Size: ${trade_alert['total_position_size']:,.0f}")
-                        logger.info(f"Confidence Score: {trade_alert['confidence_score']}/100")
-                        logger.info(f"VIX: {trade_alert['vix']:.1f}")
-                        logger.info(f"Rationale: {trade_alert['rationale']}")
-                        logger.info(f"Risk/Reward: {trade_alert['risk_reward_analysis']}")
-                        logger.info(f"Approval Window: {trade_alert['time_window_minutes']} minutes")
-                        logger.info("="*60 + "\n")
-
-                        self.pending_trade_alerts.append(trade_alert)
-
-                    else:
+                    if self.broker_mode != 'disabled':
                         # Autonomous mode: broker makes decision
                         logger.info("\n" + "="*60)
                         logger.info("🤖 BROKER AGENT: Analyzing market conditions...")
@@ -982,7 +957,9 @@ Check dashboard for detailed analysis.
                         if trade_executed:
                             logger.info("✅ BROKER: Buy executed autonomously!")
                         else:
-                            logger.info("ℹ️  BROKER: Trade criteria not met or daily limit reached")
+                            logger.info("ℹ️  BROKER: No DEFCON basket buy executed — dynamic acquisition pipeline remains active")
+                    else:
+                        logger.info("ℹ️  Manual DEFCON basket alerts removed — acquisition pipeline is the active buy path")
 
                 # Monitor and process exits (respects hold)
                 if not self.cmd_processor.should_skip_trades:
@@ -2562,31 +2539,9 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
             logger.info("No pending trade alerts")
             return []
 
-        executed_trades = []
-
-        for alert in self.pending_trade_alerts:
-            logger.info(f"\n📋 Approving trade package:")
-            logger.info(f"   Primary: {alert['assets']['primary_asset']}")
-            logger.info(f"   Secondary: {alert['assets']['secondary_asset']}")
-            logger.info(f"   Tertiary: {alert['assets']['tertiary_asset']}")
-            logger.info(f"   Size: ${alert['total_position_size']:,.0f}")
-
-            if auto_approve:
-                logger.info("   ✅ Auto-approved")
-                approval = True
-            else:
-                response = input("   Execute trade? (y/n): ").strip().lower()
-                approval = response == 'y'
-
-            if approval:
-                trade_ids = self.paper_trading.execute_trade_package(alert, user_approval=True)
-                executed_trades.extend(trade_ids)
-                logger.info(f"   ✅ EXECUTED - Trade IDs: {trade_ids}")
-            else:
-                logger.info("   ❌ Skipped by user")
-
+        logger.info("Clearing legacy pending DEFCON trade alerts — basket execution has been removed")
         self.pending_trade_alerts = []
-        return executed_trades
+        return []
 
     def execute_pending_exits(self, auto_exit=True):
         """
@@ -2732,7 +2687,11 @@ Examples:
 
     args = parser.parse_args()
 
-    orchestrator = HighTradeOrchestrator(broker_mode=args.broker)
+    broker_mode_explicit = '--broker' in sys.argv
+    orchestrator = HighTradeOrchestrator(
+        broker_mode=args.broker,
+        broker_mode_explicit=broker_mode_explicit,
+    )
 
     if args.command == 'health':
         success = orchestrator.check_system_health()

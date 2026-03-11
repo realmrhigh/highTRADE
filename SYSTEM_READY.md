@@ -198,7 +198,7 @@ tail -f trading_data/logs/hightrade_$(date +%Y%m%d).log
 
 ### Trading
 - ✅ Paper trading engine
-- ✅ Multi-asset position tracking
+- ✅ Single-name position tracking
 - ✅ Real-time P&L calculation
 - ✅ Exit signal detection
 - ✅ Trade approval workflow

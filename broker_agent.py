@@ -16,7 +16,7 @@ from typing import Dict, List, Optional, Tuple
 _ET = ZoneInfo('America/New_York')
 def _et_now() -> datetime:
     return datetime.now(_ET)
-from paper_trading import PaperTradingEngine, CrisisAssetIntelligence
+from paper_trading import PaperTradingEngine
 from alerts import AlertSystem
 from quick_money_research import QuickMoneyResearch
 
@@ -280,7 +280,6 @@ class BrokerDecisionEngine:
 
     def __init__(self):
         self.paper_trading = PaperTradingEngine()
-        self.intelligence = CrisisAssetIntelligence()
         self.alerts = AlertSystem()
         self.quick_money = QuickMoneyResearch()
         self.decision_history = []
@@ -486,69 +485,15 @@ class BrokerDecisionEngine:
 
         Returns trade decision or None if no trade warranted
         """
-        vix = market_data.get('vix', 20.0)
-
-        # Decision 1: Should we trade at all?
         if not self._should_trade(defcon_level, signal_score):
             logger.info("❌ Trade criteria not met - skipping")
             return None
 
-        # Decision 2: What assets should we trade?
-        crisis_type = self.intelligence.analyze_crisis_type(crisis_description, signal_score)
-        recommendations = self.intelligence.recommend_assets_for_crisis(
-            crisis_type, signal_score, defcon_level
+        logger.info(
+            "ℹ️  Crisis basket trading disabled — deferring DEFCON buy handling "
+            f"for signal_score={signal_score:.1f} / DEFCON={defcon_level} to dynamic acquisition research/conditionals"
         )
-
-        # Decision 3: How much should we trade?
-        position_size = self.paper_trading.calculate_position_size_vix_adjusted(vix)
-
-        # Decision 4: Risk check - don't over-expose
-        # Use available cash to account for realized P&L
-        current_exposure = self._calculate_current_exposure()
-        available_cash = self._calculate_available_cash()
-        effective_capital = current_exposure + available_cash  # true account value minus unrealized
-        if current_exposure + position_size > effective_capital * 0.60:
-            logger.warning(f"⚠️  Portfolio exposure limit reached ({current_exposure + position_size:.0f})")
-            return None
-
-        # Decision 5: Holdings awareness — log existing exposure in recommended tickers
-        rec_tickers = [
-            recommendations.get('primary_asset'),
-            recommendations.get('secondary_asset'),
-            recommendations.get('tertiary_asset'),
-        ]
-        rec_tickers = [t for t in rec_tickers if t]
-        holdings, holdings_text = self._get_holdings_context(rec_tickers)
-        if holdings:
-            logger.info(f"  📋 Existing holdings in recommended tickers: {list(holdings.keys())}")
-            for tkr, h in holdings.items():
-                logger.info(
-                    f"     {tkr}: {h['total_shares']} shares, avg ${h['avg_entry_price']:.2f}, "
-                    f"P&L {h['unrealized_pct']:+.1f}%"
-                )
-
-        # Build trade decision
-        decision = {
-            'timestamp': datetime.now().isoformat(),
-            'decision_type': 'BUY_PACKAGE',
-            'confidence': recommendations['confidence_score'],
-            'crisis_type': crisis_type,
-            'assets': {
-                'primary': recommendations['primary_asset'],
-                'secondary': recommendations['secondary_asset'],
-                'tertiary': recommendations['tertiary_asset']
-            },
-            'position_size': position_size,
-            'vix': vix,
-            'defcon_level': defcon_level,
-            'signal_score': signal_score,
-            'rationale': recommendations['rationale'],
-            'existing_holdings': holdings,
-            'existing_holdings_text': holdings_text,
-        }
-
-        logger.info(f"✅ BUY DECISION: {crisis_type} - Size: ${position_size:,.0f}, Confidence: {decision['confidence']}%")
-        return decision
+        return None
 
     def _run_pre_exit_gate(self, trade: Dict, current_price: float,
                            stop_price: float, loss_pct: float) -> Dict:
@@ -1772,7 +1717,7 @@ class AutonomousBroker:
                 holdings_text = trade_decision.get('existing_holdings_text', '')
                 gate_prompt = (
                     f"You are a portfolio risk gate for an automated paper trading system.\n"
-                    f"The broker wants to buy a 3-asset package but ALL tickers are already held:\n\n"
+                    f"The broker is considering adding to already-held tickers:\n\n"
                     f"{holdings_text}\n\n"
                     f"PROPOSED PURCHASE:\n"
                     f"  Tickers: {', '.join(planned_tickers)}\n"
@@ -1803,43 +1748,9 @@ class AutonomousBroker:
                 except Exception as e:
                     logger.warning(f"  ⚠️  Holdings gate failed ({e}) — proceeding with buy (fail-open)")
 
-            # Build alert for execution
-            alert = {
-                'defcon_level': trade_decision['defcon_level'],
-                'signal_score': trade_decision['signal_score'],
-                'crisis_type': trade_decision['crisis_type'],
-                'assets': {
-                    'primary_asset': trade_decision['assets']['primary'],
-                    'secondary_asset': trade_decision['assets']['secondary'],
-                    'tertiary_asset': trade_decision['assets']['tertiary'],
-                    'primary_allocation_pct': 0.50,
-                    'secondary_allocation_pct': 0.30,
-                    'tertiary_allocation_pct': 0.20,
-                    'primary_size': trade_decision['position_size'] * 0.50,
-                    'secondary_size': trade_decision['position_size'] * 0.30,
-                    'tertiary_size': trade_decision['position_size'] * 0.20
-                },
-                'total_position_size': trade_decision['position_size'],
-                'vix': trade_decision['vix'],
-                'rationale': trade_decision['rationale'],
-                'confidence_score': trade_decision['confidence'],
-                'crisis_description': trade_decision.get('rationale', 'Autonomous broker decision'),
-                'risk_reward_analysis': '',
-                'time_window_minutes': 15
-            }
-
-            # Execute the trade
-            trade_ids = self.decision_engine.paper_trading.execute_trade_package(alert, user_approval=True)
-
-            if trade_ids:
-                self.trades_executed_today += 1
-                self.notification_engine.send_buy_notification(trade_decision)
-                self.decision_engine.record_decision(trade_decision, executed=True, result="EXECUTED")
-
-                # Send tips
-                self._send_market_tips(defcon_level, signal_score, trade_decision)
-
-                return True
+            logger.info("ℹ️  Legacy DEFCON package execution removed — skipping autonomous crisis basket buy")
+            self.decision_engine.record_decision(trade_decision, executed=False, result="LEGACY_BASKET_REMOVED")
+            return False
         else:
             self.decision_engine.record_decision(trade_decision, executed=False)
             logger.info("ℹ️  Trade decision ready (auto_execute disabled)")
@@ -1985,7 +1896,7 @@ class AutonomousBroker:
             # FULL_AUTO: Execute immediately
             logger.info(f"  🤖 Executing acquisition entry: {ticker} @ ${entry_price:.2f} — ${position_size:,.0f}")
 
-            # Build a trade package compatible with PaperTradingEngine.execute_trade_package
+            # Execute as a single-name acquisition entry
             trade_alert = {
                 'defcon_level':    3,  # Acquisition entries are pre-researched, lower urgency
                 'signal_score':    decision['confidence'] * 100,
@@ -2015,15 +1926,23 @@ class AutonomousBroker:
             }
 
             try:
-                trade_ids = self.decision_engine.paper_trading.execute_trade_package(
-                    trade_alert, user_approval=True
+                shares = max(1, int(position_size / entry_price)) if entry_price > 0 else 0
+                buy_result = self.decision_engine.paper_trading.manual_buy(
+                    ticker,
+                    shares,
+                    price_override=entry_price,
+                    notes=(
+                        f"Acquisition conditional entry | thesis={decision.get('thesis', '')} | "
+                        f"stop={decision.get('stop_loss', 0):.2f} | tp1={decision.get('take_profit_1', 0):.2f}"
+                    ),
                 )
-                if trade_ids:
+                if buy_result.get('ok'):
                     executed_count += 1
                     open_tickers.add(ticker)  # Track so next conditional for same ticker is blocked
                     self.decision_engine.record_decision(decision, executed=True, result="ACQUISITION_ENTERED")
                     self._notify_acquisition_triggered(decision, executed=True)
-                    logger.info(f"  ✅ {ticker} acquisition entry executed (trade_ids={trade_ids})")
+                    trade_ids = [buy_result.get('trade_id')]
+                    logger.info(f"  ✅ {ticker} acquisition entry executed (trade_id={buy_result.get('trade_id')})")
                     # Write analyst-derived exit levels to the new trade record
                     stop = decision.get('stop_loss')
                     tp1  = decision.get('take_profit_1')
@@ -2042,9 +1961,11 @@ class AutonomousBroker:
                         except Exception as _e:
                             logger.warning(f"  ⚠️  Could not write exit levels for {ticker}: {_e}")
                 else:
-                    logger.warning(f"  ⚠️  {ticker} entry returned no trade IDs")
+                    logger.warning(f"  ❌ {ticker} acquisition entry failed: {buy_result.get('message', 'unknown error')}")
+                    self.decision_engine.record_decision(decision, executed=False, result="EXECUTION_FAILED")
             except Exception as e:
                 logger.error(f"  ❌ {ticker} acquisition entry failed: {e}")
+                self.decision_engine.record_decision(decision, executed=False, result="EXECUTION_FAILED")
 
         return executed_count
 

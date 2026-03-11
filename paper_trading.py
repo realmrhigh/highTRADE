@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 HighTrade Paper Trading Engine
-Implements semi-automatic paper trading with intelligent asset selection based on crisis types
+Handles paper/live position bookkeeping, manual trades, acquisition entries, and exits.
 """
 
 import sqlite3
@@ -145,109 +145,6 @@ class AlpacaBroker:
             return None
 
 
-class CrisisAssetIntelligence:
-    """Analyzes crisis types and recommends appropriate assets to trade"""
-
-    # Crisis-to-asset mapping based on crisis type and description
-    CRISIS_PATTERNS = {
-        'tech_crash': {
-            'keywords': ['tech', 'valuation', 'margin', 'leverage', 'overvalued', 'correction'],
-            'primary': 'VTI',
-            'secondary': 'IVV',
-            'tertiary': 'GOOGL',
-            'rationale': 'Rotate to broad diversification during tech correction'
-        },
-        'geopolitical_trade': {
-            'keywords': ['tariff', 'trade war', 'china', 'supply chain', 'sanctions'],
-            'primary': 'QQQ',
-            'secondary': 'MSFT',
-            'tertiary': 'NVDA',
-            'rationale': 'Tech companies resilient to tariffs; focus on IP-based business models'
-        },
-        'liquidity_credit': {
-            'keywords': ['liquidity', 'credit', 'spread', 'financial stress', 'banking', 'crisis'],
-            'primary': 'MSFT',
-            'secondary': 'GOOGL',
-            'tertiary': 'QQQ',
-            'rationale': 'Large-cap quality less affected by credit stress'
-        },
-        'inflation_rate': {
-            'keywords': ['inflation', 'yield', 'rate', 'fed', 'tightening', 'bonds'],
-            'primary': 'QQQ',
-            'secondary': 'NVDA',
-            'tertiary': 'MSFT',
-            'rationale': 'Growth/tech benefit from Fed policy pivot expectations'
-        },
-        'pandemic_health': {
-            'keywords': ['pandemic', 'covid', 'disease', 'health', 'lockdown', 'epidemic'],
-            'primary': 'MSFT',
-            'secondary': 'GOOGL',
-            'tertiary': 'NVDA',
-            'rationale': 'Work-from-home and cloud infrastructure winners'
-        },
-        'market_correction': {
-            'keywords': ['correction', 'selloff', 'drawdown', 'decline', 'drop', 'crash'],
-            'primary': 'GOOGL',
-            'secondary': 'NVDA',
-            'tertiary': 'MSFT',
-            'rationale': 'Flight to mega-cap quality and defensive positioning'
-        }
-    }
-
-    def analyze_crisis_type(self, crisis_description: str, signal_score: float) -> str:
-        """
-        Determine crisis category from description and signal strength
-
-        Returns: crisis_type key from CRISIS_PATTERNS
-        """
-        description_lower = crisis_description.lower()
-
-        # Score each crisis pattern based on keyword matches
-        pattern_scores = {}
-        for pattern_type, pattern_data in self.CRISIS_PATTERNS.items():
-            keyword_matches = sum(1 for kw in pattern_data['keywords']
-                                if kw in description_lower)
-            pattern_scores[pattern_type] = keyword_matches
-
-        # Return pattern with highest score, default to market_correction
-        if max(pattern_scores.values()) > 0:
-            return max(pattern_scores, key=pattern_scores.get)
-        return 'market_correction'
-
-    def recommend_assets_for_crisis(self, crisis_type: str, signal_score: float,
-                                    defcon_level: int) -> Dict[str, Any]:
-        """
-        Get asset recommendations for a specific crisis type
-
-        Returns: {
-            'primary_asset': str,
-            'secondary_asset': str,
-            'tertiary_asset': str,
-            'rationale': str,
-            'confidence_score': int (0-100),
-            'crisis_type': str
-        }
-        """
-        if crisis_type not in self.CRISIS_PATTERNS:
-            crisis_type = 'market_correction'
-
-        pattern = self.CRISIS_PATTERNS[crisis_type]
-
-        # Calculate confidence based on signal strength
-        base_confidence = min(100, int(signal_score))
-        defcon_boost = max(0, (5 - defcon_level) * 15)  # Higher boost for lower DEFCON
-        confidence = min(100, base_confidence + defcon_boost)
-
-        return {
-            'primary_asset': pattern['primary'],
-            'secondary_asset': pattern['secondary'],
-            'tertiary_asset': pattern['tertiary'],
-            'rationale': pattern['rationale'],
-            'confidence_score': confidence,
-            'crisis_type': crisis_type
-        }
-
-
 class PaperTradingEngine:
     """
     Main paper trading system that monitors DEFCON signals and executes trades
@@ -265,7 +162,6 @@ class PaperTradingEngine:
     def __init__(self, db_path=DB_PATH, total_capital=100000):
         self.db_path = db_path
         self.total_capital = total_capital
-        self.intelligence = CrisisAssetIntelligence()
         self.last_vix = 20.0
         self.pending_trade_alerts = []
         self.pending_trade_exits = []
@@ -488,71 +384,6 @@ class PaperTradingEngine:
         vix_adjusted = self.BASE_POSITION_SIZE * (20.0 / vix_level)
         return max(self.MIN_POSITION_SIZE, min(self.MAX_POSITION_SIZE, vix_adjusted))
 
-    def generate_trade_alert(self, defcon_level: int, signal_score: float,
-                            crisis_description: str, market_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Generate a trade alert with intelligent asset recommendations
-
-        Returns: {
-            'timestamp': str (ISO format),
-            'defcon_level': int,
-            'signal_score': float,
-            'crisis_description': str,
-            'assets': {
-                'primary_asset': str,
-                'secondary_asset': str,
-                'tertiary_asset': str,
-                'primary_allocation': float (0.5),
-                'secondary_allocation': float (0.3),
-                'tertiary_allocation': float (0.2)
-            },
-            'position_size': float,
-            'vix': float,
-            'rationale': str,
-            'confidence_score': int,
-            'risk_reward_analysis': str,
-            'time_window_minutes': int
-        }
-        """
-        self.last_vix = market_data.get('vix', 20.0) if market_data else 20.0
-
-        # Analyze crisis and get asset recommendations
-        crisis_type = self.intelligence.analyze_crisis_type(crisis_description, signal_score)
-        recommendations = self.intelligence.recommend_assets_for_crisis(
-            crisis_type, signal_score, defcon_level
-        )
-
-        # Calculate position size
-        position_size = self.calculate_position_size_vix_adjusted(self.last_vix)
-
-        # Asset allocation: 50% primary, 30% secondary, 20% tertiary
-        alert = {
-            'timestamp': datetime.now().isoformat(),
-            'defcon_level': defcon_level,
-            'signal_score': signal_score,
-            'crisis_description': crisis_description,
-            'crisis_type': recommendations['crisis_type'],
-            'assets': {
-                'primary_asset': recommendations['primary_asset'],
-                'secondary_asset': recommendations['secondary_asset'],
-                'tertiary_asset': recommendations['tertiary_asset'],
-                'primary_allocation_pct': 0.50,
-                'secondary_allocation_pct': 0.30,
-                'tertiary_allocation_pct': 0.20,
-                'primary_size': position_size * 0.50,
-                'secondary_size': position_size * 0.30,
-                'tertiary_size': position_size * 0.20
-            },
-            'total_position_size': position_size,
-            'vix': self.last_vix,
-            'rationale': recommendations['rationale'],
-            'confidence_score': recommendations['confidence_score'],
-            'risk_reward_analysis': self._calculate_risk_reward(defcon_level, signal_score),
-            'time_window_minutes': 15
-        }
-
-        return alert
-
     def _calculate_risk_reward(self, defcon_level: int, signal_score: float) -> str:
         """Calculate risk/reward analysis for the trade"""
         profit_target_pct = self.PROFIT_TARGET * 100
@@ -567,115 +398,6 @@ class PaperTradingEngine:
 
         return (f"Risk: {stop_loss_pct:.1f}% | Target: +{profit_target_pct:.1f}% | "
                 f"R:R Ratio: 1:{reward_to_risk:.2f} | Confidence: {confidence_level}")
-
-    def execute_trade_package(self, alert: Dict[str, Any], user_approval: bool = True) -> List[int]:
-        """
-        Execute a 3-asset trade package when user approves
-
-        Creates separate trade records for each asset, linked by crisis_id and timestamp
-        Returns: list of trade_ids created [trade_id_primary, trade_id_secondary, trade_id_tertiary]
-        """
-        if not user_approval:
-            logger.info("Trade package not executed (no user approval)")
-            return []
-
-        try:
-            self.connect()
-
-            entry_time = datetime.now()
-            entry_date = entry_time.strftime('%Y-%m-%d')
-            entry_time_str = entry_time.strftime('%H:%M:%S')
-
-            # Get or create crisis event for this signal
-            # Link trades by using the same timestamp and DEFCON level as identifier
-            crisis_id = self._get_or_create_signal_crisis(alert, entry_date, entry_time_str)
-
-            trade_ids = []
-            assets_info = alert['assets']
-
-            # Asset data: (asset_symbol, size_dollars, allocation_pct)
-            assets = [
-                (assets_info['primary_asset'], assets_info['primary_size'], assets_info['primary_allocation_pct']),
-                (assets_info['secondary_asset'], assets_info['secondary_size'], assets_info['secondary_allocation_pct']),
-                (assets_info['tertiary_asset'], assets_info['tertiary_size'], assets_info['tertiary_allocation_pct'])
-            ]
-
-            # Execute each asset separately
-            for asset_symbol, position_size, allocation_pct in assets:
-                entry_price = self._get_current_price(asset_symbol)
-
-                if not entry_price or entry_price <= 0:
-                    logger.warning(f"Could not get price for {asset_symbol}, skipping")
-                    continue
-
-                # Calculate shares
-                shares = int(position_size / entry_price)
-                if shares <= 0:
-                    logger.warning(f"Position too small for {asset_symbol}")
-                    continue
-
-                # Insert trade record
-                self.cursor.execute('''
-                INSERT INTO trade_records
-                (crisis_id, asset_symbol, entry_date, entry_time, entry_price,
-                 entry_signal_score, defcon_at_entry, shares, position_size_dollars,
-                 exit_reason, status, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    crisis_id,
-                    asset_symbol,
-                    entry_date,
-                    entry_time_str,
-                    entry_price,
-                    alert['signal_score'],
-                    alert['defcon_level'],
-                    shares,
-                    position_size,
-                    None,
-                    'open',
-                    f"{allocation_pct*100:.0f}% of {assets_info['primary_asset']}/{assets_info['secondary_asset']}/{assets_info['tertiary_asset']} package"
-                ))
-                self.conn.commit()
-
-                # --- NEW: Pipeline Cleanup ---
-                # Once bought, archive from procurement so it doesn't stay in watchlist/hound
-                try:
-                    # Mark as archived in acquisition watchlist
-                    self.cursor.execute("""
-                        UPDATE acquisition_watchlist SET status = 'archived' 
-                        WHERE ticker = ? AND status != 'archived'
-                    """, (asset_symbol,))
-                    
-                    # Mark as triggered in conditional tracking (if not already)
-                    self.cursor.execute("""
-                        UPDATE conditional_tracking SET status = 'triggered' 
-                        WHERE ticker = ? AND status = 'active'
-                    """, (asset_symbol,))
-                    
-                    # Mark as watched in grok hound candidates
-                    self.cursor.execute("""
-                        UPDATE grok_hound_candidates SET status = 'watched' 
-                        WHERE ticker = ? AND status = 'pending'
-                    """, (asset_symbol,))
-                except Exception as e:
-                    logger.warning(f"Pipeline cleanup failed for {asset_symbol}: {e}")
-
-                # Get the trade_id
-                trade_id = self.cursor.lastrowid
-                trade_ids.append(trade_id)
-                logger.info(f"✅ Trade executed: {asset_symbol} - {shares} shares @ ${entry_price:.2f} (Trade ID: {trade_id})")
-
-                # Mirror to Alpaca (non-blocking — DB is source of truth)
-                self.alpaca.place_order(asset_symbol, shares, 'buy')
-
-            self.conn.commit()
-            return trade_ids
-
-        except Exception as e:
-            logger.error(f"Error executing trade package: {e}", exc_info=True)
-            return []
-        finally:
-            self.disconnect()
 
     def monitor_all_positions(self) -> List[Dict[str, Any]]:
         """
@@ -1005,7 +727,7 @@ class PaperTradingEngine:
                                    entry_date: str, entry_time: str) -> int:
         """
         Create a temporary crisis record for this signal event
-        This links all trades in a package to the same signal event
+        This links signal-driven trades to the same signal event
         """
         crisis_name = f"Signal_{alert['defcon_level']}__{entry_date}_{entry_time.replace(':', '')}"
 
@@ -1032,7 +754,7 @@ class PaperTradingEngine:
                 entry_date,
                 'moderate',
                 'signal',
-                f"Paper trading signal package. Crisis type: {alert['crisis_type']}"
+                f"Paper trading signal event. Crisis type: {alert['crisis_type']}"
             ))
             self.conn.commit()
 
@@ -1313,7 +1035,7 @@ class PaperTradingEngine:
 
 
 def main():
-    """Test the paper trading engine"""
+    """Lightweight smoke check for the paper trading engine."""
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s'
@@ -1321,18 +1043,13 @@ def main():
 
     engine = PaperTradingEngine()
 
-    # Test alert generation
-    test_alert = engine.generate_trade_alert(
-        defcon_level=2,
-        signal_score=75.0,
-        crisis_description="Tariff announcement causing supply chain concerns",
-        market_data={'vix': 25.5}
-    )
-
     print("\n" + "="*70)
     print("PAPER TRADING ENGINE TEST")
     print("="*70)
-    print(json.dumps(test_alert, indent=2))
+    print(json.dumps({
+        'vix_20_position_size': engine.calculate_position_size_vix_adjusted(20.0),
+        'open_positions': len(engine.get_open_positions()),
+    }, indent=2))
     print("="*70 + "\n")
 
 
