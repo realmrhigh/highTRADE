@@ -9,10 +9,17 @@ import sys
 import os
 import logging
 import json
+import atexit
 from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import time
+import errno
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 # Load .env early — before any module that reads os.getenv (e.g. AlpacaBroker)
 try:
@@ -46,6 +53,7 @@ DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
 LOGS_PATH = SCRIPT_DIR / 'logs'               # unified log dir — matches launchd stdout
 LEGACY_LOGS_PATH = SCRIPT_DIR / 'trading_data' / 'logs'  # keep for other components
 CONFIG_PATH = SCRIPT_DIR / 'trading_data' / 'orchestrator_config.json'
+ORCHESTRATOR_LOCK_PATH = SCRIPT_DIR / 'trading_data' / 'hightrade_orchestrator.lock'
 
 # Create logs directories
 LOGS_PATH.mkdir(parents=True, exist_ok=True)
@@ -68,6 +76,89 @@ logging.basicConfig(
 # Ensure log lines are flushed immediately so tail -f works in real time
 sys.stdout.reconfigure(line_buffering=True)
 logger = logging.getLogger(__name__)
+
+
+class SingleInstanceLock:
+    """Best-effort OS lock to ensure only one orchestrator process is active."""
+
+    def __init__(self, lock_path: Path):
+        self.lock_path = Path(lock_path)
+        self._fh = None
+        self.acquired = False
+
+    def acquire(self) -> bool:
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        self._fh = open(self.lock_path, 'a+')
+
+        if fcntl is None:
+            # On platforms without fcntl, keep running without a hard lock.
+            # macOS has fcntl, so this is just a defensive fallback.
+            self._write_metadata()
+            self.acquired = True
+            return True
+
+        try:
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as e:
+            if e.errno in (errno.EACCES, errno.EAGAIN):
+                return False
+            raise
+
+        self._write_metadata()
+        self.acquired = True
+        return True
+
+    def _write_metadata(self):
+        if not self._fh:
+            return
+        self._fh.seek(0)
+        self._fh.truncate()
+        payload = {
+            'pid': os.getpid(),
+            'started_at': datetime.now().isoformat(),
+            'argv': sys.argv,
+        }
+        self._fh.write(json.dumps(payload))
+        self._fh.flush()
+
+    def read_holder(self) -> str:
+        try:
+            return self.lock_path.read_text().strip()
+        except Exception:
+            return ''
+
+    def release(self):
+        if not self._fh:
+            return
+        try:
+            if fcntl is not None and self.acquired:
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        try:
+            self._fh.close()
+        except Exception:
+            pass
+        self._fh = None
+        self.acquired = False
+
+
+_INSTANCE_LOCK = SingleInstanceLock(ORCHESTRATOR_LOCK_PATH)
+
+
+def ensure_single_orchestrator_instance() -> None:
+    """Exit early if another orchestrator instance already owns the runtime lock."""
+    if _INSTANCE_LOCK.acquire():
+        atexit.register(_INSTANCE_LOCK.release)
+        return
+
+    holder = _INSTANCE_LOCK.read_holder()
+    holder_msg = f" Lock holder: {holder}" if holder else ""
+    logger.error(
+        "❌ Another HighTrade orchestrator instance is already running. "
+        f"Exiting to avoid duplicate schedulers/verifier runs.{holder_msg}"
+    )
+    raise SystemExit(1)
 
 
 class HighTradeOrchestrator:
@@ -2686,6 +2777,9 @@ Examples:
     )
 
     args = parser.parse_args()
+
+    if args.command == 'continuous':
+        ensure_single_orchestrator_instance()
 
     broker_mode_explicit = '--broker' in sys.argv
     orchestrator = HighTradeOrchestrator(
