@@ -42,18 +42,32 @@ class GrokAnalyzer:
                           briefing_context: Optional[str] = None) -> Optional[Dict]:
         """
         Grok deep analysis — primary deep dive, replaces Gemini Pro on elevated signals.
-        Uses identical prompt to run_pro_analysis; Grok's live search fills data gaps.
+        Uses a Grok-native prompt while preserving the downstream JSON contract.
         """
         logger.info(f"  🧠 Running Grok DEEP analysis (score={news_score:.1f}, defcon={current_defcon})...")
 
         _gem = GeminiAnalyzer()
-        prompt = _gem._build_pro_prompt(
+        prompt = _gem._build_grok_deep_prompt(
             articles, score_components, sentiment_summary, crisis_type,
             news_score, flash_analysis, current_defcon, positions,
             sector_rotation, vix_term_structure, briefing_context
         )
 
-        text, in_tok, out_tok = self.client.call(prompt, temperature=0.4)
+        grok_system_prompt = (
+            "You are Grok acting as the primary deep-dive market risk analyst for HighTrade. "
+            "Be concise, skeptical, and decisive. Use the supplied market/news context only; "
+            "do not claim to have searched unless external search tools were explicitly enabled. "
+            "Return strict JSON only with no markdown fences or commentary."
+        )
+
+        text, in_tok, out_tok = self.client.call_with_search(
+            prompt,
+            system_prompt=grok_system_prompt,
+            model_id=self.model,
+            temperature=0.4,
+            use_web_search=True,
+            use_x_search=True,
+        )
 
         if not text:
             logger.error("  ❌ Grok deep analysis returned no response")
@@ -294,6 +308,115 @@ Provide a comprehensive trading risk analysis. Respond with ONLY valid JSON:
   "key_watchpoints": [<string>, <string>, <string>],
   "reasoning": "<detailed 4-6 sentence chain of thought explaining your full assessment>",
   "data_gaps": ["<specific data that was absent or stale and would have sharpened this analysis — e.g. 'options flow for AAPL', 'Fed minutes released today not in articles'>"]
+}}"""
+
+    def _build_grok_deep_prompt(self, articles: List[Dict], score_components: Dict,
+                                sentiment_summary: str, crisis_type: str, news_score: float,
+                                flash_analysis: Optional[Dict], current_defcon: int,
+                                positions: Optional[List] = None,
+                                sector_rotation: Optional[Dict] = None,
+                                vix_term_structure: Optional[Dict] = None,
+                                briefing_context: Optional[str] = None) -> str:
+        """Build deep analysis prompt optimized for Grok's API and response style."""
+
+        article_lines = []
+        for i, a in enumerate(articles, 1):
+            title = a.get('title', '')
+            desc = a.get('description', '')[:400] if a.get('description') else 'No description'
+            source = a.get('source', 'Unknown')
+            pub = a.get('published_at', '')
+            sentiment = a.get('sentiment', 'neutral')
+            urgency = a.get('urgency', 'routine')
+            confidence = a.get('confidence', 0)
+            keywords = a.get('matched_keywords', [])
+            article_lines.append(
+                f"{i}. [{source}] [{urgency.upper()}] {title}\n"
+                f"   Published: {pub}\n"
+                f"   Description: {desc}\n"
+                f"   Sentiment: {sentiment} | Confidence: {confidence}/100\n"
+                f"   Keywords matched: {', '.join(keywords) if keywords else 'none'}"
+            )
+
+        articles_text = "\n\n".join(article_lines)
+        flash_text = json.dumps(flash_analysis, indent=2) if flash_analysis else "Not available"
+
+        positions_text = ""
+        if positions:
+            pos_lines = [
+                f"  - {p.get('symbol', 'N/A')}: {p.get('shares', 0)} shares @ ${p.get('entry_price', 0):.2f}, current P&L: {p.get('pnl_pct', 0):+.1f}%"
+                for p in positions
+            ]
+            positions_text = "\nCURRENT POSITIONS:\n" + "\n".join(pos_lines)
+
+        macro_lines = []
+        if sector_rotation:
+            macro_lines.append("SECTOR ROTATION (Relative Strength to SPY):")
+            for s in sector_rotation.get('sectors', [])[:5]:
+                macro_lines.append(
+                    f"  - {s['name']} ({s['symbol']}): 1W Rel={s['rel_1w']:+.2f}%, 1M Rel={s['rel_1m']:+.2f}%"
+                )
+
+        if vix_term_structure:
+            macro_lines.append(
+                f"VIX TERM STRUCTURE: {vix_term_structure['regime']} (VIX/VXV={vix_term_structure['vix_vxv_ratio']:.2f})"
+            )
+
+        macro_text = "\n".join(macro_lines) if macro_lines else "No additional macro data available."
+
+        import gemini_client as _gc
+        _vix_val = None
+        if vix_term_structure:
+            _vix_val = vix_term_structure.get('vix_level') or vix_term_structure.get('vix_spot')
+        _session_block = _gc.market_context_block(vix=_vix_val)
+
+        return f"""You are analyzing whether the current market-news signal represents a real tradeable risk regime shift.
+This deep dive was triggered because the composite news score reached {news_score:.1f}/100.
+
+{_session_block}
+SYSTEM STATE:
+- Current DEFCON Level: {current_defcon}/5 (1=highest alert, 5=normal)
+- News Score: {news_score:.1f}/100
+- Crisis Type: {crisis_type}
+- Sentiment Summary: {sentiment_summary}
+{positions_text}
+
+MACRO & SECTOR CONTEXT:
+{macro_text}
+
+LATEST BRIEFING CONTEXT:
+{briefing_context or 'No recent briefing context available.'}
+
+SCORE COMPONENTS:
+{json.dumps(score_components, indent=2)}
+
+FLASH PRE-ANALYSIS SNAPSHOT:
+{flash_text}
+
+ALL {len(articles)} NEWS ARTICLES:
+{articles_text}
+
+Task:
+1. Decide whether this is actionable risk, noise, or a fading narrative.
+2. Recommend the most appropriate portfolio stance right now.
+3. Assess whether DEFCON should change.
+4. Identify the most important risks and contrarian offsets.
+5. Point out missing data that would materially improve confidence.
+
+Return ONLY valid JSON with exactly these keys:
+{{
+  "narrative_coherence": <float 0.0-1.0>,
+  "hidden_risks": [<string>, <string>, <string>, <string>, <string>],
+  "contrarian_signals": "<detailed string>",
+  "market_context": "<detailed 3-5 sentence market context>",
+  "confidence_in_signal": <float 0.0-1.0>,
+  "dominant_theme": "<string>",
+  "recommended_action": "<BUY|HOLD|SELL|WAIT>",
+  "defcon_recommendation": <int 1-5>,
+  "position_risk_assessment": "<string>",
+  "key_watchpoints": [<string>, <string>, <string>],
+  "reasoning_summary": "<concise 3-5 sentence explanation of the assessment>",
+  "reasoning": "<same as reasoning_summary, repeated for backward compatibility>",
+  "data_gaps": ["<specific missing or stale data item>", "<another missing data item if applicable>"]
 }}"""
 
     def run_flash_analysis(self, articles: List[Dict], score_components: Dict,

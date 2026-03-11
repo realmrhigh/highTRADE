@@ -599,6 +599,11 @@ def _build_day_trade_section(sessions, stats):
         stop_pct = (today_session.get('stop_loss_pct') or 0) * 100
         tp_pct = (today_session.get('take_profit_pct') or 0) * 100
         stretch_pct = (today_session.get('stretch_target_pct') or 0) * 100
+        gap_pct = today_session.get('gap_pct')
+        rel_vol = today_session.get('relative_volume')
+        risk_budget = (today_session.get('portfolio_risk_pct') or 0) * 100
+        edge_summary = today_session.get('edge_summary') or ''
+        error_message = today_session.get('error_message') or ''
 
         # Try to get live price for open positions
         exit_px = today_session.get('exit_price') or 0
@@ -621,6 +626,15 @@ def _build_day_trade_section(sessions, stats):
                 catalyst = research.get('catalyst', '') or research.get('thesis', '')
         except Exception:
             pass
+
+        metrics_bits = []
+        if gap_pct is not None:
+            metrics_bits.append(f"Gap: {float(gap_pct):+.1f}%")
+        if rel_vol:
+            metrics_bits.append(f"RelVol: {float(rel_vol):.1f}×")
+        if risk_budget:
+            metrics_bits.append(f"Risk: {risk_budget:.1f}%")
+        metrics_line = ' · '.join(metrics_bits)
 
         if st in ('bought', 'stretching'):
             pnl_sign = '+' if pnl_d >= 0 else ''
@@ -671,10 +685,13 @@ def _build_day_trade_section(sessions, stats):
               <div style="display:inline-block;padding:2px 8px;border-radius:3px;font-size:10px;
                           background:{st_color}22;color:{st_color};font-weight:bold;letter-spacing:1px;
                           text-transform:uppercase;">{st}</div>
+                            {f'<div style="margin-top:6px;font-size:11px;color:var(--dim);">{metrics_line}</div>' if metrics_line else ''}
               {f'<div style="margin:6px 0;font-size:12px;color:var(--text);">Entry: ${entry:.2f}</div>' if entry else ''}
               {price_line}
               {stop_line}
               {f'<div style="margin-top:6px;font-size:11px;color:var(--dim);font-style:italic;">{catalyst[:200]}</div>' if catalyst else ''}
+                            {f'<div style="margin-top:6px;font-size:11px;color:#9ad0ff;">{edge_summary[:220]}</div>' if edge_summary else ''}
+                            {f'<div style="margin-top:6px;font-size:11px;color:#ff9b9b;">{error_message[:220]}</div>' if error_message and st in ("skipped", "error") else ''}
             </div>
           </div>
         </div>'''

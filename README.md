@@ -39,6 +39,25 @@ tail -f trading_data/logs/orchestrator_output.log
 
 📖 See `docs/ENHANCEMENTS_SUMMARY.md` for detailed information
 
+## Recent Updates
+
+### 🌅 Day Trader Module
+
+- New `day_trader.py` module adds a Grok-powered intraday strategy
+- Runs a pre-market scan, market-open buy, intraday exit checks, and end-of-day exit backstop
+- Stores sessions in `day_trade_sessions` inside `trading_data/trading_history.db`
+- Renders directly in the dashboard under `⚡ Day Trader (Grok)`
+- Dashboard now shows the Day Trader section even when there are no sessions yet
+
+### 🧠 Grok Deep Dive
+
+- Elevated-signal deep analysis now uses a Grok-native prompt in `gemini_analyzer.py`
+- Grok deep-dive now calls xAI Responses API with both:
+  - `web_search`
+  - `x_search`
+- The JSON contract remains compatible with the existing downstream pipeline
+- If the Responses API search call fails, the client still falls back to the normal non-search chat path
+
 ## System Architecture
 
 ```
@@ -133,9 +152,27 @@ python3 hightrade_cmd.py /defcon
 # Help
 python3 hightrade_cmd.py /help
 
+# Day Trader status / control
+python3 hightrade_cmd.py /daytrade
+
+# Run a single orchestrator test cycle
+python3 hightrade_orchestrator.py test
+
 # Run health check
 python3 config_validator.py
 ```
+
+### Day Trader Notes
+
+- The Day Trader pre-market scan uses Grok with live `web_search` and `x_search`
+- The scan asks for exactly one stock and returns structured JSON with:
+  - ticker
+  - catalyst
+  - confidence
+  - stop / take-profit / stretch targets
+  - thesis
+  - sources
+- The deep-dive Grok analysis path is separate from the Day Trader path and is triggered on elevated news signals
 
 ### Slack Commands
 Send these in any Slack channel the bot has joined, any group DM, or directly to the bot:
@@ -204,8 +241,28 @@ cursor.execute('SELECT COUNT(*) FROM signal_monitoring')
 print(f'Signal records: {cursor.fetchone()[0]}')
 cursor.execute('SELECT COUNT(*) FROM news_signals')
 print(f'News signals: {cursor.fetchone()[0]}')
+
+cursor.execute('SELECT COUNT(*) FROM day_trade_sessions')
+print(f'Day trade sessions: {cursor.fetchone()[0]}')
 "
 ```
+
+### One-Shot Cycle Testing
+
+Use the built-in test mode to run a single monitoring cycle without starting a permanent foreground loop:
+
+```bash
+cd ~/Documents/hightrade
+python3 hightrade_orchestrator.py test
+```
+
+This runs:
+
+- one full monitoring cycle
+- AI/news analysis
+- broker/day-trader checks
+- dashboard refresh
+- status summary output
 
 ## Configuration
 
