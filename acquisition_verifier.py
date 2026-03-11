@@ -89,6 +89,44 @@ def _get_conn() -> sqlite3.Connection:
     return conn
 
 
+def _sync_watchlist_status(conn: sqlite3.Connection, ticker: str, status: str, note: Optional[str] = None) -> None:
+    """Mirror the latest conditional status back to the newest watchlist row for this ticker."""
+    try:
+        normalized = (status or '').strip().lower()
+        if normalized == 'active':
+            wl_status = 'conditional_set'
+        elif normalized in ('low_priority', 'invalidated', 'archived', 'triggered'):
+            wl_status = normalized
+        else:
+            return
+
+        row = conn.execute(
+            """
+            SELECT rowid
+            FROM acquisition_watchlist
+            WHERE UPPER(ticker) = UPPER(?)
+            ORDER BY datetime(created_at) DESC, rowid DESC
+            LIMIT 1
+            """,
+            (ticker,),
+        ).fetchone()
+        if not row:
+            return
+
+        if note:
+            conn.execute(
+                "UPDATE acquisition_watchlist SET status=?, notes=? WHERE rowid=?",
+                (wl_status, note[:500], row['rowid']),
+            )
+        else:
+            conn.execute(
+                "UPDATE acquisition_watchlist SET status=? WHERE rowid=?",
+                (wl_status, row['rowid']),
+            )
+    except Exception as e:
+        logger.warning(f"Failed to sync watchlist status for {ticker}: {e}")
+
+
 def _fetch_recent_news_for_ticker(ticker: str, conn: sqlite3.Connection) -> List[str]:
     """Pull the 3 most recent news signals mentioning this ticker."""
     since = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
@@ -489,6 +527,7 @@ def run_verification_cycle() -> Dict:
                             research_confidence=?, updated_at=?
                         WHERE id=?
                     """, (now_iso, new_ver_count, max(new_conf, 0.0), now_iso, cond_id))
+                    _sync_watchlist_status(conn, ticker, 'active')
                     logger.info(f"  ⬆️  {ticker} LOW-PRI PROMOTED back to active (confirmed)")
                     summary['confirmed'] += 1
                 else:
@@ -517,6 +556,7 @@ def run_verification_cycle() -> Dict:
                             verification_count=?, flag_count=?, updated_at=?
                         WHERE id=?
                     """, (flag_note, now_iso, new_ver_count, new_flag_count, now_iso, cond_id))
+                    _sync_watchlist_status(conn, ticker, 'low_priority', flag_note)
                     logger.warning(
                         f"  ⬇️  {ticker} DEMOTED to low_priority "
                         f"({new_flag_count} consecutive flags)"
@@ -564,12 +604,7 @@ def run_verification_cycle() -> Dict:
                             arch_note, now_iso, new_ver_count,
                             new_inval_count, corrected_conf, now_iso, cond_id
                         ))
-                        # Also mark acquisition_watchlist
-                        conn.execute("""
-                            UPDATE acquisition_watchlist SET status='invalidated'
-                            WHERE UPPER(ticker) = UPPER(?)
-                              AND status IN ('conditional_set','researched','analyst_pass')
-                        """, (ticker,))
+                        _sync_watchlist_status(conn, ticker, 'invalidated', arch_note)
                         logger.info(
                             f"  💀 {ticker} TERMINAL INVALIDATED "
                             f"(conf={corrected_conf:.2f}, inval#{new_inval_count})"
@@ -592,6 +627,7 @@ def run_verification_cycle() -> Dict:
                             notes, now_iso, new_ver_count,
                             new_inval_count, corrected_conf, now_iso, cond_id
                         ))
+                        _sync_watchlist_status(conn, ticker, 'low_priority', notes)
                         logger.warning(
                             f"  ⬇️  {ticker} INVALIDATED→LOW-PRI "
                             f"(conf={corrected_conf:.2f}, first invalidation)"
@@ -614,6 +650,7 @@ def run_verification_cycle() -> Dict:
                         new_priority='normal',
                         notes=notes,
                     )
+                    _sync_watchlist_status(conn, ticker, 'active', notes)
                     logger.info(
                         f"  🔄 {ticker} CORRECTED & RESTORED active "
                         f"(conf={corrected_conf:.2f}) | {correction_rat[:60]}"
