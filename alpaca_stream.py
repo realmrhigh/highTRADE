@@ -213,14 +213,19 @@ class RealtimeMonitor:
                 self._stats['errors'] += 1
                 self._stats['last_error'] = f"{e} (attempt {reconnect_attempts})"
                 self._stats['status'] = f'reconnecting ({reconnect_attempts})'
+
+                # Exponential backoff capped at 120s — "connection limit exceeded" means
+                # Alpaca still sees the old session alive; give it time to expire.
+                delay = min(RECONNECT_DELAY_SEC * (2 ** min(reconnect_attempts - 1, 4)), 120)
                 logger.warning(
-                    f"🔴 Stream disconnected: {e} — reconnecting in {RECONNECT_DELAY_SEC}s "
+                    f"🔴 Stream disconnected: {e} — reconnecting in {delay:.0f}s "
                     f"(attempt {reconnect_attempts}/{MAX_RECONNECT_ATTEMPTS})"
                 )
                 if not self._stop_event.is_set():
-                    time.sleep(RECONNECT_DELAY_SEC)
+                    time.sleep(delay)
             else:
                 # Clean exit (stop_event was set)
+                reconnect_attempts = 0  # Reset on clean reconnect
                 break
 
         if reconnect_attempts >= MAX_RECONNECT_ATTEMPTS:

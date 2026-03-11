@@ -646,6 +646,19 @@ class CommandProcessor:
         auto = new_mode in ['semi_auto', 'full_auto']
         self.orchestrator.broker.auto_execute = auto
 
+        # Persist so restarts don't revert to default
+        try:
+            config_path = Path(__file__).parent / 'trading_data' / 'orchestrator_config.json'
+            cfg = {}
+            if config_path.exists():
+                with open(config_path) as f:
+                    cfg = json.load(f)
+            cfg['broker_mode'] = new_mode
+            with open(config_path, 'w') as f:
+                json.dump(cfg, f, indent=2)
+        except Exception as e:
+            logger.warning(f"⚠️  Could not persist broker_mode: {e}")
+
         logger.info(f"🔧 Broker mode changed: {old_mode} → {new_mode}")
         self.orchestrator.alerts.send_slack(
             f"🔧 Broker mode changed: {old_mode.upper()} → {new_mode.upper()}",

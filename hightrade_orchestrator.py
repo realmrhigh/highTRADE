@@ -81,6 +81,17 @@ class HighTradeOrchestrator:
           - 'semi_auto': Alerts sent, trades executed with tips
           - 'full_auto': Complete autonomous trading
         """
+        # Allow persisted mode to override the default (but not an explicit CLI arg)
+        try:
+            if CONFIG_PATH.exists():
+                with open(CONFIG_PATH) as _f:
+                    _cfg = json.load(_f)
+                saved_mode = _cfg.get('broker_mode')
+                if saved_mode in ('disabled', 'semi_auto', 'full_auto'):
+                    broker_mode = saved_mode
+        except Exception:
+            pass
+
         logger.info("Initializing HighTrade Orchestrator...")
 
         # Run startup health checks

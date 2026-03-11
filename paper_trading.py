@@ -287,7 +287,7 @@ class PaperTradingEngine:
 
     def connect(self):
         """Connect to database"""
-        self.conn = sqlite3.connect(str(self.db_path))
+        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self.cursor = self.conn.cursor()
         self.cursor.row_factory = sqlite3.Row
         # Idempotent migration: add per-position exit level columns if they don't exist yet
