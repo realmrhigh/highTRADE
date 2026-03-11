@@ -85,6 +85,75 @@ class GrokClient:
             logger.error(f"Grok call failed: {e}")
             return None, 0, 0
 
+    def call_with_search(self, prompt: str, system_prompt: Optional[str] = None,
+                         model_id: Optional[str] = None, temperature: float = 0.4,
+                         use_web_search: bool = True, use_x_search: bool = True) -> Tuple[Optional[str], int, int]:
+        """Call Grok via the Responses API with web_search and/or x_search tools.
+
+        The Responses API at /v1/responses supports server-side search tools,
+        unlike the chat completions endpoint. Returns (text, in_tok, out_tok).
+        """
+        if not self.api_key:
+            logger.warning("Grok API skipped — no XAI_API_KEY set")
+            return None, 0, 0
+
+        model = model_id or "grok-4-1-fast"
+
+        tools = []
+        if use_web_search:
+            tools.append({"type": "web_search"})
+        if use_x_search:
+            tools.append({"type": "x_search"})
+
+        input_messages = []
+        if system_prompt:
+            input_messages.append({"role": "system", "content": system_prompt})
+        input_messages.append({"role": "user", "content": prompt})
+
+        if _CHOREOGRAPHER_OK:
+            _Choreographer.pace_and_record(model, SYSTEM_NAME)
+
+        try:
+            response = requests.post(
+                f"{self.base_url}/responses",
+                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "input": input_messages,
+                    "tools": tools,
+                    "temperature": temperature,
+                },
+                timeout=120
+            )
+
+            if response.status_code != 200:
+                logger.error(f"Grok Responses API Error: {response.status_code} - {response.text[:300]}")
+                logger.info("  Falling back to chat completions (no search)...")
+                return self.call(prompt, system_prompt=system_prompt, temperature=temperature)
+
+            data = response.json()
+
+            # Responses API returns an 'output' array — extract text from message items
+            text_parts = []
+            for item in data.get('output', []):
+                if item.get('type') == 'message':
+                    for content in item.get('content', []):
+                        if content.get('type') == 'output_text':
+                            text_parts.append(content.get('text', ''))
+
+            text = '\n'.join(text_parts).strip()
+            usage = data.get('usage', {})
+            in_tok = usage.get('input_tokens', 0)
+            out_tok = usage.get('output_tokens', 0)
+
+            logger.debug(f"Grok Responses ✅ {model} | in={in_tok} out={out_tok}")
+            return text, in_tok, out_tok
+
+        except Exception as e:
+            logger.error(f"Grok Responses API call failed: {e}")
+            logger.info("  Falling back to chat completions...")
+            return self.call(prompt, system_prompt=system_prompt, temperature=temperature)
+
     def second_opinion(self, payload: Dict[str, Any], focus: str = "current positions/watchlist") -> Optional[Dict]:
         """Deep reasoning second opinion with X-powered critique."""
         system_prompt = """

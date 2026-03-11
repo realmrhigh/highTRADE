@@ -126,6 +126,11 @@ COMMANDS = {
         'aliases': ['/hound', '/sniff'],
         'category': 'control',
     },
+    '/daytrade': {
+        'description': 'Day trader status/control. Usage: /daytrade [on|off|history]',
+        'aliases': ['/dt'],
+        'category': 'info',
+    },
     '/help': {
         'description': 'Show all available commands',
         'aliases': ['/h', '/?'],
@@ -353,6 +358,7 @@ class CommandProcessor:
             '/briefing':  self._handle_briefing,
             '/research':  self._handle_research,
             '/hunt':      self._handle_hunt,
+            '/daytrade':  self._handle_daytrade,
         }
 
         handler = handlers.get(cmd)
@@ -411,6 +417,78 @@ class CommandProcessor:
             return {'ok': True, 'message': msg}
         except Exception as e:
             return {'ok': False, 'message': f'Hunt failed: {e}'}
+
+    def _handle_daytrade(self, args: str) -> dict:
+        """Day trade status, toggle, or history."""
+        dt = getattr(self.orchestrator, 'day_trader', None)
+        if not dt:
+            return {'ok': False, 'message': 'Day Trader module not initialized.'}
+
+        arg = args.strip().lower()
+        if arg == 'off':
+            dt.set_enabled(False)
+            return {'ok': True, 'message': '🌅 Day Trader DISABLED. No new day trades will execute.'}
+        elif arg == 'on':
+            dt.set_enabled(True)
+            return {'ok': True, 'message': '🌅 Day Trader ENABLED. Will resume on next market day.'}
+        elif arg == 'history':
+            history = dt.get_history(5)
+            stats = dt.get_stats()
+            if not history:
+                return {'ok': True, 'message': '🌅 No day trade history yet.'}
+            lines = ['📊 *Day Trade History* (last 5)']
+            for h in history:
+                pnl = h.get('pnl_dollars', 0) or 0
+                pct = h.get('pnl_percent', 0) or 0
+                sign = '+' if pnl >= 0 else ''
+                reason = (h.get('exit_reason') or h.get('status') or '—')[:10]
+                lines.append(
+                    f"  {h.get('date', '?')}  `{h.get('ticker', '?'):5s}`  "
+                    f"{sign}${pnl:,.0f} ({sign}{pct:.1f}%)  {reason}"
+                )
+            if stats.get('total_trades', 0) > 0:
+                lines.append(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                lines.append(
+                    f"  Total: {sign}${stats['total_pnl']:,.0f} | "
+                    f"Win Rate: {stats['win_rate']:.0f}% | "
+                    f"Streak: {stats.get('streak', '-')}"
+                )
+            return {'ok': True, 'message': '\n'.join(lines)}
+        else:
+            # Default: status
+            status = dt.get_today_status()
+            s = status.get('status', 'unknown')
+            enabled = '✅' if status.get('enabled') else '⛔'
+            lines = [
+                f'🌅 *Day Trader* — {enabled} {"Enabled" if status.get("enabled") else "Disabled"}',
+                f'Date: {status.get("date", "?")} | Status: `{s}`',
+            ]
+            ticker = status.get('ticker')
+            if ticker:
+                lines.append(f'Pick: `{ticker}` (confidence: {status.get("scan_confidence", "?")}%)')
+                if status.get('entry_price'):
+                    lines.append(
+                        f'Entry: ${status["entry_price"]:.2f} | '
+                        f'{status.get("shares", 0)} shares | '
+                        f'${status.get("position_size_dollars", 0):,.0f}'
+                    )
+                if status.get('current_price'):
+                    upnl = status.get('unrealized_pnl_dollars', 0)
+                    upct = status.get('unrealized_pnl_percent', 0)
+                    sign = '+' if upnl >= 0 else ''
+                    lines.append(f'Now: ${status["current_price"]:.2f} | P&L: {sign}${upnl:,.2f} ({sign}{upct:.2f}%)')
+                if status.get('stop_loss_pct'):
+                    ep = status.get('entry_price', 0) or 0
+                    lines.append(
+                        f'Stop: {status["stop_loss_pct"]*100:.1f}% | '
+                        f'TP: {(status.get("take_profit_pct", 0) or 0)*100:.1f}% | '
+                        f'Stretch: {(status.get("stretch_target_pct", 0) or 0)*100:.1f}%'
+                    )
+                if s == 'closed':
+                    pnl = status.get('pnl_dollars', 0) or 0
+                    sign = '+' if pnl >= 0 else ''
+                    lines.append(f'Result: {sign}${pnl:,.2f} [{status.get("exit_reason", "?")}]')
+            return {'ok': True, 'message': '\n'.join(lines)}
 
     def _handle_yes(self, args: str) -> dict:
         orch = self.orchestrator

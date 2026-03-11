@@ -584,6 +584,41 @@ class AlertSystem:
                 if thesis:   lines.append(f"_{thesis}_")
                 text = "\n".join(lines)
 
+            elif event_type == 'daytrade_scan':
+                ticker = data.get('ticker', '?')
+                conf = data.get('confidence', 0)
+                catalyst = data.get('catalyst', '')
+                thesis = data.get('thesis', '')
+                stop = data.get('stop_loss_pct', 0)
+                tp = data.get('take_profit_pct', 0)
+                stretch = data.get('stretch_target_pct', 0)
+                size = data.get('position_size', 0)
+                status = data.get('status', 'scanned')
+                text = (
+                    f"🌅 *Day Trade Scan* — Pick: `{ticker}`\n"
+                    f"Confidence: {conf}% | Size: ${size:,.0f} | Status: {status}\n"
+                    f"Stop: {stop}% | TP: {tp}% | Stretch: {stretch}%\n"
+                    f"Catalyst: {catalyst[:200]}\n"
+                    f"_{thesis[:300]}_"
+                )
+
+            elif event_type == 'daytrade_result':
+                ticker = data.get('ticker', '?')
+                pnl_d = data.get('pnl_dollars', 0) or 0
+                pnl_pct = data.get('pnl_pct', 0) or 0
+                reason = data.get('reason', 'eod')
+                entry_px = data.get('entry_price', 0) or 0
+                exit_px = data.get('exit_price', 0) or 0
+                shares = data.get('shares', 0) or 0
+                size = data.get('position_size', 0) or 0
+                emoji = '📈' if pnl_d >= 0 else '📉'
+                pnl_sign = '+' if pnl_d >= 0 else ''
+                text = (
+                    f"{emoji} *Day Trade Result* — `{ticker}` ({reason})\n"
+                    f"Entry `${entry_px:.2f}` → Exit `${exit_px:.2f}` | {shares} shares\n"
+                    f"Size: ${size:,.0f} | P&L: `{pnl_sign}${pnl_d:,.2f}` (`{pnl_sign}{pnl_pct:.2f}%`)"
+                )
+
             else:
                 text = f"{event_type}: {json.dumps(data, indent=2)}"
 
@@ -784,6 +819,31 @@ class AlertSystem:
                     f"🛠️ *Suggestion:* {action.upper()}"
                 )
 
+            elif event_type == 'daytrade_result':
+                ticker = data.get('ticker', '?')
+                pnl_d = data.get('pnl_dollars', 0) or 0
+                pnl_pct = data.get('pnl_pct', 0) or 0
+                reason = data.get('reason', 'eod')
+                entry_px = data.get('entry_price', 0) or 0
+                exit_px = data.get('exit_price', 0) or 0
+                shares = data.get('shares', 0) or 0
+                size = data.get('position_size', 0) or 0
+                conf = data.get('confidence', 0) or 0
+                emoji = '📈' if pnl_d >= 0 else '📉'
+                pnl_sign = '+' if pnl_d >= 0 else ''
+                reason_map = {
+                    'stop_loss': '🛑 Stop Loss',
+                    'profit_target': '🎯 Take Profit',
+                    'eod': '⏰ EOD Exit',
+                    'manual': '🖐 Manual',
+                }
+                reason_label = reason_map.get(reason, reason)
+                text = (
+                    f"{emoji} *Day Trade Result* — `{ticker}` · {reason_label}\n"
+                    f"Entry `${entry_px:.2f}` → Exit `${exit_px:.2f}` | {shares} shares\n"
+                    f"Size: ${size:,.0f} (conf {conf}%) | P&L: `{pnl_sign}${pnl_d:,.2f}` (`{pnl_sign}{pnl_pct:.2f}%`)"
+                )
+
             else:
                 text = f"📢 *{event_type}*: {json.dumps(data, indent=2)}"
 
@@ -793,6 +853,12 @@ class AlertSystem:
             # settings and show up in the activity feed.
             bot_token  = slack_config.get('bot_token', '')
             channel_id = slack_config.get('channel_id', '')
+
+            # Route daytrade_result to #all-highpay if configured
+            if event_type == 'daytrade_result':
+                daytrade_channel = self.config.get('channels', {}).get('daytrade', {}).get('channel_id', '')
+                if daytrade_channel:
+                    channel_id = daytrade_channel
 
             if bot_token and channel_id:
                 response = requests.post(

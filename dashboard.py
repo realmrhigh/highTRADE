@@ -403,6 +403,44 @@ def fetch_active_conditionals():
         except Exception:
             return []
 
+def fetch_day_trade_sessions():
+    """Fetch today's day trade session + last 10 historical for the dashboard."""
+    with _conn() as db:
+        try:
+            rows = db.execute("""
+                SELECT * FROM day_trade_sessions
+                ORDER BY date DESC LIMIT 11
+            """).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
+def fetch_day_trade_stats():
+    """Aggregate day trade performance stats."""
+    with _conn() as db:
+        try:
+            rows = db.execute("""
+                SELECT pnl_dollars, pnl_percent FROM day_trade_sessions
+                WHERE status = 'closed'
+            """).fetchall()
+            if not rows:
+                return {}
+            trades = [dict(r) for r in rows]
+            wins = [t for t in trades if (t.get('pnl_dollars') or 0) > 0]
+            losses = [t for t in trades if (t.get('pnl_dollars') or 0) <= 0]
+            total_pnl = sum(t.get('pnl_dollars', 0) or 0 for t in trades)
+            return {
+                'total': len(trades),
+                'wins': len(wins),
+                'losses': len(losses),
+                'win_rate': round(len(wins) / len(trades) * 100, 1) if trades else 0,
+                'total_pnl': round(total_pnl, 2),
+                'avg_win': round(sum(t['pnl_dollars'] for t in wins) / len(wins), 2) if wins else 0,
+                'avg_loss': round(sum(t['pnl_dollars'] for t in losses) / len(losses), 2) if losses else 0,
+            }
+        except Exception:
+            return {}
+
 
 # ─── Utility Helpers ─────────────────────────────────────────────────────────
 
@@ -533,6 +571,205 @@ def sig_pill(sig):
         f'<div style="color:{c};font-size:12px;margin:3px 0;">'
         f'{arrow} {sig.get("description", "")}</div>'
     )
+
+
+# ─── Day Trader Section Builder ──────────────────────────────────────────────
+
+def _build_day_trade_section(sessions, stats):
+    """Build the complete Day Trader HTML section."""
+    if not sessions and not stats:
+        return ''
+
+    today_str = _et_now().strftime('%Y-%m-%d')
+    today_session = None
+    history = []
+    for s in sessions:
+        if s.get('date') == today_str:
+            today_session = s
+        else:
+            history.append(s)
+    if not today_session and sessions:
+        history = sessions  # All historical
+
+    # ── Today's Pick card ─────────────────────────────────────────────────
+    if today_session:
+        ticker = today_session.get('ticker') or '—'
+        conf = today_session.get('scan_confidence') or 0
+        st = today_session.get('status', 'pending')
+        size = today_session.get('position_size_dollars') or 0
+        entry = today_session.get('entry_price') or 0
+        shares = today_session.get('shares') or 0
+        stop_pct = (today_session.get('stop_loss_pct') or 0) * 100
+        tp_pct = (today_session.get('take_profit_pct') or 0) * 100
+        stretch_pct = (today_session.get('stretch_target_pct') or 0) * 100
+
+        # Try to get live price for open positions
+        exit_px = today_session.get('exit_price') or 0
+        pnl_d = today_session.get('pnl_dollars') or 0
+        pnl_pct_val = today_session.get('pnl_percent') or 0
+
+        # Status badge
+        status_colors = {
+            'pending': '#555', 'scanned': '#00d4ff', 'bought': '#ffd700',
+            'stretching': '#ff8c00', 'closed': '#00ff88' if pnl_d >= 0 else '#ff4444',
+            'skipped': '#666', 'error': '#ff4444',
+        }
+        st_color = status_colors.get(st, '#555')
+
+        # Catalyst from scan_research
+        catalyst = ''
+        try:
+            if today_session.get('scan_research'):
+                research = json.loads(today_session['scan_research'])
+                catalyst = research.get('catalyst', '') or research.get('thesis', '')
+        except Exception:
+            pass
+
+        if st in ('bought', 'stretching'):
+            pnl_sign = '+' if pnl_d >= 0 else ''
+            pnl_color_val = '#00ff88' if pnl_d >= 0 else '#ff4444'
+            price_line = (
+                f'<div style="margin:4px 0;">Now: — | P&L: '
+                f'<span style="color:{pnl_color_val};font-weight:bold;">{pnl_sign}${pnl_d:,.2f} ({pnl_sign}{pnl_pct_val:.2f}%)</span></div>'
+            )
+        elif st == 'closed':
+            pnl_sign = '+' if pnl_d >= 0 else ''
+            pnl_color_val = '#00ff88' if pnl_d >= 0 else '#ff4444'
+            reason = today_session.get('exit_reason', '?')
+            price_line = (
+                f'<div style="margin:4px 0;">Exit: ${exit_px:.2f} | '
+                f'<span style="color:{pnl_color_val};font-weight:bold;">{pnl_sign}${pnl_d:,.2f} ({pnl_sign}{pnl_pct_val:.2f}%)</span>'
+                f' | {reason}</div>'
+            )
+        else:
+            price_line = ''
+
+        stop_line = ''
+        if entry and st in ('bought', 'stretching'):
+            stop_px = entry * (1 - (today_session.get('stop_loss_pct') or 0.01))
+            tp_px = entry * (1 + (today_session.get('take_profit_pct') or 0.03))
+            stretch_px = entry * (1 + (today_session.get('stretch_target_pct') or 0.06))
+            stop_line = (
+                f'<div style="font-size:11px;color:var(--dim);margin-top:4px;">'
+                f'<span style="color:#ff4444;">Stop ${stop_px:.2f}</span> · '
+                f'<span style="color:#ffd700;">TP ${tp_px:.2f}</span> · '
+                f'<span style="color:#00ff88;">Stretch ${stretch_px:.2f}</span></div>'
+            )
+            if st == 'stretching':
+                hwm = today_session.get('high_water_price') or entry
+                stop_line += (
+                    f'<div style="font-size:10px;color:#ff8c00;margin-top:2px;">'
+                    f'🚀 STRETCH MODE — trailing from HWM ${hwm:.2f}</div>'
+                )
+
+        today_card = f'''
+        <div class="panel" style="border-color:#ffd70044;">
+          <div class="panel-title">⚡ Today's Pick</div>
+          <div style="display:flex;gap:20px;align-items:flex-start;">
+            <div style="flex:1;">
+              <div style="font-size:24px;font-weight:bold;color:var(--accent);">{ticker}</div>
+              <div style="font-size:11px;color:var(--dim);margin:2px 0;">
+                Confidence: {conf}% · Size: ${size:,.0f} · {shares} shares
+              </div>
+              <div style="display:inline-block;padding:2px 8px;border-radius:3px;font-size:10px;
+                          background:{st_color}22;color:{st_color};font-weight:bold;letter-spacing:1px;
+                          text-transform:uppercase;">{st}</div>
+              {f'<div style="margin:6px 0;font-size:12px;color:var(--text);">Entry: ${entry:.2f}</div>' if entry else ''}
+              {price_line}
+              {stop_line}
+              {f'<div style="margin-top:6px;font-size:11px;color:var(--dim);font-style:italic;">{catalyst[:200]}</div>' if catalyst else ''}
+            </div>
+          </div>
+        </div>'''
+    else:
+        today_card = '''
+        <div class="panel" style="border-color:#333;">
+          <div class="panel-title">⚡ Today's Pick</div>
+          <div style="color:#555;text-align:center;padding:20px;">No day trade session today</div>
+        </div>'''
+
+    # ── Stats card ────────────────────────────────────────────────────────
+    if stats and stats.get('total', 0) > 0:
+        wr = stats.get('win_rate', 0)
+        wr_color = '#00ff88' if wr >= 50 else '#ff4444'
+        tp = stats.get('total_pnl', 0)
+        tp_sign = '+' if tp >= 0 else ''
+        tp_color = '#00ff88' if tp >= 0 else '#ff4444'
+        stats_card = f'''
+        <div class="panel" style="border-color:#ffd70044;">
+          <div class="panel-title">📊 Day Trade Stats</div>
+          <div class="stat-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
+            <div class="stat"><div class="stat-label">Win Rate</div>
+              <div class="stat-value" style="color:{wr_color};">{wr:.0f}%</div></div>
+            <div class="stat"><div class="stat-label">Total P&L</div>
+              <div class="stat-value" style="color:{tp_color};">{tp_sign}${tp:,.0f}</div></div>
+            <div class="stat"><div class="stat-label">Trades</div>
+              <div class="stat-value">{stats["total"]}</div></div>
+            <div class="stat"><div class="stat-label">Wins</div>
+              <div class="stat-value" style="color:#00ff88;">{stats["wins"]}</div></div>
+            <div class="stat"><div class="stat-label">Avg Win</div>
+              <div class="stat-value" style="color:#00ff88;">${stats.get("avg_win", 0):,.0f}</div></div>
+            <div class="stat"><div class="stat-label">Avg Loss</div>
+              <div class="stat-value" style="color:#ff4444;">${stats.get("avg_loss", 0):,.0f}</div></div>
+          </div>
+        </div>'''
+    else:
+        stats_card = '''
+        <div class="panel" style="border-color:#333;">
+          <div class="panel-title">📊 Day Trade Stats</div>
+          <div style="color:#555;text-align:center;padding:20px;">No completed day trades yet</div>
+        </div>'''
+
+    # ── History table ─────────────────────────────────────────────────────
+    if history:
+        hist_rows = []
+        for h in history[:10]:
+            hpnl = h.get('pnl_dollars') or 0
+            hpct = h.get('pnl_percent') or 0
+            hcolor = '#00ff88' if hpnl >= 0 else '#ff4444'
+            hsign = '+' if hpnl >= 0 else ''
+            hreason = (h.get('exit_reason') or h.get('status') or '—')
+            hsize = h.get('position_size_dollars') or 0
+            hist_rows.append(
+                f'<tr class="trow">'
+                f'<td>{h.get("date", "?")}</td>'
+                f'<td class="sym">{h.get("ticker", "?")}</td>'
+                f'<td>${hsize:,.0f}</td>'
+                f'<td>${(h.get("entry_price") or 0):.2f}</td>'
+                f'<td>${(h.get("exit_price") or 0):.2f}</td>'
+                f'<td style="color:{hcolor};font-weight:bold;">{hsign}${hpnl:,.2f}</td>'
+                f'<td style="color:{hcolor};">{hsign}{hpct:.2f}%</td>'
+                f'<td>{hreason}</td>'
+                f'</tr>'
+            )
+        hist_html = '\n'.join(hist_rows)
+    else:
+        hist_html = '<tr><td colspan="8" style="color:#555;text-align:center;padding:20px;">No history yet</td></tr>'
+
+    return f'''
+<!-- ═══ DAY TRADER ═══ -->
+<div class="section-head">&#9889; Day Trader (Grok)</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+  {today_card}
+  {stats_card}
+</div>
+
+<div class="grid-full" style="margin-top:0;">
+  <div class="panel">
+    <div class="panel-title">📜 Day Trade History</div>
+    <div class="scroll-wrap">
+      <table>
+        <thead><tr>
+          <th>Date</th><th>Ticker</th><th>Size</th><th>Entry</th>
+          <th>Exit</th><th>P&amp;L</th><th>Return</th><th>Reason</th>
+        </tr></thead>
+        <tbody>{hist_html}</tbody>
+      </table>
+    </div>
+  </div>
+</div>
+'''
 
 
 # ─── Section Builders ─────────────────────────────────────────────────────────
@@ -1105,7 +1342,8 @@ def build_model_card(b, title, icon):
 
 def build_html(status, positions, closed, stats, briefings, macro, watchlist,
                sig_history, news, cong_clusters, cong_trades, hound_candidates, hound_last_run=None,
-               conditionals=None, gemini_usage=None, grok_usage=None, exit_queue=None, stream_health=None):
+               conditionals=None, gemini_usage=None, grok_usage=None, exit_queue=None, stream_health=None,
+               day_trade_sessions=None, day_trade_stats=None):
 
     _ln = _local_now()
     now_str    = _ln.strftime('%Y-%m-%d %H:%M:%S ') + _ln.tzname()
@@ -1363,6 +1601,7 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
     open_rows      = build_open_rows(positions)
     closed_rows    = build_closed_rows(closed)
     exit_queue_rows = build_exit_queue_rows(exit_queue or [])
+    day_trade_html = _build_day_trade_section(day_trade_sessions or [], day_trade_stats or {})
     wl_rows        = build_wl_rows(watchlist)
     cond_rows      = build_conditional_rows(conditionals or [])
     news_items     = build_news_items(news)
@@ -2023,6 +2262,8 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
   {grok_card}
 </div>
 
+{day_trade_html}
+
 <!-- ═══ PORTFOLIO POSITIONS ═══ -->
 <div class="section-head">&#128202; Portfolio Positions</div>
 
@@ -2456,10 +2697,13 @@ def generate_dashboard_html():
     grok_usage       = fetch_grok_usage()
     exit_queue       = fetch_exit_queue()
     stream_health    = fetch_stream_health()
+    dt_sessions      = fetch_day_trade_sessions()
+    dt_stats         = fetch_day_trade_stats()
     return build_html(status, positions, closed, stats, briefings, macro,
                       watchlist, sig_hist, news, cong_cl, cong_tr, hound_candidates, hound_last_run,
                       conditionals=conditionals, gemini_usage=gemini_usage, grok_usage=grok_usage,
-                      exit_queue=exit_queue, stream_health=stream_health)
+                      exit_queue=exit_queue, stream_health=stream_health,
+                      day_trade_sessions=dt_sessions, day_trade_stats=dt_stats)
 
 
 # ─── Flask server ─────────────────────────────────────────────────────────────
