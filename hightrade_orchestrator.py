@@ -222,6 +222,22 @@ class HighTradeOrchestrator:
             self.realtime_monitor = None
             self.realtime_enabled = False
 
+        # Initialize Day Trader (Grok-powered intraday module)
+        try:
+            from day_trader import DayTrader
+            self.day_trader = DayTrader(
+                db_path=str(DB_PATH),
+                paper_trading=self.paper_trading,
+                alerts=self.alerts,
+                realtime_monitor=getattr(self, 'realtime_monitor', None),
+            )
+            self.day_trader_enabled = True
+            logger.info("🌅 Day Trader module initialized (Grok-powered)")
+        except Exception as e:
+            logger.warning(f"⚠️  Day Trader init failed: {e}")
+            self.day_trader = None
+            self.day_trader_enabled = False
+
         # Slash command processor
         self.cmd_processor = CommandProcessor(self)
 
@@ -229,6 +245,7 @@ class HighTradeOrchestrator:
         logger.info(f"🤖 Broker Mode: {broker_mode.upper()}")
         logger.info(f"📰 News Monitoring: {'ENABLED' if self.news_enabled else 'DISABLED'}")
         logger.info(f"🔴 Real-time Stream: {'ENABLED' if self.realtime_enabled else 'DISABLED'}")
+        logger.info(f"🌅 Day Trader: {'ENABLED' if self.day_trader_enabled else 'DISABLED'}")
         logger.info(f"📡 Slash commands: python3 hightrade_cmd.py /help")
 
     # ── DEFCON persistence across restarts ────────────────────────────────
@@ -1078,6 +1095,16 @@ Check dashboard for detailed analysis.
             logger.error(f"Error in monitoring cycle: {e}", exc_info=True)
         finally:
             self.monitor.disconnect()
+
+        # ── Day Trader Checkpoints (scan, buy, stop/TP, EOD exit) ────────
+        if self.day_trader_enabled and self.day_trader and self.day_trader._enabled:
+            try:
+                self.day_trader.check_premarket_scan()
+                self.day_trader.check_market_open_buy()
+                self.day_trader.check_intraday_exits()
+                self.day_trader.check_eod_exit()
+            except Exception as e:
+                logger.warning(f"  ⚠️ Day Trader cycle failed: {e}")
 
         # ── Intraday Flash Briefings (morning 9:30 AM, midday 12:00 PM) ───
         self._check_flash_briefings()
