@@ -275,6 +275,50 @@ class DayTrader:
             logger.error(f"  ❌ Pre-market scan failed: {e}")
             self._save_session_error(today, str(e))
 
+    def reset_today_session(self) -> bool:
+        """Delete today's session so a same-day validation scan can rerun cleanly."""
+        today = _et_now().strftime('%Y-%m-%d')
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cur = conn.execute("DELETE FROM day_trade_sessions WHERE date = ?", (today,))
+            conn.commit()
+            conn.close()
+            self._scan_date = None
+            self._buy_date = None
+            self._eod_exit_date = None
+            logger.info(f"🧹 Day Trader: reset session for {today} ({cur.rowcount} row deleted)")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Day Trader: could not reset today's session: {e}")
+            return False
+
+    def force_premarket_scan(self, reset_today: bool = True) -> Optional[Dict]:
+        """Run today's Grok scan immediately, bypassing time/date guards for validation."""
+        now = _et_now()
+        today = now.strftime('%Y-%m-%d')
+
+        if now.weekday() >= 5:
+            logger.info("⏭️  Day Trader force scan skipped on weekend")
+            return None
+
+        if reset_today:
+            self.reset_today_session()
+
+        logger.info("🚀 Day Trader: force pre-market scan firing...")
+        self._scan_date = today
+
+        try:
+            result = self._run_premarket_scan(today, now)
+            if result:
+                logger.info(f"  ✅ Forced pick: {result.get('ticker')} (confidence: {result.get('confidence')}%)")
+            else:
+                logger.info("  ⏭️  Forced scan returned no qualified pick")
+            return result
+        except Exception as e:
+            logger.error(f"  ❌ Forced pre-market scan failed: {e}")
+            self._save_session_error(today, str(e))
+            return None
+
     def _run_premarket_scan(self, today: str, now) -> Optional[Dict]:
         """Call Grok Responses API with web + X search for today's pick."""
         available_cash = self._get_available_cash()
@@ -998,8 +1042,23 @@ Respond with ONLY valid JSON:
 # ── Standalone test ───────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    import argparse
+
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+    parser = argparse.ArgumentParser(description='HighTrade Day Trader utility')
+    parser.add_argument('--force-scan', action='store_true', help='Reset today and rerun the Day Trader scan immediately')
+    args = parser.parse_args()
+
     dt = DayTrader()
+    if args.force_scan:
+        result = dt.force_premarket_scan(reset_today=True)
+        print(json.dumps({
+            'forced_scan': True,
+            'result': result,
+            'today_status': dt.get_today_status(),
+        }, indent=2, default=str))
+        raise SystemExit(0)
+
     print("Day Trader module loaded OK.")
     print(f"Enabled: {dt._enabled}")
     print(f"Today status: {json.dumps(dt.get_today_status(), indent=2)}")
