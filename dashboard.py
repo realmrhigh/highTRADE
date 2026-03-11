@@ -577,9 +577,6 @@ def sig_pill(sig):
 
 def _build_day_trade_section(sessions, stats):
     """Build the complete Day Trader HTML section."""
-    if not sessions and not stats:
-        return ''
-
     today_str = _et_now().strftime('%Y-%m-%d')
     today_session = None
     history = []
