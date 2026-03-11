@@ -824,10 +824,12 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection,
             if stop:      thesis_text += f" / Stop: ${stop:.2f}"
             if cond_str:  thesis_text += f" ◆ {cond_str}"
 
+            # Update ALL live watchlist rows for this ticker — not just 'pending'/'researched'.
+            # A fresh analyst pass supersedes any prior low_priority or conditional_set rows.
             conn.execute("""
                 UPDATE acquisition_watchlist
                 SET status = 'conditional_set', entry_conditions = ?
-                WHERE ticker = ? AND status IN ('researched', 'pending')
+                WHERE UPPER(ticker) = UPPER(?) AND status NOT IN ('archived', 'triggered')
             """, (thesis_text[:500], ticker))
             conn.commit()
 
@@ -866,7 +868,7 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection,
                 entry_conditions = ?,
                 notes = ?,
                 created_at = CURRENT_TIMESTAMP
-            WHERE ticker = ? AND status IN ('researched', 'pending')
+            WHERE UPPER(ticker) = UPPER(?) AND status NOT IN ('archived', 'triggered')
         """, (pass_text[:500], reason, ticker))
         conn.commit()
 

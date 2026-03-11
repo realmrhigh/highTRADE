@@ -2225,7 +2225,7 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
                 else:
                     attempt = row['pass_count'] + 1
                     conn.execute("""
-                        INSERT OR IGNORE INTO acquisition_watchlist
+                        INSERT OR REPLACE INTO acquisition_watchlist
                           (date_added, ticker, source, market_regime, model_confidence,
                            entry_conditions, biggest_risk, biggest_opportunity, status, notes)
                         VALUES (?, ?, ?, ?, 0.5,

@@ -90,39 +90,63 @@ def _get_conn() -> sqlite3.Connection:
 
 
 def _sync_watchlist_status(conn: sqlite3.Connection, ticker: str, status: str, note: Optional[str] = None) -> None:
-    """Mirror the latest conditional status back to the newest watchlist row for this ticker."""
+    """Mirror the conditional status back to ALL live (non-terminal) watchlist rows for this ticker.
+
+    The acquisition_watchlist keeps one row per (date_added, ticker) — so the same ticker
+    can appear many times across days.  Previous code only updated the single most-recent row,
+    causing split-brain when the verifier demoted an old conditional while today's analyst had
+    already inserted a fresh 'conditional_set' row.  We now update every non-terminal row so
+    the watchlist always agrees with conditional_tracking.
+    """
     try:
         normalized = (status or '').strip().lower()
         if normalized == 'active':
             wl_status = 'conditional_set'
-        elif normalized in ('low_priority', 'invalidated', 'archived', 'triggered'):
-            wl_status = normalized
+        elif normalized in ('low_priority', 'invalidated', 'archived', 'triggered', 'expired'):
+            # 'expired' maps to 'invalidated' in the watchlist — no separate expired status there
+            wl_status = 'invalidated' if normalized == 'expired' else normalized
         else:
             return
 
-        row = conn.execute(
-            """
-            SELECT rowid
-            FROM acquisition_watchlist
-            WHERE UPPER(ticker) = UPPER(?)
-            ORDER BY datetime(created_at) DESC, rowid DESC
-            LIMIT 1
-            """,
-            (ticker,),
-        ).fetchone()
-        if not row:
-            return
-
-        if note:
-            conn.execute(
-                "UPDATE acquisition_watchlist SET status=?, notes=? WHERE rowid=?",
-                (wl_status, note[:500], row['rowid']),
-            )
+        # Update ALL non-terminal rows for this ticker so there is no split-brain.
+        # Terminal statuses in the watchlist (archived, invalidated) are left alone when
+        # the conditional is merely being restored to active/conditional_set.
+        if normalized == 'active':
+            # Only push forward: rows already at a terminal status are not changed.
+            if note:
+                conn.execute(
+                    """UPDATE acquisition_watchlist
+                       SET status=?, notes=?
+                       WHERE UPPER(ticker)=UPPER(?)
+                         AND status NOT IN ('archived', 'triggered')""",
+                    (wl_status, note[:500], ticker),
+                )
+            else:
+                conn.execute(
+                    """UPDATE acquisition_watchlist
+                       SET status=?
+                       WHERE UPPER(ticker)=UPPER(?)
+                         AND status NOT IN ('archived', 'triggered')""",
+                    (wl_status, ticker),
+                )
         else:
-            conn.execute(
-                "UPDATE acquisition_watchlist SET status=? WHERE rowid=?",
-                (wl_status, row['rowid']),
-            )
+            # For demotions / invalidations: update every non-archived row.
+            if note:
+                conn.execute(
+                    """UPDATE acquisition_watchlist
+                       SET status=?, notes=?
+                       WHERE UPPER(ticker)=UPPER(?)
+                         AND status != 'archived'""",
+                    (wl_status, note[:500], ticker),
+                )
+            else:
+                conn.execute(
+                    """UPDATE acquisition_watchlist
+                       SET status=?
+                       WHERE UPPER(ticker)=UPPER(?)
+                         AND status != 'archived'""",
+                    (wl_status, ticker),
+                )
     except Exception as e:
         logger.warning(f"Failed to sync watchlist status for {ticker}: {e}")
 

@@ -8,6 +8,7 @@ import sqlite3
 import json
 import logging
 import os
+import hashlib
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -1568,6 +1569,12 @@ class BrokerDecisionEngine:
                     "UPDATE conditional_tracking SET status='triggered', updated_at=? WHERE id=?",
                     (now.isoformat(), cond_id)
                 )
+                # Mirror triggered status to ALL non-archived watchlist rows for this ticker
+                conn.execute(
+                    """UPDATE acquisition_watchlist SET status='triggered'
+                       WHERE UPPER(ticker)=UPPER(?) AND status NOT IN ('archived','triggered')""",
+                    (ticker,)
+                )
                 conn.commit()
 
         conn.close()
@@ -1666,6 +1673,64 @@ class AutonomousBroker:
         self.max_daily_trades = max_daily_trades
         self.trades_executed_today = 0
         self.last_reset = _et_now().date()     # ET date — resets on ET calendar day
+
+    def _ensure_notification_log_table(self) -> None:
+        """Create a tiny persistence table used to suppress duplicate Slack alerts."""
+        conn = sqlite3.connect(str(DB_PATH), timeout=5)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS notification_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_key TEXT NOT NULL UNIQUE,
+                    event_type TEXT NOT NULL,
+                    ticker TEXT,
+                    conditional_id INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _acquisition_alert_key(self, decision: Dict, executed: bool) -> str:
+        """Build a stable key for one logical acquisition notification."""
+        parts = [
+            'acquisition_alert',
+            'executed' if executed else 'triggered',
+            str(decision.get('conditional_id') or ''),
+            str(decision.get('ticker') or ''),
+            str(decision.get('current_price') or ''),
+            str(decision.get('position_size') or ''),
+        ]
+        digest = hashlib.sha1('|'.join(parts).encode('utf-8')).hexdigest()[:20]
+        return f"acq:{digest}"
+
+    def _mark_acquisition_alert_sent(self, decision: Dict, executed: bool) -> bool:
+        """Return True only the first time a logical acquisition alert is seen."""
+        self._ensure_notification_log_table()
+        event_key = self._acquisition_alert_key(decision, executed)
+        conn = sqlite3.connect(str(DB_PATH), timeout=5)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(
+                """
+                INSERT INTO notification_log (event_key, event_type, ticker, conditional_id)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    event_key,
+                    'acquisition_executed' if executed else 'acquisition_triggered',
+                    decision.get('ticker'),
+                    decision.get('conditional_id'),
+                )
+            )
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+        finally:
+            conn.close()
 
     def process_market_conditions(self, defcon_level: int, signal_score: float,
                                  crisis_description: str, market_data: Dict) -> bool:
@@ -1976,6 +2041,13 @@ class AutonomousBroker:
         which is gated on DEFCON thresholds and silently drops acquisition alerts.
         """
         try:
+            if not self._mark_acquisition_alert_sent(decision, executed):
+                logger.info(
+                    f"  🔕 Duplicate acquisition Slack alert suppressed: "
+                    f"{decision.get('ticker', '?')} (conditional_id={decision.get('conditional_id')}, executed={executed})"
+                )
+                return
+
             ticker     = decision['ticker']
             price      = decision['current_price']
             size       = decision['position_size']
