@@ -22,9 +22,10 @@ except ImportError:
     fcntl = None
 
 # Load .env early — before any module that reads os.getenv (e.g. AlpacaBroker)
+# override=True ensures .env always wins over stale shell/launchd env vars
 try:
     from dotenv import load_dotenv as _load_dotenv
-    _load_dotenv(Path(__file__).parent / ".env")
+    _load_dotenv(Path(__file__).parent / ".env", override=True)
 except ImportError:
     pass  # python-dotenv not installed; rely on shell environment
 
