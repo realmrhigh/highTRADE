@@ -1264,26 +1264,26 @@ class BrokerDecisionEngine:
             else:
                 os.environ['GEMINI_ENABLE_GOOGLE_SEARCH'] = _orig_grounding
 
-        # Fallback: Grok 4.1 fast reasoning.
+        # Fallback: Gemini 2.5 Pro.
         try:
-            text, in_tok, out_tok = grok_client.call(
+            text, in_tok, out_tok = gemini_client.call(
                 prompt=prompt,
-                model_id='grok-4-1-fast-reasoning',
-                temperature=0.2,
+                model_id='gemini-2.5-pro',
+                caller='broker_gate',
             )
             if text:
                 result = _parse_gate_json(text)
-                result['_gate_model'] = 'grok-4-1-fast-reasoning'
-                result['_gate_provider'] = 'xai'
+                result['_gate_model'] = 'gemini-2.5-pro'
+                result['_gate_provider'] = 'google'
                 result['_gate_tokens'] = {'input': in_tok, 'output': out_tok}
                 result['_gate_fallback_used'] = True
                 result['_gate_attempts'] = gate_attempts
                 return result
-            gate_attempts.append('grok-4-1-fast-reasoning: empty response')
+            gate_attempts.append('gemini-2.5-pro: empty response')
         except json.JSONDecodeError as e:
-            gate_attempts.append(f'grok-4-1-fast-reasoning: json parse failed ({e})')
+            gate_attempts.append(f'gemini-2.5-pro: json parse failed ({e})')
         except Exception as e:
-            gate_attempts.append(f'grok-4-1-fast-reasoning: {e}')
+            gate_attempts.append(f'gemini-2.5-pro: {e}')
 
         logger.warning(
             f"  ⚠️  Pre-purchase gate AI stack failed for {ticker}: {' | '.join(gate_attempts)} — defaulting to APPROVE"

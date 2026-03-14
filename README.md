@@ -1,14 +1,14 @@
 # HighTrade Autonomous Trading System
 
-**Location**: `/Users/stantonhigh/Documents/hightrade`  
-**User**: stantonhigh (admin)  
-**Status**: Production Ready ✅  
+**Location**: `/Users/traderbot/Documents/highTRADE`
+**User**: traderbot
+**Status**: Production Running ✅ (Orchestrator + Dashboard via launchd · Slack bot disabled)
 **Version**: 1.1.0 (Enhanced)
 
 ## Quick Start
 
 ```bash
-cd ~/Documents/hightrade
+cd ~/Documents/highTRADE
 
 # Check system status
 python3 hightrade_cmd.py /status
@@ -16,12 +16,17 @@ python3 hightrade_cmd.py /status
 # Run configuration validator
 python3 config_validator.py
 
-# View live logs
-tail -f trading_data/logs/orchestrator_output.log
+# View live orchestrator log
+tail -f logs/orchestrator_srv_v3.log
 
-# Test Slack integration
-# Send "status" in any Slack channel the bot has joined, or DM the bot directly
+# View alert/notification log (replaces Slack alerts)
+tail -f logs/slack_notifications.log
+
+# View watchdog activity
+tail -f logs/launchd_watchdog.log
 ```
+
+> **Note**: Slack alerts are currently **paused**. All notifications that would have gone to Slack are written to `logs/slack_notifications.log` instead. Check that file for trade signals, DEFCON changes, and system events.
 
 ## What's New in v1.1.0 🎉
 
@@ -125,8 +130,8 @@ launchctl list | grep hightrade   # Check status
 
 ### Slack Bot (launchd)
 - **Label**: `com.hightrade.slackbot`
-- **Function**: Listens for commands in any joined Slack channel, group DM, or direct message
-- **Log**: `logs/slack_bot.log`
+- **Status**: Disabled (rate-limited) — the CLI bot is kept offline for now, so no Slack commands are processed.
+- **Notes**: Alerts that used to go through Slack are now written to `logs/slack_notifications.log`, and monitoring happens through local scripts/logs instead of live Slack.
 
 ### MCP Server (Claude Desktop)
 - **Path**: `/Users/stantonhigh/Documents/hightrade/mcp_server.py`
@@ -175,7 +180,8 @@ python3 config_validator.py
 - The deep-dive Grok analysis path is separate from the Day Trader path and is triggered on elevated news signals
 
 ### Slack Commands
-Send these in any Slack channel the bot has joined, any group DM, or directly to the bot:
+> **Slack bot is currently offline** (rate-limited). These commands remain documented for when Slack returns, but nothing is listening right now; instead, check `logs/slack_notifications.log` for alerts.
+Send these in any Slack channel the bot would have joined, any group DM, or directly to the bot:
 - `status` - System status
 - `portfolio` - View positions
 - `defcon` - DEFCON level details
@@ -207,6 +213,23 @@ tail -f logs/slack_bot.log
 ```
 
 ## Monitoring
+
+### Launchd Watchdog
+
+`scripts/monitor_hightrade_orchestrator.sh` checks `com.hightrade3.orchestrator` via `launchctl`, restarts it with `kickstart` if it has stopped, and appends timestamped entries to **`logs/launchd_watchdog.log`**.
+
+Slack delivery is currently **paused**. All alerts — trade signals, DEFCON changes, system events — are buffered to **`logs/slack_notifications.log`** instead.
+
+```bash
+# Run the watchdog script manually at any time
+bash scripts/monitor_hightrade_orchestrator.sh
+
+# Tail watchdog activity
+tail -f logs/launchd_watchdog.log
+
+# Tail buffered alerts (replaces Slack)
+tail -f logs/slack_notifications.log
+```
 
 ### View Logs
 ```bash

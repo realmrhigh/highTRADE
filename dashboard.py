@@ -62,10 +62,16 @@ def _engine() -> PaperTradingEngine:
 
 # ─── Data Layer ──────────────────────────────────────────────────────────────
 
+from contextlib import contextmanager
+
+@contextmanager
 def _conn():
     db = sqlite3.connect(str(DB_PATH))
     db.row_factory = sqlite3.Row
-    return db
+    try:
+        yield db
+    finally:
+        db.close()
 
 def fetch_system_status():
     with _conn() as db:
@@ -1525,12 +1531,14 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
         <div style="color:#555;font-size:9px;margin-top:3px;">Last health log: {_st_ts_display}</div>
       </div>"""
 
-    total_capital = 100_000.0
+    broker_equity = float(stats.get('broker_equity') or 0)
+    broker_cash   = float(stats.get('broker_cash') or 0)
     realized      = float(stats.get('realized_pnl') or 0)
     unrealized    = float(stats.get('unrealized_pnl') or 0)
     deployed      = float(stats.get('deployed') or 0)
-    account_value = total_capital + realized + unrealized
-    cash          = total_capital + realized - deployed
+    total_capital = broker_equity if broker_equity > 0 else 100_000.0
+    account_value = broker_equity if broker_equity > 0 else (total_capital + realized + unrealized)
+    cash          = broker_cash if broker_cash > 0 else (total_capital + realized - deployed)
     total_pnl     = realized + unrealized
     wins          = int(stats.get('wins') or 0)
     losses        = int(stats.get('losses') or 0)
@@ -1981,6 +1989,38 @@ async function sendCommand(cmd) {{
     }}
 }}
 
+async function forceRefreshNews() {{
+    const btn = document.getElementById('news-refresh-btn');
+    const originalText = btn?.innerText;
+    if (btn) {{
+        btn.disabled = true;
+        btn.innerText = 'FORCING...';
+    }}
+
+    try {{
+        const resp = await fetch('/api/news-refresh', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }}
+        }});
+        const data = await resp.json();
+        const ok = resp.ok && data.ok !== false;
+        if (ok && data.news_html) {{
+            const scroll = document.querySelector('.news-scroll');
+            if (scroll) {{
+                scroll.innerHTML = data.news_html;
+            }}
+        }}
+        showToast((ok ? '✅ ' : '❌ ') + (data.message || 'News refresh completed'), ok);
+    }} catch (err) {{
+        showToast('❌ News refresh failed: ' + err, false);
+    }} finally {{
+        if (btn) {{
+            btn.disabled = false;
+            btn.innerText = originalText || 'FORCE NEWS REFRESH';
+        }}
+    }}
+}}
+
 async function sendPrompt() {{
     const promptInput = document.getElementById('custom-prompt');
     const prompt = promptInput.value;
@@ -2182,7 +2222,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
       <div class="stat">
         <div class="stat-label">Account Value</div>
         <div class="stat-value" style="font-size:22px;color:{'#00ff88' if account_value >= total_capital else '#ff4444'};">${account_value:,.0f}</div>
-        <div class="stat-sub">Base Capital: $100,000</div>
+        <div class="stat-sub">Base Capital: ${total_capital:,.0f}</div>
       </div>
       <div class="stat">
         <div class="stat-label">Total P&amp;L</div>
@@ -2368,7 +2408,10 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
 <div class="grid-mid">
 
   <div class="panel">
-    <div class="panel-title">News Intelligence &mdash; Recent Signals</div>
+    <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+      <span>News Intelligence &mdash; Recent Signals</span>
+      <button id="news-refresh-btn" onclick="forceRefreshNews()" style="background:#1a1b29;color:#00ff88;border:1px solid rgba(0,255,136,0.4);padding:6px 12px;border-radius:6px;font-size:11px;font-weight:600;letter-spacing:1px;cursor:pointer;">FORCE NEWS REFRESH</button>
+    </div>
     <div class="news-scroll">{news_items}</div>
   </div>
 
@@ -2793,6 +2836,21 @@ def run_server(host='0.0.0.0', port=5055):
             from hightrade_cmd import send_command
             resp = send_command(cmd)
             return resp
+        except Exception as e:
+            return {'ok': False, 'message': str(e)}, 500
+
+    @app.route('/api/news-refresh', methods=['POST'])
+    def handle_news_refresh():
+        try:
+            from hightrade_cmd import send_command
+            cmd_resp = send_command('/update')
+            news_html = build_news_items(fetch_recent_news())
+            return {
+                'ok': cmd_resp.get('ok', True),
+                'message': cmd_resp.get('message', 'News refresh triggered'),
+                'command': cmd_resp,
+                'news_html': news_html
+            }
         except Exception as e:
             return {'ok': False, 'message': str(e)}, 500
 
