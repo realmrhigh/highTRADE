@@ -992,11 +992,12 @@ class BrokerDecisionEngine:
 
     def _should_trade(self, defcon_level: int, signal_score: float) -> bool:
         """Determine if we should execute a trade"""
-        # Relaxed: DEFCON 1-4: allow buys (we're more crisis-buy friendly); DEFCON 5: hold cash.
-        if defcon_level > 4:
+        # DEFCON 1-3: buy the dip and crisis entries. DEFCON 4-5: hold cash.
+        if defcon_level > 3:
             return False
 
-        # Require minimum composite signal confirmation (prevents buying on mild noise)
+        # Require minimum composite signal confirmation (prevents buying on DEFCON 3
+        # from a pure market-drop with no corroborating news/VIX/yield signal)
         if signal_score < 20:
             return False
 
@@ -1236,24 +1237,32 @@ class BrokerDecisionEngine:
 
         gate_attempts = []
 
-        # Primary: SONNET 4.6 via REST (preferred for stability/cost). Try sonnet-4.6 first, then gemini-2.5-pro, then gemini-3.1-pro-preview as grounded fallback.
+        # Primary: Gemini 3.1 Pro via REST with Google Search grounding enabled.
+        _orig_grounding = os.environ.get('GEMINI_ENABLE_GOOGLE_SEARCH')
         try:
+            os.environ['GEMINI_ENABLE_GOOGLE_SEARCH'] = '1'
             text, in_tok, out_tok = gemini_client.call(
                 prompt=prompt,
-                model_id='sonnet-4.6',
+                model_key='reasoning',
+                model_id='gemini-3.1-pro-preview',
                 caller='broker_gate',
             )
             if text:
                 result = _parse_gate_json(text)
-                result['_gate_model'] = 'sonnet-4.6'
-                result['_gate_provider'] = 'sonnet'
+                result['_gate_model'] = 'gemini-3.1-pro-preview'
+                result['_gate_provider'] = 'google-rest-grounded'
                 result['_gate_tokens'] = {'input': in_tok, 'output': out_tok}
                 return result
-            gate_attempts.append('sonnet-4.6: empty response')
+            gate_attempts.append('gemini-3.1-pro-preview: empty response')
         except json.JSONDecodeError as e:
-            gate_attempts.append(f'sonnet-4.6: json parse failed ({e})')
+            gate_attempts.append(f'gemini-3.1-pro-preview: json parse failed ({e})')
         except Exception as e:
-            gate_attempts.append(f'sonnet-4.6: {e}')
+            gate_attempts.append(f'gemini-3.1-pro-preview: {e}')
+        finally:
+            if _orig_grounding is None:
+                os.environ.pop('GEMINI_ENABLE_GOOGLE_SEARCH', None)
+            else:
+                os.environ['GEMINI_ENABLE_GOOGLE_SEARCH'] = _orig_grounding
 
         # Fallback: Gemini 2.5 Pro.
         try:
@@ -1275,34 +1284,6 @@ class BrokerDecisionEngine:
             gate_attempts.append(f'gemini-2.5-pro: json parse failed ({e})')
         except Exception as e:
             gate_attempts.append(f'gemini-2.5-pro: {e}')
-
-        # Fallback: Gemini 3.1 Pro via REST with Google Search grounding enabled.
-        _orig_grounding = os.environ.get('GEMINI_ENABLE_GOOGLE_SEARCH')
-        try:
-            os.environ['GEMINI_ENABLE_GOOGLE_SEARCH'] = '1'
-            text, in_tok, out_tok = gemini_client.call(
-                prompt=prompt,
-                model_key='reasoning',
-                model_id='gemini-3.1-pro-preview',
-                caller='broker_gate',
-            )
-            if text:
-                result = _parse_gate_json(text)
-                result['_gate_model'] = 'gemini-3.1-pro-preview'
-                result['_gate_provider'] = 'google-rest-grounded'
-                result['_gate_tokens'] = {'input': in_tok, 'output': out_tok}
-                result['_gate_attempts'] = gate_attempts
-                return result
-            gate_attempts.append('gemini-3.1-pro-preview: empty response')
-        except json.JSONDecodeError as e:
-            gate_attempts.append(f'gemini-3.1-pro-preview: json parse failed ({e})')
-        except Exception as e:
-            gate_attempts.append(f'gemini-3.1-pro-preview: {e}')
-        finally:
-            if _orig_grounding is None:
-                os.environ.pop('GEMINI_ENABLE_GOOGLE_SEARCH', None)
-            else:
-                os.environ['GEMINI_ENABLE_GOOGLE_SEARCH'] = _orig_grounding
 
         logger.warning(
             f"  ⚠️  Pre-purchase gate AI stack failed for {ticker}: {' | '.join(gate_attempts)} — defaulting to APPROVE"
@@ -1974,54 +1955,6 @@ class AutonomousBroker:
                 logger.info(f"  📢 CONDITIONAL TRIGGERED (semi_auto): {ticker} @ ${entry_price:.2f} — ${position_size:,.0f} — awaiting /buy")
                 self._notify_acquisition_triggered(decision, executed=False)
                 self.decision_engine.record_decision(decision, executed=False, result="PENDING_APPROVAL")
-
-                # Register pending alert with orchestrator instance so /yes and pending drains work
-                try:
-                    # Best-effort: append to in-memory orchestrator pending queue if available
-                    from hightrade_orchestrator import ORCH_INSTANCE
-                    if ORCH_INSTANCE is not None:
-                        pending_obj = {
-                            'ticker': ticker,
-                            'conditional_id': decision.get('conditional_id'),
-                            'position_size': position_size,
-                            'entry_price': entry_price,
-                            'thesis': decision.get('thesis', ''),
-                            'timestamp': datetime.now().isoformat(),
-                            'executed': False,
-                        }
-                        ORCH_INSTANCE.pending_trade_alerts.append(pending_obj)
-                        logger.info(f"  ➕ Pending trade alert registered in orchestrator: {ticker} (conditional_id={decision.get('conditional_id')})")
-                except Exception as _e:
-                    logger.warning(f"  ⚠️  Could not register pending alert with orchestrator: {_e}")
-
-                # Also write a durable pending alert file so the orchestrator can pick it up
-                try:
-                    import json
-                    from pathlib import Path
-                    pending_file = Path(__file__).parent / 'trading_data' / 'pending_alerts.json'
-                    pending_file.parent.mkdir(parents=True, exist_ok=True)
-                    alerts = []
-                    if pending_file.exists():
-                        try:
-                            with open(pending_file, 'r') as pf:
-                                alerts = json.load(pf)
-                        except Exception:
-                            alerts = []
-                    alerts.append({
-                        'ticker': ticker,
-                        'conditional_id': decision.get('conditional_id'),
-                        'position_size': position_size,
-                        'entry_price': entry_price,
-                        'thesis': decision.get('thesis', ''),
-                        'timestamp': datetime.now().isoformat(),
-                        'executed': False,
-                    })
-                    with open(pending_file, 'w') as pf:
-                        json.dump(alerts, pf, indent=2)
-                    logger.info(f"  💾 Pending trade alert written to file: {pending_file}")
-                except Exception as _e:
-                    logger.warning(f"  ⚠️  Failed to write pending alert file: {_e}")
-
                 executed_count += 1  # Count as "processed" for logging
                 continue
 

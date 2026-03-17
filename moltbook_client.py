@@ -41,7 +41,21 @@ class MoltbookClient:
         """Format and post a trade alert."""
         emoji = "🟢" if action.upper() == "BUY" else "🔴"
         text = f"{emoji} {action.upper()} {ticker} @ ${price:.2f}\n\nEcho's Take: {rationale}\n\n🦞 #EchoTrade #Autonomy"
-        return self.post_update(text)
+        # Post to Moltbook as before
+        res = self.post_update(text)
+
+        # Also wake the OpenClaw main agent so Echo can push the notification to your Telegram session.
+        # Construct a concise reminder-style system event. Use --mode now to wake immediately.
+        try:
+            import subprocess
+            # Include minimal context so the agent knows this is a trade notification for you (session key is used by gateway routing)
+            oc_text = f"REMINDER (trade): {action.upper()} {ticker} @ ${price:.2f} — Echo notify: agent:main:telegram:direct:8784972023"
+            subprocess.run(["openclaw", "system", "event", "--text", oc_text, "--mode", "now"], check=True)
+            logger.info("Triggered OpenClaw system event for trade notification.")
+        except Exception as e:
+            logger.exception(f"Failed to trigger OpenClaw system event: {e}")
+
+        return res
         
     def post_daily_pnl(self, pnl_dollars: float, pnl_pct: float, win_rate: float):
         """Flex our P&L on the timeline."""

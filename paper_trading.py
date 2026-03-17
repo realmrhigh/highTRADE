@@ -26,6 +26,34 @@ DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
 logger = logging.getLogger(__name__)
 
 
+def _canonical_symbol(symbol: str) -> str:
+    """Normalize broker/local symbol variants to a single DB form.
+
+    Examples:
+    - BTCUSD -> BTC-USD
+    - BTC/USD -> BTC-USD
+    - BTC-USD -> BTC-USD
+    - AAPL -> AAPL
+    """
+    s = (symbol or '').strip().upper()
+    if not s:
+        return ''
+    s = s.replace('/', '-').replace('_', '-')
+    if s.endswith('-USD'):
+        return s
+    if s.endswith('USD') and '-' not in s and len(s) > 3:
+        return f"{s[:-3]}-USD"
+    return s
+
+
+def _broker_symbol(symbol: str) -> str:
+    """Convert local canonical symbol to Alpaca order symbol format."""
+    s = _canonical_symbol(symbol)
+    if s.endswith('-USD'):
+        return s.replace('-', '/')
+    return s
+
+
 # ---------------------------------------------------------------------------
 # Alpaca broker shim — wraps paper (or live) API, gracefully degrades if unconfigured
 # ---------------------------------------------------------------------------
@@ -59,8 +87,8 @@ class AlpacaBroker:
             'Content-Type':        'application/json',
         }
 
-    def place_order(self, symbol: str, qty: int, side: str) -> dict:
-        """Place a market order.  side = 'buy' | 'sell'.
+    def place_order(self, symbol: str, qty: float, side: str) -> dict:
+        """Place a market order. side = 'buy' | 'sell'.
         Returns {'ok': True, 'order': {...}} or {'ok': False, 'error': str}."""
         if not self._configured:
             return {'ok': False, 'error': 'Alpaca not configured'}
@@ -69,12 +97,14 @@ class AlpacaBroker:
 
         try:
             import requests as _req
+            broker_symbol = _broker_symbol(symbol)
+            is_crypto = broker_symbol.endswith('/USD')
             payload = {
-                'symbol':        symbol.upper(),
+                'symbol':        broker_symbol,
                 'qty':           str(qty),
                 'side':          side,
                 'type':          'market',
-                'time_in_force': 'day',
+                'time_in_force': 'gtc' if is_crypto else 'day',
             }
             r = _req.post(
                 f'{self.base_url}/v2/orders',
@@ -104,7 +134,7 @@ class AlpacaBroker:
         try:
             import requests as _req
             r = _req.get(
-                f'{self.base_url}/v2/positions/{symbol.upper()}',
+                f'{self.base_url}/v2/positions/{_broker_symbol(symbol)}',
                 headers=self._headers(),
                 timeout=10,
             )
@@ -255,7 +285,7 @@ class PaperTradingEngine:
 
             local_by_symbol = {}
             for row in open_rows:
-                symbol = (row.get('asset_symbol') or '').upper()
+                symbol = _canonical_symbol(row.get('asset_symbol') or '')
                 if symbol:
                     local_by_symbol.setdefault(symbol, []).append(row)
 
@@ -266,8 +296,8 @@ class PaperTradingEngine:
             now_time = now.strftime('%H:%M:%S')
 
             for raw_pos in alpaca_positions:
-                symbol = (raw_pos.get('symbol') or '').upper()
-                qty = abs(self._safe_int(raw_pos.get('qty')))
+                symbol = _canonical_symbol(raw_pos.get('symbol') or '')
+                qty = abs(self._safe_float(raw_pos.get('qty')))
                 if not symbol or qty <= 0:
                     continue
 
@@ -275,9 +305,10 @@ class PaperTradingEngine:
                 avg_entry = self._safe_float(raw_pos.get('avg_entry_price'))
                 market_value = abs(self._safe_float(raw_pos.get('market_value')))
                 local_rows = local_by_symbol.get(symbol, [])
-                local_qty = sum(self._safe_int(r.get('shares')) for r in local_rows)
+                # allow fractional shares comparison
+                local_qty = sum(self._safe_float(r.get('shares')) for r in local_rows)
 
-                if local_qty == qty:
+                if abs(local_qty - qty) < 1e-9:
                     continue
 
                 if local_qty == 0:
@@ -810,6 +841,8 @@ class PaperTradingEngine:
 
     def manual_buy(self, ticker: str, shares: int,
                    price_override: float = None, notes: str = '') -> dict:
+        # manual_buy called — no debug noise in production
+        pass
         """
         Execute a manual paper buy for any ticker/share count.
         Used by the /buy slash command.

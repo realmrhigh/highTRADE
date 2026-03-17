@@ -136,6 +136,8 @@ COMMANDS = {
         'aliases': ['/h', '/?'],
         'category': 'info',
     },
+
+
 }
 
 # Build reverse lookup for aliases
@@ -418,6 +420,8 @@ class CommandProcessor:
         except Exception as e:
             return {'ok': False, 'message': f'Hunt failed: {e}'}
 
+
+
     def _handle_daytrade(self, args: str) -> dict:
         """Day trade status, toggle, or history."""
         dt = getattr(self.orchestrator, 'day_trader', None)
@@ -679,11 +683,22 @@ class CommandProcessor:
         info = []
         if pending:
             for i, alert in enumerate(pending, 1):
-                info.append(
-                    f"📋 Pending #{i}: {alert['assets']['primary_asset']} / "
-                    f"{alert['assets']['secondary_asset']} / {alert['assets']['tertiary_asset']} "
-                    f"— ${alert['total_position_size']:,.0f}"
-                )
+                # Support both legacy alert['assets'] structure and our simpler pending objects
+                try:
+                    assets = alert.get('assets') if isinstance(alert, dict) else None
+                    if assets and isinstance(assets, dict):
+                        primary = assets.get('primary_asset') or alert.get('ticker') or alert.get('symbol')
+                        secondary = assets.get('secondary_asset', '')
+                        tertiary = assets.get('tertiary_asset', '')
+                        size = alert.get('total_position_size') or alert.get('position_size') or alert.get('position_size_dollars')
+                        info.append(f"📋 Pending #{i}: {primary} {('/ ' + secondary) if secondary else ''} {('/ ' + tertiary) if tertiary else ''} — ${size:,.0f}" )
+                    else:
+                        # Fallback for minimal pending objects
+                        primary = alert.get('ticker') or alert.get('symbol') or alert.get('conditional_id')
+                        size = alert.get('position_size') or alert.get('position_size_dollars') or alert.get('total_position_size') or 0
+                        info.append(f"📋 Pending #{i}: {primary} — ${size:,.0f}")
+                except Exception:
+                    info.append(f"📋 Pending #{i}: {alert.get('ticker') or alert.get('symbol')}")
         else:
             info.append("No pending trade alerts")
 

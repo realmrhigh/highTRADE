@@ -21,7 +21,7 @@ try:
 except ImportError:
     fcntl = None
 
-# Load .env early — before any module that reads os.getenv (e.g. AlpacaBroker)
+# Load .env early - before any module that reads os.getenv (e.g. AlpacaBroker)
 # override=True ensures .env always wins over stale shell/launchd env vars
 try:
     from dotenv import load_dotenv as _load_dotenv
@@ -33,7 +33,7 @@ except ImportError:
 _ET = ZoneInfo('America/New_York')
 
 def _et_now() -> datetime:
-    """Current datetime in US/Eastern — used for all trading-schedule comparisons."""
+    """Current datetime in US/Eastern - used for all trading-schedule comparisons."""
     return datetime.now(_ET)
 from monitoring import SignalMonitor
 from alerts import AlertSystem
@@ -51,7 +51,7 @@ import exit_analyst
 # Configuration
 SCRIPT_DIR = Path(__file__).parent.resolve()
 DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
-LOGS_PATH = SCRIPT_DIR / 'logs'               # unified log dir — matches launchd stdout
+LOGS_PATH = SCRIPT_DIR / 'logs'               # unified log dir - matches launchd stdout
 LEGACY_LOGS_PATH = SCRIPT_DIR / 'trading_data' / 'logs'  # keep for other components
 CONFIG_PATH = SCRIPT_DIR / 'trading_data' / 'orchestrator_config.json'
 ORCHESTRATOR_LOCK_PATH = SCRIPT_DIR / 'trading_data' / 'hightrade_orchestrator.lock'
@@ -60,7 +60,7 @@ ORCHESTRATOR_LOCK_PATH = SCRIPT_DIR / 'trading_data' / 'hightrade_orchestrator.l
 LOGS_PATH.mkdir(parents=True, exist_ok=True)
 LEGACY_LOGS_PATH.mkdir(parents=True, exist_ok=True)
 
-# Set up logging — force=True overrides any root logger already configured by
+# Set up logging - force=True overrides any root logger already configured by
 # imported modules; StreamHandler goes to stdout which launchd writes to
 # logs/orchestrator.log; FileHandler writes a dated backup copy.
 LOG_FILE = LOGS_PATH / f"hightrade_{datetime.now().strftime('%Y%m%d')}.log"
@@ -162,9 +162,12 @@ def ensure_single_orchestrator_instance() -> None:
     raise SystemExit(1)
 
 
+# Module-level handle to allow other modules (broker) to register pending alerts
+ORCH_INSTANCE = None
+
 class HighTradeOrchestrator:
     """Main orchestrator for HighTrade system"""
-
+    
     def __init__(self, broker_mode='semi_auto', broker_mode_explicit: bool = False):
         """Initialize orchestrator components
 
@@ -277,7 +280,7 @@ class HighTradeOrchestrator:
             if self.fred_enabled:
                 logger.info("📊 FRED Macro Tracker initialized (API key found)")
             else:
-                logger.info("📊 FRED Macro Tracker initialized (no API key — add fred_api_key to config)")
+                logger.info("📊 FRED Macro Tracker initialized (no API key - add fred_api_key to config)")
         except Exception as e:
             logger.warning(f"⚠️  FRED macro tracker init failed: {e}")
             self.fred = None
@@ -341,6 +344,32 @@ class HighTradeOrchestrator:
         logger.info(f"🌅 Day Trader: {'ENABLED' if self.day_trader_enabled else 'DISABLED'}")
         logger.info(f"📡 Slash commands: python3 hightrade_cmd.py /help")
 
+        # Expose orchestrator instance for inter-module signaling (pending alerts)
+        try:
+            global ORCH_INSTANCE
+            ORCH_INSTANCE = self
+        except Exception:
+            pass
+
+        # Import any pending alerts written to disk by broker (durable fallback)
+        try:
+            import json
+            from pathlib import Path
+            pending_file = Path(__file__).parent / 'trading_data' / 'pending_alerts.json'
+            if pending_file.exists():
+                try:
+                    with open(pending_file, 'r') as pf:
+                        alerts = json.load(pf)
+                    for a in alerts:
+                        self.pending_trade_alerts.append(a)
+                    # Remove the file after ingest
+                    pending_file.unlink(missing_ok=True)
+                    logger.info(f"🔁 Ingested {len(alerts)} pending alerts from disk into orchestrator queue")
+                except Exception as _e:
+                    logger.warning(f"Failed to ingest pending alerts file: {_e}")
+        except Exception:
+            pass
+
     # ── DEFCON persistence across restarts ────────────────────────────────
     def _load_last_defcon(self) -> int:
         """Load last known DEFCON from DB so restarts don't trigger phantom buys.
@@ -360,7 +389,7 @@ class HighTradeOrchestrator:
                 return level
         except Exception as e:
             logger.warning(f"⚠️  Could not load last DEFCON: {e}")
-        logger.info("📋 No prior DEFCON found — defaulting to 5 (safe)")
+        logger.info("📋 No prior DEFCON found - defaulting to 5 (safe)")
         return 5
 
     def check_system_health(self):
@@ -515,7 +544,7 @@ class HighTradeOrchestrator:
         Fetch the current market price for each open position and compute
         unrealized P&L. Updates trade_records in the DB and returns enriched list.
         Prefers real-time WebSocket prices when available; falls back to yfinance.
-        Falls back gracefully — a price fetch failure never blocks the cycle.
+        Falls back gracefully - a price fetch failure never blocks the cycle.
         """
         if not positions:
             return positions
@@ -545,7 +574,7 @@ class HighTradeOrchestrator:
                     if not hist.empty:
                         current_price = float(hist['Close'].iloc[-1])
                     else:
-                        # Market closed — use last close
+                        # Market closed - use last close
                         hist = ticker.history(period='5d')
                         current_price = float(hist['Close'].iloc[-1]) if not hist.empty else None
 
@@ -561,7 +590,7 @@ class HighTradeOrchestrator:
                     # Also fix position_size_dollars to true cost basis (entry * shares)
                     p['position_size_dollars'] = round(cost_basis, 2)
 
-                    # Persist to DB — also advance peak_price (high-watermark for trailing stop)
+                    # Persist to DB - also advance peak_price (high-watermark for trailing stop)
                     try:
                         conn = _sqlite3.connect(str(self.paper_trading.db_path))
                         conn.execute("""
@@ -597,10 +626,10 @@ class HighTradeOrchestrator:
         sector_result = None
         vix_result = None
         macro_result = None
-        
+
         if self.sector_analyzer:
             sector_result = self.sector_analyzer.get_rotation_data()
-        
+
         if self.vix_analyzer:
             vix_result = self.vix_analyzer.get_term_structure_data()
 
@@ -647,7 +676,7 @@ class HighTradeOrchestrator:
                 if breaking_db_signal:
                     logger.warning(f"  🔥 Using breaking news from database: {breaking_db_signal['crisis_description']}")
                     news_signal = breaking_db_signal
-                
+
                 # THEN: Fetch fresh news from APIs
                 try:
                     logger.info("📰 Fetching and analyzing news...")
@@ -670,7 +699,7 @@ class HighTradeOrchestrator:
                         if fresh_news_signal['breaking_news_override']:
                             logger.warning(f"  🚨 BREAKING NEWS DETECTED: {fresh_news_signal['crisis_description']}")
 
-                        # Detect new articles BEFORE Gemini — skip LLM when 0 new articles
+                        # Detect new articles BEFORE Gemini - skip LLM when 0 new articles
                         new_count, latest_articles = self._detect_new_news(fresh_news_signal)
 
                         # --- GEMINI LAYER 1: Flash analysis (skip if no new articles) ---
@@ -708,7 +737,7 @@ class HighTradeOrchestrator:
 
                             # --- LAYER 2: Grok deep analysis on elevated signals ---
                             if self.gemini.should_run_pro(score, fresh_news_signal['breaking_count'], defcon_changed):
-                                logger.info(f"  🧠 Elevated signal ({score:.1f}) — triggering Grok deep analysis...")
+                                logger.info(f"  🧠 Elevated signal ({score:.1f}) - triggering Grok deep analysis...")
                                 open_positions = self.paper_trading.get_open_positions()
 
                                 _pro_briefing_ctx = None
@@ -732,7 +761,7 @@ class HighTradeOrchestrator:
                                     briefing_context=_pro_briefing_ctx,
                                 ) if self.grok_enabled else None
                         elif self.gemini_enabled:
-                            logger.info(f"  ⏭️  Skipping Gemini — 0 new articles (reusing previous analysis)")
+                            logger.info(f"  ⏭️  Skipping Gemini - 0 new articles (reusing previous analysis)")
 
                         # Store full signal with Gemini Flash embedded
                         signal_id = self._record_news_signal(
@@ -772,7 +801,7 @@ class HighTradeOrchestrator:
                                     'theme': gemini_flash_result.get('dominant_theme', ''),
                                     'reasoning': gemini_flash_result.get('reasoning', '')[:200]
                                 }
-                                
+
                             # Send silent notification to #logs-silent every cycle
                             self.alerts.send_silent_log('news_update', {
                                 'news_score': score,
@@ -786,7 +815,7 @@ class HighTradeOrchestrator:
                                 'gemini': gemini_summary,
                                 'timestamp': datetime.now().isoformat()
                             })
-                            
+
                             logger.info(f"  ✅ News notification sent to #logs-silent ({new_count} new, {fresh_news_signal['article_count']} total)")
                     else:
                         logger.info("  📰 No recent news articles found")
@@ -807,7 +836,7 @@ class HighTradeOrchestrator:
                     if congressional_result.get('has_clusters'):
                         top = congressional_result['clusters'][0]
                         logger.info(
-                            f"  🎯 TOP CLUSTER: {top['ticker']} — "
+                            f"  🎯 TOP CLUSTER: {top['ticker']} - "
                             f"{top['buy_count']} politicians, strength={top['signal_strength']:.0f}, "
                             f"bipartisan={top['bipartisan']}"
                         )
@@ -897,7 +926,7 @@ class HighTradeOrchestrator:
                                 'action': candidate['action_suggestion']
                             })
 
-                    # Trigger pipeline — researcher picks up new pending items,
+                    # Trigger pipeline - researcher picks up new pending items,
                     # analyst ALWAYS runs to catch any library_ready items waiting
                     try:
                         from acquisition_researcher import run_research_cycle
@@ -917,7 +946,7 @@ class HighTradeOrchestrator:
                         except Exception as _se:
                             logger.warning(f"Sector context failed: {_se}")
 
-                        run_analyst_cycle(extra_context={   # always — don't gate on researched
+                        run_analyst_cycle(extra_context={   # always - don't gate on researched
                             'defcon_level': self.monitor.defcon_level,
                             'news_score':   _news_score,
                             'is_winding_down': _is_winding_down,
@@ -928,7 +957,7 @@ class HighTradeOrchestrator:
                         logger.warning(f"  🔬 Pipeline auto-trigger failed: {e}")
 
                     n_found = len(hound_results.get('candidates', []))
-                    logger.info(f"  🐕 Hound complete — {n_found} candidates, next run in ~{self._hound_scan_interval * 15} min")
+                    logger.info(f"  🐕 Hound complete - {n_found} candidates, next run in ~{self._hound_scan_interval * 15} min")
                 except Exception as e:
                     logger.warning(f"  🐕 Grok Hound failed: {e}")
             else:
@@ -977,8 +1006,8 @@ class HighTradeOrchestrator:
             # Record to database
             logger.info("💾 Recording to database...")
             result = self.monitor.record_monitoring_point(
-                yield_data, 
-                vix_data, 
+                yield_data,
+                vix_data,
                 market_data,
                 defcon_level=current_defcon,
                 news_signal=news_signal,
@@ -996,7 +1025,7 @@ class HighTradeOrchestrator:
             # Send alerts if DEFCON changed or escalated
             if current_defcon != self.previous_defcon:
                 old_defcon = self.previous_defcon
-                self.previous_defcon = current_defcon  # Always update — fixes de-escalation blindness
+                self.previous_defcon = current_defcon  # Always update - fixes de-escalation blindness
 
                 if current_defcon < old_defcon:
                     logger.warning(f"🚨 DEFCON ESCALATION: {old_defcon} → {current_defcon}")
@@ -1045,7 +1074,7 @@ Check dashboard for detailed analysis.
 
                 # Broker agent decides on trades (DEFCON 1-3: crisis + dip buying)
                 if self.cmd_processor.should_skip_trades:
-                    logger.warning("⏸️  Trading on HOLD — skipping trade execution")
+                    logger.warning("⏸️  Trading on HOLD - skipping trade execution")
                 elif current_defcon <= 3:
                     crisis_desc = f"DEFCON {current_defcon} escalation - Signal Score: {signal_score:.1f}"
                     market_conditions = {'vix': vix} if vix else {}
@@ -1066,9 +1095,9 @@ Check dashboard for detailed analysis.
                         if trade_executed:
                             logger.info("✅ BROKER: Buy executed autonomously!")
                         else:
-                            logger.info("ℹ️  BROKER: No DEFCON basket buy executed — dynamic acquisition pipeline remains active")
+                            logger.info("ℹ️  BROKER: No DEFCON basket buy executed - dynamic acquisition pipeline remains active")
                     else:
-                        logger.info("ℹ️  Manual DEFCON basket alerts removed — acquisition pipeline is the active buy path")
+                        logger.info("ℹ️  Manual DEFCON basket alerts removed - acquisition pipeline is the active buy path")
 
                 # Monitor and process exits (respects hold)
                 if not self.cmd_processor.should_skip_trades:
@@ -1094,7 +1123,7 @@ Check dashboard for detailed analysis.
                         # Always check for positions missing exit frameworks, regardless of broker mode
                         self._check_positions_missing_exit_framework()
 
-            # ── Acquisition conditionals (market hours only — Mon-Fri 9:30-16:00 ET) ──
+            # ── Acquisition conditionals (market hours only - Mon-Fri 9:30-16:00 ET) ──
             _now_et = _et_now()
             _market_open = (
                 _now_et.weekday() < 5  # Mon-Fri only
@@ -1184,7 +1213,7 @@ Check dashboard for detailed analysis.
         if self._verifier_cycle >= _v_interval:
             self._verifier_cycle = 0
             _v_mode = 'HIGH-ALERT (15 min)' if self.previous_defcon <= 2 else 'hourly'
-            logger.info(f"🔍 Conditional verifier firing [{_v_mode}] — DEFCON {self.previous_defcon}/5")
+            logger.info(f"🔍 Conditional verifier firing [{_v_mode}] - DEFCON {self.previous_defcon}/5")
             try:
                 from acquisition_verifier import run_verification_cycle
                 summary     = run_verification_cycle()
@@ -1210,7 +1239,7 @@ Check dashboard for detailed analysis.
                     'mode':        _v_mode,
                 }
                 if flagged or invalidated or corrected or demoted or archived:
-                    # Push notify — thesis changed, corrected, demoted, or killed
+                    # Push notify - thesis changed, corrected, demoted, or killed
                     self.alerts.send_notify('verifier_alert', _v_payload)
                 self.alerts.send_silent_log('verifier_alert', _v_payload)
             except Exception as e:
@@ -1228,13 +1257,13 @@ Check dashboard for detailed analysis.
 
     def _check_health_agent(self):
         """
-        Twice-weekly system health check — fires on Mondays and Thursdays,
+        Twice-weekly system health check - fires on Mondays and Thursdays,
         throttled to at most once per 3 days by health_agent's internal state.
         Checks APIs, monitoring recency, recurring data gaps, and new Gemini models.
         Results sent to #all-hightrade via send_notify().
         """
         now = _et_now()
-        # Only run on Monday (0) or Thursday (3) — ET calendar day
+        # Only run on Monday (0) or Thursday (3) - ET calendar day
         if now.weekday() not in (0, 3):
             return
         today = now.strftime('%Y-%m-%d')
@@ -1243,21 +1272,21 @@ Check dashboard for detailed analysis.
         self._health_check_date = today
 
         day_name = 'Monday' if now.weekday() == 0 else 'Thursday'
-        logger.info(f"🏥 {day_name} health check — running twice-weekly system audit...")
+        logger.info(f"🏥 {day_name} health check - running twice-weekly system audit...")
         try:
             from health_agent import run_and_notify
             result = run_and_notify(self.alerts, force=False)
             if result:
                 logger.info(f"  ✅ Health check complete: {result.get('summary', '')}")
-            # 'skipped' means <3 days since last run — silently move on
+            # 'skipped' means <3 days since last run - silently move on
         except Exception as e:
             logger.warning(f"  ⚠️  Health agent failed: {e}")
 
     def _check_flash_briefings(self):
         """
         Fire lightweight Gemini Flash briefings at two intraday checkpoints:
-          • Morning  — 9:30 AM ET  (market open snapshot)
-          • Midday   — 12:00 PM ET (lunch check-in)
+          • Morning  - 9:30 AM ET  (market open snapshot)
+          • Midday   - 12:00 PM ET (lunch check-in)
 
         Each fires once per calendar day. Results saved to daily_briefings table
         (model_key = 'morning_flash' / 'midday_flash') so the 4:30 PM Pro synthesis
@@ -1279,7 +1308,7 @@ Check dashboard for detailed analysis.
             if not past_window or already_ran:
                 continue
 
-            # DB guard: survive orchestrator restarts — don't re-fire if already in DB today
+            # DB guard: survive orchestrator restarts - don't re-fire if already in DB today
             if not already_ran:
                 try:
                     import sqlite3 as _sq2
@@ -1291,7 +1320,7 @@ Check dashboard for detailed analysis.
                     _c.close()
                     if _hit:
                         setattr(self, attr, today)  # stamp in-memory
-                        logger.debug(f"  ⏭️  {emoji} flash briefing already in DB for {today} — skipping")
+                        logger.debug(f"  ⏭️  {emoji} flash briefing already in DB for {today} - skipping")
                         continue
                 except Exception:
                     pass  # If DB check fails, fall through and let the normal guard handle it
@@ -1299,9 +1328,9 @@ Check dashboard for detailed analysis.
             logger.info(f"📊 {emoji} Flash briefing firing ({tgt_hour:02d}:{tgt_min:02d})...")
             try:
                 self._run_flash_briefing(label, emoji)
-                setattr(self, attr, today)   # only stamp date on success — enables retry next cycle on failure
+                setattr(self, attr, today)   # only stamp date on success - enables retry next cycle on failure
             except Exception as e:
-                logger.warning(f"{emoji} Flash briefing failed — will retry next cycle: {e}")
+                logger.warning(f"{emoji} Flash briefing failed - will retry next cycle: {e}")
 
     def _run_flash_briefing(self, label: str, emoji: str):
         """Build a concise Flash prompt from live state and send summary to #logs-silent."""
@@ -1333,7 +1362,7 @@ Check dashboard for detailed analysis.
         except Exception:
             news_ctx = "News signal unavailable."
 
-        # Open positions — enriched with live prices and unrealized P&L
+        # Open positions - enriched with live prices and unrealized P&L
         try:
             open_positions = self.paper_trading.get_open_positions()
             open_positions = self._enrich_positions_with_live_prices(open_positions)
@@ -1362,7 +1391,7 @@ Check dashboard for detailed analysis.
         except Exception as e:
             pos_ctx = f"  Position data unavailable ({e})."
 
-        # Active conditionals — with live price and distance to trigger
+        # Active conditionals - with live price and distance to trigger
         try:
             import yfinance as _yf
             conn = _sq.connect(str(DB_PATH))
@@ -1428,7 +1457,7 @@ Check dashboard for detailed analysis.
         macro_score = self._get_latest_macro_score()
         defcon = self.previous_defcon
 
-        # ── Market snapshot — index ETFs, futures, VIX, earnings ─────────
+        # ── Market snapshot - index ETFs, futures, VIX, earnings ─────────
         try:
             import yfinance as _yf2
             from datetime import date as _date
@@ -1477,7 +1506,7 @@ Check dashboard for detailed analysis.
                 pass
 
             _today = _date.today()
-            # ETFs (GLD, TLT, USO, ITA, XLE, etc.) never have earnings calendars —
+            # ETFs (GLD, TLT, USO, ITA, XLE, etc.) never have earnings calendars -
             # yfinance logs a 404 ERROR for them internally before raising. Silence
             # the yfinance logger to CRITICAL during .calendar calls so those harmless
             # 404s don't pollute our logs.
@@ -1557,7 +1586,7 @@ Check dashboard for detailed analysis.
             if not dh:
                 return "  No monitoring cycles recorded yet today\n"
             return ''.join(
-                f"  {d.get('monitoring_time','?')} — DEFCON {d.get('defcon_level','?')} "
+                f"  {d.get('monitoring_time','?')} - DEFCON {d.get('defcon_level','?')} "
                 f"Score {d.get('signal_score',0):.1f} VIX {d.get('vix_close','?')} "
                 f"Yield {d.get('bond_10yr_yield','?')}%\n"
                 for d in dh
@@ -1582,7 +1611,7 @@ Check dashboard for detailed analysis.
             acts = Counter(p.get('recommended_action','?') for p in pro)
             out = f"  Consensus: {dict(acts)}\n"
             for p in pro[:2]:
-                out += f"  [{p.get('trigger_type','?')}] {p.get('recommended_action','?')} — {(p.get('reasoning') or '')[:200]}\n"
+                out += f"  [{p.get('trigger_type','?')}] {p.get('recommended_action','?')} - {(p.get('reasoning') or '')[:200]}\n"
             return out
 
         def _fmt_news_history(ns, fl):
@@ -1619,7 +1648,7 @@ Check dashboard for detailed analysis.
         _MORNING_JSON = """{
   "market_regime": "risk-on | risk-off | neutral | transitioning",
   "regime_confidence": 0.0,
-  "session_setup": "How today is set up at open — pre-market conditions, overnight moves, key gap analysis",
+  "session_setup": "How today is set up at open - pre-market conditions, overnight moves, key gap analysis",
   "headline_summary": "2-3 sentence summary of what is driving markets today",
   "key_themes": ["theme1", "theme2", "theme3"],
   "biggest_risk_today": "specific near-term risk with evidence from data",
@@ -1631,7 +1660,7 @@ Check dashboard for detailed analysis.
   "position_actions": [
     {"ticker": "SYMBOL", "action": "tighten_stop | hold | take_profit | add | exit", "adjusted_stop_pct": -2.5, "adjusted_tp_pct": null, "urgency": "immediate | watch | routine", "reasoning": "one sentence why"}
   ],
-  "positions_at_risk": ["TICKER: stop within X% because reason — or empty list"],
+  "positions_at_risk": ["TICKER: stop within X% because reason - or empty list"],
   "conditionals_to_watch": [{"ticker": "SYMBOL", "urgency": "high|medium|low", "reason": "one sentence"}],
   "defcon_forecast": "expected DEFCON level through end of session and why",
   "entry_conditions_today": "specific conditions that must be met today to trigger any new position",
@@ -1644,7 +1673,7 @@ Check dashboard for detailed analysis.
         _MIDDAY_JSON = """{
   "market_regime": "risk-on | risk-off | neutral | transitioning",
   "regime_confidence": 0.0,
-  "morning_vs_now": "how the session has tracked vs the morning setup — what changed, what held",
+  "morning_vs_now": "how the session has tracked vs the morning setup - what changed, what held",
   "headline_summary": "2-3 sentence summary of the mid-session narrative",
   "key_themes": ["theme1", "theme2", "theme3"],
   "biggest_risk_today": "specific PM session risk with evidence from current data",
@@ -1652,14 +1681,14 @@ Check dashboard for detailed analysis.
   "signal_quality_assessment": "quality and consistency of signals seen so far today",
   "macro_alignment": "how FRED macro aligns with today's intraday price action",
   "congressional_alpha": "actionable intelligence from congressional trading, or 'none notable'",
-  "portfolio_assessment": "P&L update and momentum direction for each position — any thesis changes?",
+  "portfolio_assessment": "P&L update and momentum direction for each position - any thesis changes?",
   "position_actions": [
     {"ticker": "SYMBOL", "action": "tighten_stop | hold | take_profit | add | exit", "adjusted_stop_pct": -2.5, "adjusted_tp_pct": null, "urgency": "immediate | watch | routine", "reasoning": "one sentence why"}
   ],
-  "positions_at_risk": ["TICKER: stop within X% because reason — or empty list"],
+  "positions_at_risk": ["TICKER: stop within X% because reason - or empty list"],
   "conditionals_to_watch": [{"ticker": "SYMBOL", "urgency": "high|medium|low", "reason": "one sentence"}],
   "defcon_forecast": "expected DEFCON level for the afternoon session and into close",
-  "afternoon_plan": "setup heading into close — key levels, setups, risk management for each position",
+  "afternoon_plan": "setup heading into close - key levels, setups, risk management for each position",
   "model_confidence": 0.0,
   "data_gaps": ["specific items that were absent or stale in today's data"]
 }"""
@@ -1680,7 +1709,7 @@ Check dashboard for detailed analysis.
             session_guidance = (
                 "You are HighTrade's senior midday strategist. Today is {now}.\n"
                 "Synthesize ALL provided data into a comprehensive midday briefing. "
-                "Focus on what has CHANGED since the morning open — regime shifts, "
+                "Focus on what has CHANGED since the morning open - regime shifts, "
                 "momentum changes, conditional progress, any thesis invalidation. "
                 "Use the morning_flash briefing (in INTRADAY CONTEXT) as your baseline. "
                 "Be specific and cite the data. No hedging, no disclaimers."
@@ -1701,7 +1730,7 @@ SECTION 2: OPEN POSITIONS (live prices, stop/TP levels)
 {pos_ctx}
 
 ══════════════════════════════════════════════════════════
-SECTION 3: ENTRY QUEUE — ACTIVE CONDITIONALS (live distance to trigger)
+SECTION 3: ENTRY QUEUE - ACTIVE CONDITIONALS (live distance to trigger)
 ══════════════════════════════════════════════════════════
 {cond_ctx}
 
@@ -1737,15 +1766,15 @@ SECTION 9: RECENT CLOSED TRADES (last 7 days)
 YOUR TASK: {session_label}
 ══════════════════════════════════════════════════════════
 Synthesize ALL of the above into a structured briefing.
-Populate EVERY field. regime_confidence and model_confidence must be actual numbers 0.0–1.0.
+Populate EVERY field. regime_confidence and model_confidence must be actual numbers 0.0-1.0.
 conditionals_to_watch must only contain tickers from SECTION 3 above.
 For position_actions: produce one entry per open position. adjusted_stop_pct is the stop as a percentage below current price (negative, e.g. -2.5). Use null for levels you would not change. Empty array [] if no positions.
-Respond in this EXACT JSON format — no prose, no markdown, no code fences:
+Respond in this EXACT JSON format - no prose, no markdown, no code fences:
 {json_template}"""
 
         # ── Call Gemini Pro with full reasoning (same tier as close briefing) ──
         from gemini_client import call as gemini_call
-        logger.info(f"  🔬 {emoji} {session_label} — calling Gemini Pro (reasoning)...")
+        logger.info(f"  🔬 {emoji} {session_label} - calling Gemini Pro (reasoning)...")
         text, in_tok, out_tok = gemini_call(
             prompt,
             model_key='reasoning',
@@ -1777,7 +1806,7 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
                 except Exception:
                     pass
             if not result:
-                logger.warning(f"  ⚠️  Could not parse {label} briefing JSON — storing raw text")
+                logger.warning(f"  ⚠️  Could not parse {label} briefing JSON - storing raw text")
                 result = {'headline_summary': clean[:500], 'data_gaps': ['JSON parse failure']}
 
         # Extract key fields
@@ -1874,7 +1903,7 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
             'out_tokens':       out_tok,
         }
         # Prepend session label so Slack header is clear
-        notify_payload['market_regime'] = f"{emoji} *{session_label}* — {regime.title()}"
+        notify_payload['market_regime'] = f"{emoji} *{session_label}* - {regime.title()}"
         self.alerts.send_notify('daily_briefing', notify_payload)
         self.alerts.send_silent_log('daily_briefing', notify_payload)
 
@@ -1981,20 +2010,20 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
                 (9, 0, 'pre_market'),   # 9:00 AM ET
                 (12, 30, 'mid_day')     # 12:30 PM ET
             ]
-            
+
             for hour, minute, label in checkpoints:
                 # Check if it's past the checkpoint and we haven't run it today
                 past_time = (now.hour > hour or (now.hour == hour and now.minute >= minute))
                 run_key = f"{label}_{today}"
-                
+
                 if (force or past_time) and run_key not in self._pipeline_runs:
                     logger.info(f"🔬 Triggering {label.replace('_', ' ')} acquisition analysis...")
                     self._pipeline_runs.add(run_key)
-                    
+
                     # Researcher -> Analyst chain for any pending items (from Hound etc)
-                    # Note: verifier runs independently on its own cycle — no duplicate call here
+                    # Note: verifier runs independently on its own cycle - no duplicate call here
                     self._run_acquisition_pipeline(today, skip_date_check=True)
-                    
+
         except Exception as e:
             logger.warning(f"Pipeline checkpoint check failed: {e}")
 
@@ -2033,7 +2062,7 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
                 return
 
             logger.info(
-                "🔁 Pending acquisition work detected — draining queue now "
+                "🔁 Pending acquisition work detected - draining queue now "
                 f"(watchlist={pending_watchlist}, ready={ready_research})"
             )
             self._run_acquisition_pipeline(now.strftime('%Y-%m-%d'), skip_date_check=True)
@@ -2044,9 +2073,9 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
     def _check_daily_briefing(self, force: bool = False):
         """Fire daily briefing once per day after market close (4:30 PM ET)."""
         try:
-            now = _et_now()                    # Eastern Time — market close is 4 PM ET
+            now = _et_now()                    # Eastern Time - market close is 4 PM ET
             today = now.strftime('%Y-%m-%d')
-            market_close_hour = 16  # 4 PM ET — briefing triggers at 4:30 ET
+            market_close_hour = 16  # 4 PM ET - briefing triggers at 4:30 ET
             market_close_minute = 30
 
             # Only fire after 4:30 PM and only once per date
@@ -2056,7 +2085,7 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
             if not force and (not after_close or self._daily_briefing_date == today):
                 return
 
-            # DB guard: survive orchestrator restarts — don't re-fire if reasoning briefing already in DB today
+            # DB guard: survive orchestrator restarts - don't re-fire if reasoning briefing already in DB today
             if not force and self._daily_briefing_date != today:
                 try:
                     import sqlite3 as _sq2
@@ -2068,7 +2097,7 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
                     _c.close()
                     if _hit:
                         self._daily_briefing_date = today  # stamp in-memory
-                        logger.debug(f"  ⏭️  Daily briefing already in DB for {today} — skipping")
+                        logger.debug(f"  ⏭️  Daily briefing already in DB for {today} - skipping")
                         return
                 except Exception:
                     pass  # If DB check fails, proceed normally
@@ -2106,7 +2135,7 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
     def _run_acquisition_pipeline(self, date_str: str, skip_date_check: bool = False):
         """
         Run the acquisition research → analyst pipeline.
-        
+
         skip_date_check: if True, runs even if it already ran today (for intraday checkpoints).
         """
         if not skip_date_check and self._acquisition_pipeline_date == date_str:
@@ -2118,7 +2147,7 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
 
         import time as _time
 
-        # Step 1: Researcher — pick up any pending items
+        # Step 1: Researcher - pick up any pending items
         researched = []
         try:
             from acquisition_researcher import run_research_cycle
@@ -2129,13 +2158,13 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
                 logger.info("  📚 Researcher: no new pending items")
         except Exception as e:
             logger.error(f"  ❌ Acquisition researcher failed: {e}")
-            # Continue — analyst may still have library_ready items from a prior run
+            # Continue - analyst may still have library_ready items from a prior run
 
         # Brief pause if researcher just did work (don't slam Gemini)
         if researched:
             _time.sleep(10)
 
-        # Step 2: Analyst — ALWAYS run to catch any library_ready items waiting
+        # Step 2: Analyst - ALWAYS run to catch any library_ready items waiting
         # (items from prior research runs, hound auto-promotes, manual adds, etc.)
         try:
             from acquisition_analyst import run_analyst_cycle
@@ -2214,7 +2243,7 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
 
             for row in candidates:
                 if row['pass_count'] >= 3:
-                    # Archive after 3 failed re-evaluations — stop cycling
+                    # Archive after 3 failed re-evaluations - stop cycling
                     conn.execute("""
                         UPDATE acquisition_watchlist SET status = 'archived'
                         WHERE ticker = ? AND status = 'analyst_pass'
@@ -2230,7 +2259,7 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
                           (date_added, ticker, source, market_regime, model_confidence,
                            entry_conditions, biggest_risk, biggest_opportunity, status, notes)
                         VALUES (?, ?, ?, ?, 0.5,
-                                'Reanalysis #' || ? || ' — conditions may have changed',
+                                'Reanalysis #' || ? || ' - conditions may have changed',
                                 ?, ?, 'pending', 'reanalysis')
                     """, (
                         today, row['ticker'], row['source'], row['market_regime'],
@@ -2313,7 +2342,7 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
 
                 # Respect stop commands
                 if self.cmd_processor.should_stop:
-                    logger.info("🛑 Stop command received — shutting down")
+                    logger.info("🛑 Stop command received - shutting down")
                     break
 
                 cycle += 1
@@ -2395,37 +2424,37 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
             conn.close()
             return float(row[0]) if row else 50.0
         except Exception:
-            return 50.0  # neutral fallback — don't block gate on DB error
+            return 50.0  # neutral fallback - don't block gate on DB error
 
     def _check_breaking_news_in_db(self):
         """Check database for recent breaking news signals (within last 4 hours)"""
         try:
             import sqlite3
             from datetime import datetime, timedelta
-            
+
             logger.info("  🔍 Checking database for breaking news...")
             conn = sqlite3.connect(str(DB_PATH))
             cursor = conn.cursor()
-            
+
             # Check for breaking news from last 4 hours
             cutoff_time = (datetime.now() - timedelta(hours=4)).isoformat()
             logger.info(f"     Cutoff time: {cutoff_time}")
-            
+
             cursor.execute("""
-                SELECT news_signal_id, news_score, dominant_crisis_type, 
+                SELECT news_signal_id, news_score, dominant_crisis_type,
                        crisis_description, recommended_defcon, article_count,
-                       breaking_count, avg_confidence, sentiment_summary, 
+                       breaking_count, avg_confidence, sentiment_summary,
                        articles_json, timestamp
                 FROM news_signals
-                WHERE breaking_news_override = 1 
+                WHERE breaking_news_override = 1
                 AND timestamp > ?
                 ORDER BY timestamp DESC
                 LIMIT 1
             """, (cutoff_time,))
-            
+
             row = cursor.fetchone()
             conn.close()
-            
+
             if row:
                 logger.warning(f"  🔥 ACTIVE BREAKING NEWS from database (ID: {row[0]})")
                 logger.warning(f"     {row[3]}")
@@ -2446,7 +2475,7 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
             else:
                 logger.info("     No breaking news found")
             return None
-            
+
         except Exception as e:
             logger.error(f"Failed to check breaking news in database: {e}")
             import traceback
@@ -2601,7 +2630,7 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
 
     def monitor_and_exit_positions(self):
         """Monitor all open positions and detect exit conditions"""
-        # Reset each cycle — exits are re-detected fresh from live prices every run,
+        # Reset each cycle - exits are re-detected fresh from live prices every run,
         # so accumulating them just inflates the pending count incorrectly.
         self.pending_trade_exits = []
 
@@ -2621,13 +2650,13 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
         # ── No-exit-framework check ───────────────────────────────────────
         # Any open position with no stop_loss AND no take_profit_1 has no exit
         # plan. Flag it and queue it for analyst review so the analyst sets
-        # proper exit levels — same pipeline as a conditional entry, but for exits.
+        # proper exit levels - same pipeline as a conditional entry, but for exits.
         self._check_positions_missing_exit_framework()
 
     def _check_positions_missing_exit_framework(self):
         """
         Scan open positions for missing stop/TP levels and run the dedicated
-        exit_analyst directly — bypasses the acquisition pipeline which is
+        exit_analyst directly - bypasses the acquisition pipeline which is
         designed for entry decisions, not exit frameworks.
 
         exit_analyst.py handles its own 20-hour guard, Gemini call, DB write,
@@ -2658,9 +2687,59 @@ Respond in this EXACT JSON format — no prose, no markdown, no code fences:
             logger.info("No pending trade alerts")
             return []
 
-        logger.info("Clearing legacy pending DEFCON trade alerts — basket execution has been removed")
+        logger.info("Processing pending trade alerts: %d item(s)", len(self.pending_trade_alerts))
+        executed = []
+        for idx, p in enumerate(list(self.pending_trade_alerts)):
+            try:
+                logger.info(f"  ▶ Pending[{idx}]: {p.get('ticker')} (conditional_id={p.get('conditional_id')})")
+                # Basic validation
+                missing = [k for k in ('ticker','side','shares','order_type') if k not in p]
+                if missing:
+                    logger.warning(f"  ❌ Skipping pending[{idx}] - missing required fields: {missing}")
+                    continue
+                # Ensure account/paper vs live
+                account = p.get('account','paper')
+                if account != 'paper' and not getattr(self, 'allow_live_orders', False):
+                    logger.warning(f"  ❌ Skipping pending[{idx}] - live orders not allowed in this run (account={account})")
+                    continue
+                # Attempt to place paper order via broker's paper_trading interface
+                # Broker's paper trading engine lives under broker.decision_engine.paper_trading
+                pt = None
+                try:
+                    pt = self.broker.decision_engine.paper_trading
+                except Exception:
+                    pt = None
+                if pt:
+                    try:
+                        # Use paper_trading.manual_buy API which handles DB writes and mirror-to-broker
+                        if hasattr(pt, 'manual_buy'):
+                            res = pt.manual_buy(p['ticker'], int(p.get('shares') or p.get('qty') or 0), price_override=p.get('limit_price'))
+                            if res.get('ok'):
+                                logger.info(f"  ✅ Placed paper manual_buy for {p['ticker']}: trade_id={res.get('trade_id')}")
+                                executed.append(p.get('conditional_id') or p.get('ticker'))
+                            else:
+                                logger.warning(f"  ⚠️  paper_trading.manual_buy failed for {p['ticker']}: {res.get('message')}")
+                        else:
+                            # Fallback: try Alpaca-like place_order on underlying broker shim
+                            if hasattr(pt, 'alpaca') and hasattr(pt.alpaca, 'place_order'):
+                                qty = int(p.get('shares') or p.get('qty') or 0)
+                                res = pt.alpaca.place_order(p['ticker'], qty, p.get('side','buy'))
+                                if res.get('ok'):
+                                    logger.info(f"  ✅ Placed broker order for {p['ticker']}: {res.get('order',{}).get('id','?')}")
+                                    executed.append(p.get('conditional_id') or p.get('ticker'))
+                                else:
+                                    logger.warning(f"  ⚠️  Broker place_order failed for {p['ticker']}: {res.get('error')}")
+                            else:
+                                logger.warning("  ⚠️  No known paper order method available on paper_trading")
+                    except Exception as e:
+                        logger.warning(f"  ⚠️  Failed to place paper order for pending[{idx}]: {e}")
+                else:
+                    logger.warning("  ⚠️  Broker has no paper_trading interface; cannot place paper orders")
+            except Exception as e:
+                logger.exception(f"Error processing pending[{idx}]: {e}")
+        # Clear pending after processing
         self.pending_trade_alerts = []
-        return []
+        return executed
 
     def execute_pending_exits(self, auto_exit=True):
         """
