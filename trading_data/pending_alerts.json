@@ -1,0 +1,47 @@
+[
+  {
+    "ticker": "ENPH",
+    "conditional_id": 36,
+    "position_size": 3722.0756231568753,
+    "entry_price": 44.790000915527344,
+    "thesis": "ENPH is triggering a technical breakout above its 50DMA on heavy volume, fueled by sector rotation into solar and a potential short squeeze given its 21.6% short interest. The trade aims to capture a 4-8% momentum burst over the next 3 days before any earnings risk materializes.",
+    "timestamp": "2026-03-17T12:08:45.189650",
+    "executed": false
+  },
+  {
+    "ticker": "RKLB",
+    "conditional_id": 13,
+    "position_size": 3499.218338713343,
+    "entry_price": 73.27999877929688,
+    "thesis": "RKLB momentum remains high as it tests the $78.6 breakout level ahead of the March 19 launch. The proximity to the target and the impending back-to-back launch catalysts (Mar 19 and Mar 24) sustain the 'flip-and-bank' thesis. A window extension is required to capture the expected gamma squeeze toward $90.",
+    "timestamp": "2026-03-18T06:42:00.410740",
+    "executed": false
+  },
+  {
+    "ticker": "MU",
+    "conditional_id": 14,
+    "position_size": 3499.218338713343,
+    "entry_price": 461.7950134277344,
+    "thesis": "High-conviction breakout play centered on the March 18 earnings catalyst. Thesis shifts from a pre-earnings run to a volatility expansion play targeting the $500+ range, supported by robust AI-driven HBM demand and recent bullish analyst revisions.",
+    "timestamp": "2026-03-18T06:42:01.035743",
+    "executed": false
+  },
+  {
+    "ticker": "TOST",
+    "conditional_id": 42,
+    "position_size": 3399.2406718929624,
+    "entry_price": 27.735000610351562,
+    "thesis": "TOST is exhibiting strong pre-earnings momentum with call volume 3x normal and an RSI breakout. The setup anticipates a 4-7% pop on the March 20 earnings release driven by strong restaurant POS demand tailwinds.",
+    "timestamp": "2026-03-18T09:43:00.074060",
+    "executed": false
+  },
+  {
+    "ticker": "CVX",
+    "conditional_id": 45,
+    "position_size": 7425.201514343841,
+    "entry_price": 201.47000122070312,
+    "thesis": "CVX is exhibiting strong relative momentum (+7.5% 1M) as capital aggressively rotates into Energy during a risk-off correction. A breakout above its 52-week high offers a clean, verified 1-5 day momentum setup.",
+    "timestamp": "2026-03-19T08:49:04.594967",
+    "executed": false
+  }
+]

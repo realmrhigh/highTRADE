@@ -22,6 +22,8 @@ import logging
 from pathlib import Path
 from datetime import datetime
 
+from slack_sdk.errors import SlackApiError
+
 INFO_COMMANDS = {'/status', '/portfolio', '/defcon', '/trades', '/broker', '/help'}
 
 from hightrade_cmd import ALIAS_MAP as COMMAND_ALIAS_MAP, COMMANDS
@@ -389,7 +391,7 @@ def start_bot():
     # ── Polling loop ──
     # Start reading from "now" so we don't replay old messages
     last_seen_ts = {convo.get('id'): str(time.time()) for convo in monitored_conversations}
-    poll_interval = 2  # seconds
+    poll_interval = 5  # seconds
     logger.info("Starting multi-conversation poll loop")
 
     try:
@@ -463,9 +465,17 @@ def start_bot():
                         if ts > last_seen_ts.get(convo_id, '0'):
                             last_seen_ts[convo_id] = ts
 
+            except SlackApiError as e:
+                retry_after = 30
+                response = getattr(e, 'response', None)
+                if response is not None:
+                    headers = getattr(response, 'headers', {}) or {}
+                    retry_after = int(headers.get('Retry-After', retry_after) or retry_after)
+                logger.warning(f"Slack rate/API error during poll: {e}; backing off for {retry_after}s")
+                time.sleep(max(retry_after, poll_interval))
             except Exception as e:
                 logger.error(f"Poll error: {e}")
-                time.sleep(5)  # Back off on errors
+                time.sleep(max(10, poll_interval))  # Back off harder on unknown errors
 
             time.sleep(poll_interval)
 

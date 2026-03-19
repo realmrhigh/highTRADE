@@ -10,6 +10,10 @@ import logging
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
+import sys
+# estop helper path
+sys.path.insert(0, '/Users/traderbot/.openclaw/lib')
+from estop import is_e_stop_active, get_limit
 from typing import Dict, List, Tuple, Optional, Any
 import math
 
@@ -176,6 +180,15 @@ class AlpacaBroker:
 
 
 class PaperTradingEngine:
+
+    def _enforce_safety_before_mirror(self, ticker, shares, notional):
+        """Enforce e-stop and per-order limits before mirroring to broker."""
+        from estop import is_e_stop_active, get_limit
+        if is_e_stop_active():
+            raise RuntimeError('E-STOP active: aborting mirror')
+        per_order = get_limit('per_order_max', None)
+        if per_order is not None and notional > per_order:
+            raise RuntimeError(f'Per-order notional {notional} exceeds per_order_max {per_order}')
     """
     Main paper trading system that monitors DEFCON signals and executes trades
     """
@@ -860,6 +873,9 @@ class PaperTradingEngine:
 
         if shares <= 0:
             return {'ok': False, 'message': 'Shares must be a positive integer.'}
+        # E-STOP check
+        if is_e_stop_active():
+            return {'ok': False, 'message': 'Trading e-stop active: aborting buy.'}
 
         # Fetch live price (or use override)
         if price_override and price_override > 0:
@@ -914,7 +930,14 @@ class PaperTradingEngine:
                 pass
 
             # Mirror to Alpaca (non-blocking)
-            self.alpaca.place_order(ticker, shares, 'buy')
+            try:
+                self._enforce_safety_before_mirror(ticker, shares, position_size)
+            except Exception as _e:
+                logger.error(f"Safety enforcement prevented mirror for {ticker}: {_e}")
+                # leave DB record but do not attempt broker mirror
+                pass
+            else:
+                self.alpaca.place_order(ticker, shares, 'buy')
 
             logger.info(
                 f"✅ Manual buy executed: {shares} × {ticker} @ ${entry_price:.2f} "

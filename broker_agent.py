@@ -1308,9 +1308,9 @@ class BrokerDecisionEngine:
             f"  ⚠️  Pre-purchase gate AI stack failed for {ticker}: {' | '.join(gate_attempts)} — defaulting to APPROVE"
         )
         return {
-            "approve": True,
-            "reason": "gate error — fail-open",
-            "veto_reason": "",
+            "approve": False,
+            "reason": "gate error — fail-closed (AI stack failure)",
+            "veto_reason": "AI gate failure - vetoing by policy",
             "conditions_met": [],
             "_stance_applied": trading_stance,
             "_gate_attempts": gate_attempts,
@@ -2233,3 +2233,13 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+def _enforce_safety_before_mirror(self, ticker, shares, notional):
+    # Called before mirroring DB trade to broker
+    if is_e_stop_active():
+        raise RuntimeError('E-STOP active: aborting mirror')
+    per_order = get_limit('per_order_max', None)
+    if per_order is not None and notional > per_order:
+        raise RuntimeError(f'Per-order notional {notional} exceeds per_order_max {per_order}')
+
