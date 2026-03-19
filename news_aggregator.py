@@ -223,6 +223,134 @@ class AlphaVantageNewsSource:
             return []
 
 
+class FinnhubNewsSource:
+    """Fetch news from Finnhub.io API and normalize to NewsArticle"""
+
+    BASE_COMPANY_NEWS = "https://finnhub.io/api/v1/company-news"
+    BASE_GENERAL_NEWS = "https://finnhub.io/api/v1/news"
+
+    def __init__(self, api_key: str, max_articles: int = 50, timeout: int = 10, rate_limiter: Optional['RateLimiter'] = None):
+        self.api_key = api_key
+        self.max_articles = max_articles
+        self.timeout = timeout
+        self.rate_limiter = rate_limiter
+
+        # Configure rate limiter conservatively (adjust per plan)
+        if self.rate_limiter:
+            self.rate_limiter.configure('finnhub', requests_per_minute=30, min_delay_seconds=2)
+
+    def _parse_finnhub_item(self, item: Dict) -> Optional[NewsArticle]:
+        try:
+            # Finnhub returns 'datetime' as unix timestamp for company-news
+            if 'datetime' in item:
+                pub_date = datetime.fromtimestamp(item['datetime'])
+            else:
+                # For general news, try 'published_at' or fallback to now
+                pub_date = datetime.fromisoformat(item.get('datetime', datetime.now().isoformat()))
+
+            title = item.get('headline') or item.get('title') or item.get('summary', '')
+            description = item.get('summary', '') or item.get('summary', item.get('text', ''))
+            url = item.get('url', '')
+            source = item.get('source', 'Finnhub')
+
+            article = NewsArticle(
+                title=title,
+                description=description,
+                source=f"Finnhub-{source}",
+                published_at=pub_date,
+                url=url,
+                relevance_score=50.0
+            )
+            return article
+        except Exception as e:
+            logger.debug(f"Skipping malformed Finnhub item: {e}")
+            return None
+
+    def fetch_company_news(self, symbol: str, from_date: str, to_date: str) -> List[NewsArticle]:
+        """Fetch company-specific news for a symbol"""
+        if self.rate_limiter:
+            self.rate_limiter.wait_if_needed('finnhub')
+
+        params = {
+            'symbol': symbol,
+            'from': from_date,
+            'to': to_date,
+            'token': self.api_key
+        }
+
+        try:
+            logger.info(f"Fetching Finnhub company news for {symbol} from {from_date} to {to_date}")
+            resp = requests.get(self.BASE_COMPANY_NEWS, params=params, timeout=self.timeout)
+            resp.raise_for_status()
+            items = resp.json()
+
+            articles = []
+            for it in items[:self.max_articles]:
+                art = self._parse_finnhub_item(it)
+                if art:
+                    articles.append(art)
+
+            if self.rate_limiter:
+                self.rate_limiter.record_request('finnhub', success=True)
+
+            logger.info(f"Fetched {len(articles)} Finnhub company news items for {symbol}")
+            return articles
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Finnhub company news request failed: {e}")
+            if self.rate_limiter:
+                if hasattr(e, 'response') and e.response is not None and e.response.status_code == 429:
+                    self.rate_limiter.trigger_backoff('finnhub', error_code=429)
+                else:
+                    self.rate_limiter.record_request('finnhub', success=False)
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected Finnhub company news error: {e}")
+            if self.rate_limiter:
+                self.rate_limiter.record_request('finnhub', success=False)
+            return []
+
+    def fetch_general_news(self, category: str = 'general') -> List[NewsArticle]:
+        """Fetch general news by category"""
+        if self.rate_limiter:
+            self.rate_limiter.wait_if_needed('finnhub')
+
+        params = {
+            'category': category,
+            'token': self.api_key
+        }
+
+        try:
+            logger.info(f"Fetching Finnhub general news category={category}")
+            resp = requests.get(self.BASE_GENERAL_NEWS, params=params, timeout=self.timeout)
+            resp.raise_for_status()
+            items = resp.json()
+
+            articles = []
+            for it in items[:self.max_articles]:
+                art = self._parse_finnhub_item(it)
+                if art:
+                    articles.append(art)
+
+            if self.rate_limiter:
+                self.rate_limiter.record_request('finnhub', success=True)
+
+            logger.info(f"Fetched {len(articles)} Finnhub general news items (category={category})")
+            return articles
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Finnhub general news request failed: {e}")
+            if self.rate_limiter:
+                if hasattr(e, 'response') and e.response is not None and e.response.status_code == 429:
+                    self.rate_limiter.trigger_backoff('finnhub', error_code=429)
+                else:
+                    self.rate_limiter.record_request('finnhub', success=False)
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected Finnhub general news error: {e}")
+            if self.rate_limiter:
+                self.rate_limiter.record_request('finnhub', success=False)
+            return []
+
+
 class RSSFeedSource:
     """Fetch news from RSS feeds"""
 
