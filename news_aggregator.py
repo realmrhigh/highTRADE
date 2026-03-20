@@ -651,6 +651,25 @@ class NewsAggregator:
             except Exception as e:
                 logger.error(f"Reddit fetch failed: {e}")
 
+        # Fetch from Finnhub (general news)
+        if 'finnhub' in self.sources:
+            try:
+                fh = self.sources['finnhub']
+                # Fetch company news if symbol provided via environment or config
+                import os
+                symbol = os.getenv('SYMBOL')
+                today = datetime.utcnow().date()
+                from_date = (today - timedelta(days=1)).isoformat()
+                to_date = today.isoformat()
+                if symbol:
+                    fh_articles = fh.fetch_company_news(symbol, from_date, to_date)
+                    all_articles.extend(fh_articles)
+                # Also fetch general news category
+                general = fh.fetch_general_news(category='general')
+                all_articles.extend(general)
+            except Exception as e:
+                logger.error(f"Finnhub fetch failed: {e}")
+
         # Filter by time
         recent_articles = [
             article for article in all_articles
