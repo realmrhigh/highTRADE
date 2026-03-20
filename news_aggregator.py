@@ -556,6 +556,38 @@ class NewsAggregator:
             )
             logger.info("Reddit sentiment source enabled")
 
+        # Finnhub
+        if self.config['sources'].get('finnhub', {}).get('enabled', False):
+            fh_config = self.config['sources']['finnhub']
+            api_env = fh_config.get('api_key_env', 'FINNHUB_API_KEY')
+            api_key = None
+            try:
+                # Read from news.env if present
+                env_path = Path('/Users/traderbot/.openclaw/creds/news.env')
+                if env_path.exists():
+                    with open(env_path, 'r') as ef:
+                        for line in ef:
+                            if line.strip().startswith(f"{api_env}="):
+                                api_key = line.strip().split('=', 1)[1]
+                                break
+                # Fallback to environment
+                if not api_key:
+                    import os
+                    api_key = os.getenv(api_env)
+            except Exception:
+                api_key = None
+
+            if api_key:
+                self.sources['finnhub'] = FinnhubNewsSource(
+                    api_key=api_key,
+                    max_articles=fh_config.get('max_articles', 50),
+                    timeout=fh_config.get('timeout_seconds', 10),
+                    rate_limiter=self.rate_limiter
+                )
+                logger.info('Finnhub news source enabled')
+            else:
+                logger.warning('Finnhub enabled in config but FINNHUB_API_KEY not found in creds/news.env or environment')
+
     def _init_cache(self):
         """Initialize caching if enabled"""
         if self.config.get('caching', {}).get('enabled', False):
