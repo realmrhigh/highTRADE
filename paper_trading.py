@@ -713,7 +713,7 @@ class PaperTradingEngine:
                 'open_trades': len(open_trades),
                 'closed_trades': len(closed_trades),
                 'total_profit_loss_dollars': total_pnl,
-                'total_profit_loss_percent': (total_pnl / self.total_capital * 100) if self.total_capital > 0 else 0,
+                'total_profit_loss_percent': (total_pnl / (account_snapshot['equity'] if account_snapshot and account_snapshot.get('equity', 0) > 0 else self.total_capital) * 100),
                 'win_rate': win_rate,
                 'winning_trades': len(winning_trades),
                 'losing_trades': len(losing_trades),

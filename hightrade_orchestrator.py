@@ -1154,7 +1154,7 @@ Check dashboard for detailed analysis.
                 # Fetch live prices and compute unrealized P&L for each open position
                 open_positions = self._enrich_positions_with_live_prices(open_positions)
 
-                # Calculate live portfolio value: cash + current market value of open positions
+                # Calculate live portfolio value from Alpaca broker (real account values)
                 total_capital = self.paper_trading.total_capital
                 realized_pnl  = perf.get('total_profit_loss_dollars', 0)
                 unrealized_pnl = sum(p.get('unrealized_pnl_dollars') or 0 for p in open_positions)
@@ -1162,10 +1162,16 @@ Check dashboard for detailed analysis.
                     (p.get('current_price') or p.get('entry_price', 0)) * p.get('shares', 0)
                     for p in open_positions
                 )
-                account_value  = total_capital + realized_pnl + unrealized_pnl
-                cash_available = total_capital + realized_pnl - sum(
-                    p.get('entry_price', 0) * p.get('shares', 0) for p in open_positions
-                )
+                # Use real Alpaca account equity/cash if available; fall back to DB-computed values
+                alpaca_snapshot = self.paper_trading._get_alpaca_account_snapshot()
+                if alpaca_snapshot and alpaca_snapshot.get('equity', 0) > 0:
+                    account_value  = alpaca_snapshot['equity']
+                    cash_available = alpaca_snapshot['cash']
+                else:
+                    account_value  = total_capital + realized_pnl + unrealized_pnl
+                    cash_available = total_capital + realized_pnl - sum(
+                        p.get('entry_price', 0) * p.get('shares', 0) for p in open_positions
+                    )
 
                 self.alerts.send_silent_log('monitoring_cycle', {
                     'cycle': self.monitoring_cycles,
