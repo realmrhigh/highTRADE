@@ -1298,18 +1298,35 @@ Check dashboard for detailed analysis.
         (model_key = 'morning_flash' / 'midday_flash') so the 4:30 PM Pro synthesis
         has structured intraday context. Summary also sent to #logs-silent.
         """
-        now   = _et_now()                      # Eastern Time for market schedule
-        today = now.strftime('%Y-%m-%d')
-        hour  = now.hour
-        minute = now.minute
+        now_et   = _et_now()                      # Eastern Time for market schedule
+        today = now_et.strftime('%Y-%m-%d')
+
+        # Local time for user-facing morning flash scheduling
+        from datetime import datetime as _dt, timedelta as _td
+        now_local_dt = _dt.now()
+        local_hour = now_local_dt.hour
+        local_minute = now_local_dt.minute
 
         windows = [
             ('morning', 9,  30,  '_morning_flash_date', '🌅 Morning'),
+            ('morning_notify', 8, 0, '_morning_flash_notified', '🔔 Morning Notify'),
             ('midday',  12,  0,  '_midday_flash_date',  '☀️  Midday'),
         ]
 
+        GRACE_MINUTES = 90
         for label, tgt_hour, tgt_min, attr, emoji in windows:
-            past_window = (hour > tgt_hour or (hour == tgt_hour and minute >= tgt_min))
+            # Default: use ET-based now/minutes
+            now_minutes = now_et.hour * 60 + now_et.minute
+            target_minutes = tgt_hour * 60 + tgt_min
+
+            # For the morning flash, schedule relative to LOCAL time (target = tgt_time - 120m local)
+            if label == 'morning':
+                # Compute local target as (tgt_hour:tgt_min) minus 120 minutes in local day
+                local_target_minutes = ((tgt_hour * 60 + tgt_min) - 120) % (24 * 60)
+                now_minutes = local_hour * 60 + local_minute
+                target_minutes = local_target_minutes
+
+            past_window = (now_minutes >= target_minutes and now_minutes < target_minutes + GRACE_MINUTES)
             already_ran = getattr(self, attr) == today
             if not past_window or already_ran:
                 continue
@@ -1333,8 +1350,29 @@ Check dashboard for detailed analysis.
 
             logger.info(f"📊 {emoji} Flash briefing firing ({tgt_hour:02d}:{tgt_min:02d})...")
             try:
-                self._run_flash_briefing(label, emoji)
-                setattr(self, attr, today)   # only stamp date on success - enables retry next cycle on failure
+                # If this is the morning_notify window, fetch the already-saved morning flash and send the user-facing notification
+                if label == 'morning_notify':
+                    try:
+                        import sqlite3 as _sq3
+                        conn = _sq3.connect(str(DB_PATH))
+                        conn.row_factory = _sq3.Row
+                        row = conn.execute(
+                            "SELECT headline_summary FROM daily_briefings WHERE date=? AND model_key='morning_flash' LIMIT 1",
+                            (today,)
+                        ).fetchone()
+                        conn.close()
+                        if row and row['headline_summary']:
+                            # send notification (short headline) and mark notified
+                            summary = row['headline_summary']
+                            self.alerts.send_slack(f"🌅 Morning Briefing: {summary}", defcon_level=3)
+                            setattr(self, attr, today)
+                        else:
+                            logger.info("  ⏭️ No morning_flash found in DB to notify")
+                    except Exception as _e:
+                        logger.warning(f"  ⚠️ Morning notify DB fetch failed: {_e}")
+                else:
+                    self._run_flash_briefing(label, emoji)
+                    setattr(self, attr, today)   # only stamp date on success - enables retry next cycle on failure
             except Exception as e:
                 logger.warning(f"{emoji} Flash briefing failed - will retry next cycle: {e}")
 
@@ -2325,9 +2363,35 @@ Respond in this EXACT JSON format - no prose, no markdown, no code fences:
 
         logger.info("="*60)
 
+    def _wait_for_db(self, timeout_seconds: int = 120):
+        """Ensure the SQLite DB is available before proceeding. Wait up to timeout_seconds."""
+        import time as _time
+        import sqlite3 as _sq
+        start = _time.time()
+        while True:
+            try:
+                conn = _sq.connect(str(DB_PATH), timeout=5)
+                conn.execute('SELECT 1')
+                conn.close()
+                logger.info("✅ Database available")
+                return True
+            except Exception as _e:
+                logger.warning(f"Database not available yet: {_e}")
+                if _time.time() - start > timeout_seconds:
+                    logger.error("Database did not become available within timeout")
+                    return False
+                _time.sleep(5)
+
     def run_continuous(self, interval_minutes=15):
         """Run system continuously with slash command support"""
         logger.info(f"\n🚀 Starting HighTrade in continuous mode")
+        # Ensure DB is reachable before starting scheduled briefings and pipelines
+        if not self._wait_for_db(timeout_seconds=180):
+            # If DB is unavailable, alert and continue but avoid firing time-sensitive jobs
+            self.alerts.send_slack(
+                "⚠️ HighTrade startup: database unavailable. Time-sensitive briefings will be paused until DB recovers.",
+                defcon_level=2
+            )
         logger.info(f"   Interval: {interval_minutes} minutes")
         logger.info(f"   Log: {LOG_FILE}")
         logger.info(f"   Commands: python3 hightrade_cmd.py /help")
