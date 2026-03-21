@@ -41,7 +41,9 @@ _STRETCH_MIN, _STRETCH_MAX = 0.04, 0.10  # 4% – 10%
 _MIN_CONFIDENCE = 50                       # Below this → skip trade
 _MIN_POSITION = 1000                       # Don't trade if sized below $1K
 _MAX_RISK_PER_TRADE_PCT = 0.01             # Risk max 1% of capital per day trade
-_SOFT_MAX_GAP_PCT = 8.0                    # Above this requires explicit anti-chasing justification
+_SOFT_MAX_GAP_PCT = 12.0                   # Above this → log warning but still allow if thesis is strong
+_MAX_PICKS_PER_DAY = 3                     # Try up to this many picks before giving up for the day
+_RETRY_CUTOFF_HOUR = 14                    # Don't start a new pick after 2 PM ET
 _STRETCH_CUTOFF_HOUR = 11                  # Before 11:30 AM → hold for stretch
 _STRETCH_CUTOFF_MINUTE = 30
 _TRAILING_STOP_PCT = 0.01                  # 1% trailing stop in stretch mode
@@ -118,6 +120,7 @@ class DayTrader:
             ('trailing_plan', 'TEXT'),
             ('edge_summary', 'TEXT'),
             ('alternatives_json', 'TEXT'),
+            ('current_pick_index', 'INTEGER'),
         ):
             try:
                 conn.execute(f"ALTER TABLE day_trade_sessions ADD COLUMN {col} {coltype}")
@@ -323,54 +326,9 @@ class DayTrader:
         """Call Grok Responses API with web + X search for today's pick."""
         available_cash = self._get_available_cash()
 
-        system_prompt = f"""You are the HighTrade Day Trader — an intraday momentum specialist with strict risk discipline.
-Your ONLY job: identify either (a) the single best high-probability catalyst-driven stock for a 9:35 AM entry or (b) declare \"NO TRADE\" if no setup meets all filters.
-
-GOAL:
-- Find a realistic 1-5% intraday edge
-- Max portfolio risk per trade: 1% of capital
-- Positive expectancy is more important than activity
-
-EVALUATION STEPS (must follow internally):
-1. Search web + X for TODAY's catalysts and pre-market data.
-2. Build a candidate list and calculate pre-market gap % for each.
-3. Rank the top 3 candidates on catalyst quality, liquidity, relative volume, technical setup, and risk/reward.
-4. Apply ALL avoid filters strictly.
-5. Select the best setup or return NO TRADE.
-
-WHAT TO LOOK FOR (priority order):
-1. Pre-market movers up 3-8% with fresh NEWS catalyst and volume confirmation
-2. Earnings reactions with strong liquidity and sector support
-3. Analyst upgrades/downgrades announced this morning
-4. FDA decisions, contract wins, product launches happening TODAY
-5. Sector momentum with clear leadership stock
-6. X/social velocity with price confirmation
-
-MANDATORY FILTERS:
-- Average daily volume should be strong and liquid
-- Relative volume should be elevated
-- Setup must not be a blind chase far above structure
-- If pre-market gap is >= {_SOFT_MAX_GAP_PCT:.0f}%, you must provide explicit anti-chasing justification or reject it
-
-AVOID (strict):
-- Stocks under $5
-- Stocks with market cap under $1B
-- Meme stocks without a real catalyst
-- ADRs with limited US trading volume
-- Low relative volume or poor liquidity
-
-EXIT & RISK RULES:
-- suggested_position_dollars must be sized so stop-loss risks <= 1% of capital
-- stop_loss_pct must be structure-based and between 0.7% and 2.0%
-- take_profit_pct and stretch_target_pct must be tied to logical levels and maintain a sensible reward/risk profile
-- If no setup satisfies these rules, return NO TRADE
-
-Use web search and X search to find TODAY's catalysts. Check pre-market prices, gap %, and volume.
-
-Respond with ONLY valid JSON:
-{{
+        pick_schema = """{
     "ticker": "SYMBOL or NO TRADE",
-    "catalyst": "Specific event driving today's move or why no trade qualifies",
+    "catalyst": "Specific event driving today's move",
     "confidence": 0-100,
     "pre_market_price": float or null,
     "gap_pct": float,
@@ -381,28 +339,82 @@ Respond with ONLY valid JSON:
     "stretch_target_pct": float,
     "suggested_position_dollars": float,
     "portfolio_risk_pct": float,
-    "key_technical_levels": {{
+    "key_technical_levels": {
         "stop_below": float or null,
         "first_target": float or null,
         "trailing_plan": "string"
-    }},
+    },
     "risk": "Primary risk for this trade",
-    "thesis": "2-4 sentence thesis for why this moves today or why no trade qualifies",
-    "edge_summary": "Why this is not chasing and why the reward/risk is acceptable",
-    "alternatives": ["brief rejected idea + reason", "brief rejected idea + reason"],
+    "thesis": "2-4 sentence thesis for why this moves today",
+    "edge_summary": "Why the reward/risk is acceptable",
     "sources": ["list of sources/posts found"]
-}}"""
+}"""
+
+        system_prompt = f"""You are the HighTrade Day Trader — an intraday momentum specialist with strict risk discipline.
+Your job: identify the TOP 3 ranked high-probability catalyst-driven stocks for a 9:35 AM entry, or declare \"NO TRADE\" if no setup qualifies.
+
+GOAL:
+- Find realistic 1-5% intraday edges
+- Max portfolio risk per trade: 1% of capital
+- Positive expectancy is more important than activity
+- We can try up to 3 picks per day, so rank them by conviction
+
+EVALUATION STEPS (must follow internally):
+1. Search web + X/Twitter for TODAY's catalysts, trending tickers, and pre-market data.
+2. Build a candidate list and calculate pre-market gap % for each.
+3. Rank the top 3 candidates on catalyst quality, liquidity, relative volume, technical setup, and risk/reward.
+4. Apply ALL avoid filters.
+5. Return all 3 picks with full details, or fewer if only 1-2 qualify.
+
+WHAT TO LOOK FOR (priority order):
+1. X/Twitter buzz with high velocity AND price confirmation (trending tickers with real volume)
+2. Pre-market movers up 3-12% with fresh NEWS catalyst and volume confirmation
+3. Earnings reactions with strong liquidity and sector support
+4. Analyst upgrades/downgrades announced this morning
+5. FDA decisions, contract wins, product launches happening TODAY
+6. Sector momentum with clear leadership stock
+
+ANTI-CHASING GUIDANCE (not a hard block):
+- If pre-market gap is >= {_SOFT_MAX_GAP_PCT:.0f}%, explain why it is still tradeable (e.g. breakout from structure, Twitter volume acceleration, catalyst is just starting)
+- Blind chasing with no thesis is still prohibited — but strong Twitter/news momentum justifies larger gaps
+
+AVOID (strict):
+- Stocks under $5
+- Stocks with market cap under $1B
+- Meme stocks without a real catalyst
+- ADRs with limited US trading volume
+- Low relative volume or poor liquidity
+
+EXIT & RISK RULES:
+- suggested_position_dollars must be sized so stop-loss risks <= 1% of capital
+- stop_loss_pct must be structure-based and between 0.5% and 2.0%
+- take_profit_pct and stretch_target_pct must be tied to logical levels and maintain a sensible reward/risk profile
+
+Use web search and X search to find TODAY's catalysts. Check pre-market prices, gap %, volume, and Twitter/X velocity.
+
+Respond with ONLY valid JSON:
+{{
+    "picks": [
+        {pick_schema},
+        {pick_schema},
+        {pick_schema}
+    ],
+    "no_trade_reason": "Only populate if picks array is empty — explain why nothing qualifies today"
+}}
+
+Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to avoid NO TRADE). If truly nothing qualifies, return empty picks array with no_trade_reason."""
 
         day_name = now.strftime('%A')
         user_prompt = (
             f"Today is {today} ({day_name}). Market opens in ~2.5 hours.\n"
             f"Available trading capital: ${available_cash:,.0f}. Max portfolio risk per trade: {(_MAX_RISK_PER_TRADE_PCT * 100):.1f}%.\n\n"
-            "Search the web and X right now for:\n"
-            "1. Stocks trending in pre-market trading (include gap % and volume)\n"
-            "2. Overnight earnings results with biggest reactions\n"
-            "3. Analyst calls, upgrades, downgrades issued this morning\n"
-            "4. Any breaking news that creates a tradeable catalyst TODAY\n\n"
-            "Internally rank candidates, apply every filter strictly, and either return your #1 qualified pick or NO TRADE. ONE decision only."
+            "Search the web and X/Twitter right now for:\n"
+            "1. Tickers trending on X/Twitter with high post velocity and price confirmation\n"
+            "2. Stocks moving in pre-market (include gap % and volume)\n"
+            "3. Overnight earnings results with biggest reactions\n"
+            "4. Analyst calls, upgrades, downgrades issued this morning\n"
+            "5. Any breaking news that creates a tradeable catalyst TODAY\n\n"
+            "Rank your top 3 qualified picks and return all 3 with full details. If fewer than 3 qualify, return what you have."
         )
 
         text, in_tok, out_tok = self.grok.call_with_search(
@@ -425,35 +437,46 @@ Respond with ONLY valid JSON:
             self._save_session_error(today, f"JSON parse failed: {text[:200]}")
             return None
 
-        confidence = int(pick.get('confidence', 0))
-        ticker = (pick.get('ticker') or '').upper().strip()
-        if not ticker:
-            self._save_session_error(today, "No ticker in Grok response")
-            return None
+        # Extract ranked picks list from new format
+        picks_list = pick.get('picks', [])
+        if not picks_list:
+            # Fallback: if Grok returned old single-pick format, wrap it
+            if pick.get('ticker') and pick.get('ticker') != 'NO TRADE':
+                picks_list = [pick]
+            else:
+                no_trade_reason = pick.get('no_trade_reason') or pick.get('catalyst', 'No qualified setup')
+                self._update_session(today,
+                                     ticker='NO TRADE',
+                                     scan_time=now.strftime('%H:%M:%S'),
+                                     scan_research=json.dumps(pick),
+                                     scan_confidence=0,
+                                     scan_sources=0,
+                                     status='skipped',
+                                     error_message=no_trade_reason)
+                logger.info(f"  ⏭️  Grok returned NO TRADE — {no_trade_reason}")
+                return None
 
-        if ticker == 'NO TRADE':
-            self._update_session(today,
-                                 ticker='NO TRADE',
-                                 scan_time=now.strftime('%H:%M:%S'),
-                                 scan_research=json.dumps(pick),
-                                 scan_confidence=confidence,
-                                 scan_sources=len(pick.get('sources', [])),
-                                 status='skipped',
-                                 error_message=pick.get('catalyst', 'No qualified setup'))
-            logger.info("  ⏭️  Grok returned NO TRADE — no qualified setup today")
+        # Primary pick is #1 in the ranked list; the rest are full-detail alternatives
+        primary = picks_list[0]
+        alternatives = picks_list[1:]  # full pick dicts, not text strings
+
+        confidence = int(primary.get('confidence', 0))
+        ticker = (primary.get('ticker') or '').upper().strip()
+        if not ticker or ticker == 'NO TRADE':
+            self._save_session_error(today, "No qualified primary pick in Grok response")
             return None
 
         try:
-            gap_pct = float(pick.get('gap_pct', 0) or 0)
+            gap_pct = float(primary.get('gap_pct', 0) or 0)
         except Exception:
             gap_pct = 0.0
         try:
-            relative_volume = float(pick.get('relative_volume', 0) or 0)
+            relative_volume = float(primary.get('relative_volume', 0) or 0)
         except Exception:
             relative_volume = 0.0
 
-        edge_summary = str(pick.get('edge_summary', '') or '')
-        tech = pick.get('key_technical_levels') or {}
+        edge_summary = str(primary.get('edge_summary', '') or '')
+        tech = primary.get('key_technical_levels') or {}
         try:
             stop_below = float(tech.get('stop_below')) if tech.get('stop_below') is not None else None
         except Exception:
@@ -463,20 +486,18 @@ Respond with ONLY valid JSON:
         except Exception:
             first_target = None
         trailing_plan = str(tech.get('trailing_plan', '') or '')
-        alternatives_json = json.dumps(pick.get('alternatives', []))
-        if gap_pct >= _SOFT_MAX_GAP_PCT and 'not chasing' not in edge_summary.lower():
-            self._save_session_error(today, f"Rejected {ticker}: gap {gap_pct:.1f}% without anti-chasing justification")
-            self._update_session(today, status='skipped')
-            logger.info(f"  ⏭️  Rejecting {ticker}: gap {gap_pct:.1f}% without anti-chasing justification")
-            return None
+
+        # Log gap warning but don't hard-reject — Twitter/news momentum can justify larger gaps
+        if gap_pct >= _SOFT_MAX_GAP_PCT:
+            logger.warning(f"  ⚠️  {ticker} gap {gap_pct:.1f}% >= {_SOFT_MAX_GAP_PCT:.0f}% — proceeding on thesis: {edge_summary[:80]}")
 
         # Clamp exit targets
-        stop = max(_STOP_MIN, min(_STOP_MAX, (pick.get('stop_loss_pct', 1.0) or 1.0) / 100))
-        tp = max(_TP_MIN, min(_TP_MAX, (pick.get('take_profit_pct', 3.0) or 3.0) / 100))
-        stretch = max(_STRETCH_MIN, min(_STRETCH_MAX, (pick.get('stretch_target_pct', 6.0) or 6.0) / 100))
+        stop = max(_STOP_MIN, min(_STOP_MAX, (primary.get('stop_loss_pct', 1.0) or 1.0) / 100))
+        tp = max(_TP_MIN, min(_TP_MAX, (primary.get('take_profit_pct', 3.0) or 3.0) / 100))
+        stretch = max(_STRETCH_MIN, min(_STRETCH_MAX, (primary.get('stretch_target_pct', 6.0) or 6.0) / 100))
 
-        suggested_position = pick.get('suggested_position_dollars')
-        portfolio_risk_pct = pick.get('portfolio_risk_pct')
+        suggested_position = primary.get('suggested_position_dollars')
+        portfolio_risk_pct = primary.get('portfolio_risk_pct')
         try:
             portfolio_risk_pct_db = float(portfolio_risk_pct) if portfolio_risk_pct is not None else _MAX_RISK_PER_TRADE_PCT
         except Exception:
@@ -500,7 +521,7 @@ Respond with ONLY valid JSON:
         if position_size < _MIN_POSITION:
             status = 'skipped'
 
-        # Save session
+        # Save session — alternatives stored as full pick dicts for use if primary stops out
         conn = sqlite3.connect(self.db_path)
         conn.execute("""
             INSERT OR REPLACE INTO day_trade_sessions
@@ -509,17 +530,19 @@ Respond with ONLY valid JSON:
              stop_loss_pct, take_profit_pct, stretch_target_pct,
              portfolio_risk_pct, suggested_position_dollars,
              stop_below, first_target, trailing_plan, edge_summary, alternatives_json,
-             position_size_dollars, cash_available_at_scan, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             position_size_dollars, cash_available_at_scan, current_pick_index, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             today, ticker, now.strftime('%H:%M:%S'),
-            json.dumps(pick), confidence,
-            len(pick.get('sources', [])),
+            json.dumps(primary), confidence,
+            len(primary.get('sources', [])),
             gap_pct, relative_volume,
             stop, tp, stretch,
             portfolio_risk_pct_db, suggested_position_db,
-            stop_below, first_target, trailing_plan, edge_summary, alternatives_json,
+            stop_below, first_target, trailing_plan, edge_summary,
+            json.dumps(alternatives),
             round(position_size, 2), round(available_cash, 2),
+            0,  # current_pick_index: 0 = primary
             status,
         ))
         conn.commit()
@@ -531,9 +554,10 @@ Respond with ONLY valid JSON:
                 self.alerts.send_silent_log('daytrade_scan', {
                     'ticker': ticker,
                     'confidence': confidence,
-                    'thesis': pick.get('thesis', ''),
-                    'catalyst': pick.get('catalyst', ''),
-                    'sources': len(pick.get('sources', [])),
+                    'thesis': primary.get('thesis', ''),
+                    'catalyst': primary.get('catalyst', ''),
+                    'sources': len(primary.get('sources', [])),
+                    'alternatives': len(alternatives),
                     'stop_loss_pct': round(stop * 100, 1),
                     'take_profit_pct': round(tp * 100, 1),
                     'stretch_target_pct': round(stretch * 100, 1),
@@ -549,7 +573,8 @@ Respond with ONLY valid JSON:
             )
             return None
 
-        return pick
+        logger.info(f"  📋 {len(alternatives)} backup pick(s) queued if primary stops out")
+        return primary
 
     # ══════════════════════════════════════════════════════════════════════════
     # CHECKPOINT 2: Market Open Buy (9:35 AM ET)
@@ -900,6 +925,12 @@ Respond with ONLY valid JSON:
             f"{pnl_sign}${pnl_dollars:,.2f} ({pnl_sign}{pnl_percent:.2f}%) [{reason}]"
         )
 
+        # After a stop-loss, try the next ranked pick if it's still early enough
+        if reason == 'stop_loss':
+            now_et = _et_now()
+            if now_et.hour < _RETRY_CUTOFF_HOUR:
+                self._try_next_pick(today, now_et)
+
         # Alert to #all-highpay
         if self.alerts:
             try:
@@ -916,6 +947,111 @@ Respond with ONLY valid JSON:
                 })
             except Exception as e:
                 logger.warning(f"  Alert dispatch failed: {e}")
+
+    # ── Next pick after stop-loss ─────────────────────────────────────────────
+
+    def _try_next_pick(self, today: str, now) -> bool:
+        """After a stop-loss, load and execute the next ranked alternative pick."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT alternatives_json, current_pick_index FROM day_trade_sessions WHERE date = ?",
+                (today,)
+            ).fetchone()
+            conn.close()
+        except Exception:
+            return False
+
+        if not row:
+            return False
+
+        current_index = row['current_pick_index'] or 0
+        next_index = current_index + 1
+
+        if next_index >= _MAX_PICKS_PER_DAY:
+            logger.info(f"  ⏭️  Day Trader: reached max picks per day ({_MAX_PICKS_PER_DAY}), done for today")
+            return False
+
+        try:
+            alternatives = json.loads(row['alternatives_json'] or '[]')
+        except Exception:
+            return False
+
+        alt_slot = next_index - 1  # index 0 = primary, so alt[0] = pick #2
+        if alt_slot >= len(alternatives):
+            logger.info(f"  ⏭️  Day Trader: no more alternatives queued (had {len(alternatives)})")
+            return False
+
+        alt_pick = alternatives[alt_slot]
+        ticker = (alt_pick.get('ticker') or '').upper().strip()
+        if not ticker or ticker == 'NO TRADE':
+            return False
+
+        confidence = int(alt_pick.get('confidence', 0))
+        if confidence < _MIN_CONFIDENCE:
+            logger.info(f"  ⏭️  Day Trader: pick #{next_index + 1} ({ticker}) confidence {confidence}% too low")
+            return False
+
+        stop = max(_STOP_MIN, min(_STOP_MAX, (alt_pick.get('stop_loss_pct', 1.0) or 1.0) / 100))
+        tp = max(_TP_MIN, min(_TP_MAX, (alt_pick.get('take_profit_pct', 3.0) or 3.0) / 100))
+        stretch = max(_STRETCH_MIN, min(_STRETCH_MAX, (alt_pick.get('stretch_target_pct', 6.0) or 6.0) / 100))
+
+        available_cash = self._get_available_cash()
+        position_size = self._calculate_position_size(
+            confidence, available_cash, stop,
+            suggested_position=alt_pick.get('suggested_position_dollars'),
+            portfolio_risk_pct=alt_pick.get('portfolio_risk_pct'),
+        )
+
+        if position_size < _MIN_POSITION:
+            logger.info(f"  ⏭️  Day Trader: pick #{next_index + 1} ({ticker}) position too small (${position_size:,.0f})")
+            return False
+
+        tech = alt_pick.get('key_technical_levels') or {}
+        try:
+            stop_below = float(tech['stop_below']) if tech.get('stop_below') is not None else None
+        except Exception:
+            stop_below = None
+        try:
+            first_target = float(tech['first_target']) if tech.get('first_target') is not None else None
+        except Exception:
+            first_target = None
+
+        logger.info(
+            f"  🔄 Day Trader: stop hit — trying pick #{next_index + 1}: {ticker} "
+            f"(confidence {confidence}%, ${position_size:,.0f})"
+        )
+
+        # Update session to reflect new active pick — reset trade fields
+        self._update_session(today,
+            ticker=ticker,
+            scan_confidence=confidence,
+            stop_loss_pct=stop,
+            take_profit_pct=tp,
+            stretch_target_pct=stretch,
+            stop_below=stop_below,
+            first_target=first_target,
+            trailing_plan=str(tech.get('trailing_plan', '')),
+            edge_summary=str(alt_pick.get('edge_summary', '')),
+            position_size_dollars=round(position_size, 2),
+            current_pick_index=next_index,
+            status='scanned',
+            entry_trade_id=None,
+            entry_price=None,
+            entry_time=None,
+            shares=None,
+            high_water_price=None,
+            tp1_hit_time=None,
+        )
+
+        try:
+            self._execute_buy(today, ticker, position_size)
+            return True
+        except Exception as e:
+            logger.error(f"  ❌ Next pick buy failed for {ticker}: {e}")
+            self._update_session(today, status='error', error_message=str(e))
+            return False
 
     # ── Helper: update session ────────────────────────────────────────────────
 
