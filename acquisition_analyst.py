@@ -603,6 +603,12 @@ def _ensure_conditional_table(conn: sqlite3.Connection):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cond_ticker ON conditional_tracking(ticker)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cond_status ON conditional_tracking(status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cond_date   ON conditional_tracking(date_created)")
+    # Migrations
+    for _col, _typedef in (('source', 'TEXT'),):
+        try:
+            conn.execute(f"ALTER TABLE conditional_tracking ADD COLUMN {_col} {_typedef}")
+        except Exception:
+            pass
     conn.commit()
 
     # Migrate: add watch_tag columns if they don't exist yet (SQLite has no IF NOT EXISTS for columns)
@@ -772,6 +778,7 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection,
                     data_gaps_json,
                     catalyst_event, catalyst_window_hours,
                     catalyst_spike_pct, catalyst_failure_pct,
+                    source,
                     status, last_verified
                 ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'active',?)
             """, (
@@ -800,6 +807,7 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection,
                 result.get('catalyst_window_hours'),
                 result.get('catalyst_spike_pct'),
                 result.get('catalyst_failure_pct'),
+                hound_context.get('source') if hound_context else None,
                 date_str,
             ))
             conn.commit()

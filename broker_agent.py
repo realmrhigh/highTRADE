@@ -1361,7 +1361,8 @@ class BrokerDecisionEngine:
                        position_size_pct, time_horizon_days,
                        thesis_summary, research_confidence,
                        entry_conditions_json, invalidation_conditions_json,
-                       watch_tag, watch_tag_rationale, gate_vetoed_until
+                       watch_tag, watch_tag_rationale, gate_vetoed_until,
+                       source
                 FROM conditional_tracking
                 WHERE status = 'active'
                 ORDER BY research_confidence DESC
@@ -1473,8 +1474,9 @@ class BrokerDecisionEngine:
                 available_cash = self._calculate_available_cash()
                 raw_pct        = float(cond.get('position_size_pct') or 0.05)
                 confidence     = float(cond.get('research_confidence') or 0.5)
-                # Formulaic sizing: cash * confidence * analyst_size_pct, capped at 20%
-                MAX_PCT = 0.20
+                # Hound picks are speculative — cap at 10% of cash regardless of analyst suggestion
+                MAX_PCT = 0.10 if cond.get('source') == 'grok_hound_auto' else 0.20
+                # Formulaic sizing: cash * confidence * analyst_size_pct, capped by source
                 effective_pct  = min(raw_pct * confidence, MAX_PCT)
                 position_dollars = available_cash * effective_pct
 
