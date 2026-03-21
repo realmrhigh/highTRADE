@@ -812,15 +812,16 @@ class PaperTradingEngine:
     def _get_current_price(self, asset_symbol: str) -> Optional[float]:
         """
         Get current price for an asset.
-        Tries yfinance first (most reliable), then Alpha Vantage as fallback.
-        Returns None if both fail — callers already handle None gracefully.
+        Tries yfinance, then Alpha Vantage, then Alpaca position current_price,
+        then Alpaca market data API.
+        Returns None if all fail — callers already handle None gracefully.
         Never returns simulated/random prices to avoid phantom P&L.
         """
         # Primary: yfinance (free, no key, reliable)
         try:
             import yfinance as yf
             ticker = yf.Ticker(asset_symbol)
-            hist = ticker.history(period='1d')
+            hist = ticker.history(period='5d')
             if not hist.empty:
                 price = float(hist['Close'].iloc[-1])
                 if price > 0:
@@ -848,6 +849,31 @@ class PaperTradingEngine:
 
         except Exception as e:
             logger.debug(f"Alpha Vantage price fetch failed for {asset_symbol}: {e}")
+
+        # Fallback: Alpaca position current_price (available if we hold the position)
+        try:
+            position = self.alpaca.get_position(asset_symbol)
+            if position and 'current_price' in position:
+                price = float(position['current_price'])
+                if price > 0:
+                    logger.debug(f"Fetched Alpaca position price for {asset_symbol}: ${price:.2f}")
+                    return price
+        except Exception as e:
+            logger.debug(f"Alpaca position price fetch failed for {asset_symbol}: {e}")
+
+        # Fallback: Alpaca market data API (latest trade)
+        try:
+            import requests as _req
+            data_url = f"https://data.alpaca.markets/v2/stocks/{asset_symbol}/trades/latest"
+            r = _req.get(data_url, headers=self.alpaca._headers(), timeout=5)
+            if r.ok:
+                trade_data = r.json()
+                price = float(trade_data.get('trade', {}).get('p', 0))
+                if price > 0:
+                    logger.debug(f"Fetched Alpaca market data price for {asset_symbol}: ${price:.2f}")
+                    return price
+        except Exception as e:
+            logger.debug(f"Alpaca market data price fetch failed for {asset_symbol}: {e}")
 
         logger.warning(f"All price sources failed for {asset_symbol} — returning None (no simulated fallback)")
         return None
