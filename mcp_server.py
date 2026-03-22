@@ -6,6 +6,7 @@ Exposes trading system to Claude Desktop for remote monitoring and control
 
 import sys
 import json
+from trading_db import get_sqlite_conn
 import sqlite3
 import logging
 from pathlib import Path
@@ -220,7 +221,7 @@ class HighTradeMCPServer:
     def _get_system_status(self) -> Dict:
         """Get current system status"""
         try:
-            conn = sqlite3.connect(str(DB_PATH))
+            conn = get_sqlite_conn(str(DB_PATH))
             cursor = conn.cursor()
 
             # Get latest monitoring point
@@ -265,7 +266,7 @@ class HighTradeMCPServer:
     def _get_recent_signals(self, limit: int = 10) -> Dict:
         """Get recent market signals"""
         try:
-            conn = sqlite3.connect(str(DB_PATH))
+            conn = get_sqlite_conn(str(DB_PATH))
             cursor = conn.cursor()
 
             cursor.execute("""
@@ -297,7 +298,7 @@ class HighTradeMCPServer:
     def _get_recent_news(self, limit: int = 10) -> Dict:
         """Get recent news signals with full scoring context and Gemini analysis"""
         try:
-            conn = sqlite3.connect(str(DB_PATH))
+            conn = get_sqlite_conn(str(DB_PATH))
             cursor = conn.cursor()
 
             cursor.execute("""
@@ -367,7 +368,7 @@ class HighTradeMCPServer:
     def _submit_claude_analysis(self, args: Dict) -> Dict:
         """Submit Claude's enhanced analysis"""
         try:
-            conn = sqlite3.connect(str(DB_PATH))
+            conn = get_sqlite_conn(str(DB_PATH))
             cursor = conn.cursor()
             
             cursor.execute("""
@@ -406,7 +407,7 @@ class HighTradeMCPServer:
     def _get_article_details(self, news_signal_id: int) -> Dict:
         """Get full article details for a news signal including Gemini analyses"""
         try:
-            conn = sqlite3.connect(str(DB_PATH))
+            conn = get_sqlite_conn(str(DB_PATH))
             cursor = conn.cursor()
 
             cursor.execute("""
@@ -528,7 +529,7 @@ class HighTradeMCPServer:
     def _get_congressional_trades(self, days_back: int = 30, min_signal_strength: float = 0) -> Dict:
         """Get congressional trading data from DB"""
         try:
-            conn = sqlite3.connect(str(DB_PATH))
+            conn = get_sqlite_conn(str(DB_PATH))
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -588,7 +589,7 @@ class HighTradeMCPServer:
     def _get_macro_environment(self, limit: int = 5) -> Dict:
         """Get FRED macro economic data from DB"""
         try:
-            conn = sqlite3.connect(str(DB_PATH))
+            conn = get_sqlite_conn(str(DB_PATH))
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 

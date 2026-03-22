@@ -258,6 +258,9 @@ class HighTradeOrchestrator:
             self.hound_enabled = False
 
         # Initialize Congressional Trading Tracker
+        # Internal state flags
+        self._morning_flash_notified = False
+        self._midday_flash_notified = False
         try:
             from congressional_tracker import CongressionalTracker
             self.congressional = CongressionalTracker(db_path=str(DB_PATH))
@@ -375,8 +378,8 @@ class HighTradeOrchestrator:
         """Load last known DEFCON from DB so restarts don't trigger phantom buys.
         Falls back to 5 (safe/no-trade) if no history exists."""
         try:
-            import sqlite3
-            conn = sqlite3.connect(str(DB_PATH), timeout=5)
+            from trading_db import get_sqlite_conn
+            conn = get_sqlite_conn(str(DB_PATH), timeout=5)
             # Most recent monitoring point has the current DEFCON
             row = conn.execute(
                 "SELECT defcon_level FROM signal_monitoring "
@@ -2483,8 +2486,8 @@ Respond in this EXACT JSON format - no prose, no markdown, no code fences:
     def _get_latest_macro_score(self) -> float:
         """Return the most recent macro_score from DB (used for pre-purchase gate live_state)."""
         try:
-            import sqlite3
-            conn = sqlite3.connect(str(DB_PATH))
+            from trading_db import get_sqlite_conn
+            conn = get_sqlite_conn(str(DB_PATH))
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT macro_score FROM macro_indicators
@@ -2503,7 +2506,8 @@ Respond in this EXACT JSON format - no prose, no markdown, no code fences:
             from datetime import datetime, timedelta
 
             logger.info("  🔍 Checking database for breaking news...")
-            conn = sqlite3.connect(str(DB_PATH))
+            from trading_db import get_sqlite_conn
+            conn = get_sqlite_conn(str(DB_PATH))
             cursor = conn.cursor()
 
             # Check for breaking news from last 4 hours
@@ -2555,8 +2559,8 @@ Respond in this EXACT JSON format - no prose, no markdown, no code fences:
     def _record_news_signal(self, news_signal, articles_full=None, gemini_flash=None):
         """Store news signal in database with full rich data for LLM access"""
         try:
-            import sqlite3
-            conn = sqlite3.connect(str(DB_PATH))
+            from trading_db import get_sqlite_conn
+            conn = get_sqlite_conn(str(DB_PATH))
             cursor = conn.cursor()
 
             # Serialize all articles with full description (not just top 5)
@@ -2631,10 +2635,10 @@ Respond in this EXACT JSON format - no prose, no markdown, no code fences:
             - latest_articles: Articles sorted by publish time (newest first)
         """
         try:
-            import sqlite3
+            from trading_db import get_sqlite_conn
             from datetime import datetime, timedelta
 
-            conn = sqlite3.connect(str(DB_PATH))
+            conn = get_sqlite_conn(str(DB_PATH))
             cursor = conn.cursor()
 
             # Get timestamp and ALL articles from last news signal

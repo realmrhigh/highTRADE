@@ -4,6 +4,7 @@ HighTrade Broker Agent - Autonomous Trading Decision System
 Analyzes market conditions, makes trade decisions, and executes on your behalf
 """
 
+from trading_db import get_sqlite_conn
 import sqlite3
 import json
 import logging
@@ -87,7 +88,7 @@ def _queue_rebound_watchlist(exit: dict) -> None:
     )
 
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = get_sqlite_conn(str(DB_PATH))
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS acquisition_watchlist (
@@ -302,7 +303,7 @@ class BrokerDecisionEngine:
         """
         holdings: dict = {}
         try:
-            conn = sqlite3.connect(str(DB_PATH), timeout=5)
+            conn = get_sqlite_conn(str(DB_PATH), timeout=5)
             conn.row_factory = sqlite3.Row
             query = """
                 SELECT asset_symbol, SUM(shares) as total_shares,
@@ -396,7 +397,7 @@ class BrokerDecisionEngine:
         adjusted = 0
         try:
             import yfinance as _yf
-            conn = sqlite3.connect(str(DB_PATH), timeout=5)
+            conn = get_sqlite_conn(str(DB_PATH), timeout=5)
             conn.execute("PRAGMA journal_mode=WAL")
 
             for action in actions:
@@ -527,7 +528,7 @@ class BrokerDecisionEngine:
         # ── Pull thesis / research context ───────────────────────────────────
         thesis_text = trade.get('thesis_summary') or ''
         try:
-            import sqlite3
+            from trading_db import get_sqlite_conn
             from pathlib import Path
             db_path = Path(__file__).parent / 'trading_data' / 'trading_history.db'
             conn = sqlite3.connect(str(db_path))
@@ -637,7 +638,7 @@ class BrokerDecisionEngine:
     def _ensure_peak_price_column(self) -> None:
         """Add peak_price column to trade_records if not present (idempotent migration)."""
         try:
-            conn = sqlite3.connect(str(DB_PATH))
+            conn = get_sqlite_conn(str(DB_PATH))
             conn.execute("ALTER TABLE trade_records ADD COLUMN peak_price REAL")
             conn.commit()
             # Seed existing open trades so they start with a valid high-watermark
@@ -1014,7 +1015,7 @@ class BrokerDecisionEngine:
 
     def _calculate_current_exposure(self) -> float:
         """Calculate total current portfolio exposure (cost basis of open positions)"""
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = get_sqlite_conn(str(DB_PATH))
         try:
             cursor = conn.cursor()
             cursor.execute('''
@@ -1030,7 +1031,7 @@ class BrokerDecisionEngine:
     def _calculate_available_cash(self) -> float:
         """Calculate actual available cash: total_capital + realized_pnl - open_exposure.
         Accounts for realized P&L from closed trades so we don't over-size positions."""
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = get_sqlite_conn(str(DB_PATH))
         try:
             cursor = conn.cursor()
             # Realized P&L from closed trades
@@ -1329,7 +1330,7 @@ class BrokerDecisionEngine:
 
         live_state: optional dict with {defcon, news_score, macro_score} from orchestrator.
         """
-        import sqlite3
+        from trading_db import get_sqlite_conn
         import yfinance as yf
         from pathlib import Path
 
@@ -1697,7 +1698,7 @@ class AutonomousBroker:
 
     def _ensure_notification_log_table(self) -> None:
         """Create a tiny persistence table used to suppress duplicate Slack alerts."""
-        conn = sqlite3.connect(str(DB_PATH), timeout=5)
+        conn = get_sqlite_conn(str(DB_PATH), timeout=5)
         try:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
@@ -1731,7 +1732,7 @@ class AutonomousBroker:
         """Return True only the first time a logical acquisition alert is seen."""
         self._ensure_notification_log_table()
         event_key = self._acquisition_alert_key(decision, executed)
-        conn = sqlite3.connect(str(DB_PATH), timeout=5)
+        conn = get_sqlite_conn(str(DB_PATH), timeout=5)
         try:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute(

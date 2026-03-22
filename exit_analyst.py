@@ -39,6 +39,7 @@ Reference catalyst parameters (Gemini calibrates per event type):
 import json
 import logging
 import sqlite3
+from trading_db import get_sqlite_conn
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -240,7 +241,7 @@ def run_exit_analysis(
 
     Returns list of tickers that got frameworks set or updated.
     """
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = get_sqlite_conn(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     _ensure_log_table(conn)
 

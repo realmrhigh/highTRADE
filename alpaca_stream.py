@@ -30,6 +30,7 @@ import logging
 import importlib.util
 import os
 import sqlite3
+from trading_db import get_sqlite_conn
 import threading
 import time
 from collections import defaultdict
@@ -419,7 +420,7 @@ class RealtimeMonitor:
     def _refresh_subscriptions(self):
         """Scan DB for active conditionals + open positions and update subscription set."""
         try:
-            conn = sqlite3.connect(str(DB_PATH), timeout=5)
+            conn = get_sqlite_conn(str(DB_PATH), timeout=5)
             conn.row_factory = sqlite3.Row
 
             # 1. Active conditionals
@@ -769,7 +770,7 @@ class RealtimeMonitor:
     def _update_peak_in_db(self, trade_id: int, new_peak: float):
         """Write new peak_price to trade_records."""
         try:
-            conn = sqlite3.connect(str(DB_PATH), timeout=3)
+            conn = get_sqlite_conn(str(DB_PATH), timeout=3)
             conn.execute("""
                 UPDATE trade_records
                 SET peak_price = ?, last_price_updated = ?
@@ -783,7 +784,7 @@ class RealtimeMonitor:
     def _update_current_price_in_db(self, ticker: str, price: float):
         """Write current price + PnL to trade_records so process_exits() sees fresh data."""
         try:
-            conn = sqlite3.connect(str(DB_PATH), timeout=3)
+            conn = get_sqlite_conn(str(DB_PATH), timeout=3)
             conn.execute("""
                 UPDATE trade_records
                 SET current_price = ?,
@@ -801,7 +802,7 @@ class RealtimeMonitor:
     def _write_health_to_db(self, status: dict):
         """Persist stream health snapshot for the dashboard."""
         try:
-            conn = sqlite3.connect(str(DB_PATH), timeout=3)
+            conn = get_sqlite_conn(str(DB_PATH), timeout=3)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS stream_health (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -859,7 +860,7 @@ class RealtimeMonitor:
         """Build a live_state dict for the broker from latest available data."""
         live_state = {}
         try:
-            conn = sqlite3.connect(str(DB_PATH), timeout=3)
+            conn = get_sqlite_conn(str(DB_PATH), timeout=3)
 
             # Latest DEFCON
             row = conn.execute(

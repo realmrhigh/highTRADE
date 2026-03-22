@@ -4,7 +4,7 @@ Test Claude Feedback Loop Implementation
 Verifies all components are properly installed
 """
 
-import sqlite3
+from trading_db import get_sqlite_conn
 import sys
 from pathlib import Path
 
@@ -15,7 +15,7 @@ def test_database_schema():
     print("🧪 Testing Database Schema...")
     
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = get_sqlite_conn(str(DB_PATH))
         cursor = conn.cursor()
         
         # Check claude_analysis table
@@ -129,7 +129,7 @@ def test_insert_sample_analysis():
     print("\n🧪 Testing Sample Analysis Insertion...")
     
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = get_sqlite_conn(str(DB_PATH))
         cursor = conn.cursor()
         
         # Insert test analysis

@@ -5,6 +5,7 @@ Initializes SQLite database for crisis pattern recognition and signal monitoring
 """
 
 import sqlite3
+from trading_db import get_sqlite_conn
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -15,7 +16,7 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 def init_database():
     """Initialize SQLite database with complete schema"""
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = get_sqlite_conn(str(DB_PATH))
     cursor = conn.cursor()
 
     # Create crisis_events table - historical crisis metadata
@@ -306,7 +307,7 @@ def populate_historical_crises(cursor):
 
 def populate_sample_signals():
     """Populate signals for April 2025 crisis (detailed example)"""
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = get_sqlite_conn(str(DB_PATH))
     cursor = conn.cursor()
 
     # Get April 2025 crisis ID
@@ -375,7 +376,7 @@ if __name__ == '__main__':
     populate_sample_signals()
 
     # Reconnect to get fresh cursor
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = get_sqlite_conn(str(DB_PATH))
     cursor = conn.cursor()
     print_schema_summary(cursor)
 

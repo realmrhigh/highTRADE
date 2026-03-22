@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regression tests for duplicate acquisition Slack alert suppression."""
 
-import sqlite3
+from trading_db import get_sqlite_conn
 import unittest
 from unittest.mock import Mock
 
@@ -9,7 +9,7 @@ from broker_agent import AutonomousBroker, DB_PATH
 
 
 def _cleanup_notification_log():
-    conn = sqlite3.connect(str(DB_PATH), timeout=5)
+    conn = get_sqlite_conn(str(DB_PATH), timeout=5)
     try:
         conn.execute("DROP TABLE IF EXISTS notification_log")
         conn.commit()
@@ -65,7 +65,7 @@ class AcquisitionAlertDedupeTests(unittest.TestCase):
         broker = self._make_broker(auto_execute=False)
         broker._notify_acquisition_triggered(_decision(), executed=False)
 
-        conn = sqlite3.connect(str(DB_PATH), timeout=5)
+        conn = get_sqlite_conn(str(DB_PATH), timeout=5)
         try:
             row = conn.execute(
                 "SELECT event_type, ticker, conditional_id FROM notification_log WHERE conditional_id=?",

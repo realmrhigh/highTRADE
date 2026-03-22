@@ -20,6 +20,7 @@ Position sizing: position_pct * available_cash, capped at MAX_POSITION_PCT.
 import json
 import logging
 import sqlite3
+from trading_db import get_sqlite_conn
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -556,7 +557,7 @@ def _build_analyst_prompt(ticker: str, research: Dict,
 # ── DB helpers ─────────────────────────────────────────────────────────────────
 
 def _get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = get_sqlite_conn(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn

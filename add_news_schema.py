@@ -4,6 +4,7 @@ Add news_signals table and update signal_monitoring for news integration
 """
 
 import sqlite3
+from trading_db import get_sqlite_conn
 from pathlib import Path
 
 # Use correct path relative to script location
@@ -12,7 +13,7 @@ DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
 
 def add_news_signals_table():
     """Add news_signals table for storing news analysis results"""
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = get_sqlite_conn(str(DB_PATH))
     cursor = conn.cursor()
 
     # Create news_signals table

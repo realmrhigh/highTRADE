@@ -12,6 +12,7 @@ Idempotent: safe to run multiple times.
 """
 
 import sqlite3
+from trading_db import get_sqlite_conn
 from pathlib import Path
 from datetime import datetime
 
@@ -43,7 +44,7 @@ def migrate_alt_data_schema():
         print("   Run setup_database.py first")
         return False
 
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = get_sqlite_conn(str(DB_PATH))
     conn.execute("PRAGMA journal_mode=WAL")
     cursor = conn.cursor()
 

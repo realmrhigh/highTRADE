@@ -4,13 +4,14 @@ Database migration script to add paper trading features
 """
 
 import sqlite3
+from trading_db import get_sqlite_conn
 from pathlib import Path
 
 DB_PATH = Path.home() / 'trading_data' / 'trading_history.db'
 
 def migrate_database():
     """Add necessary columns for paper trading"""
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = get_sqlite_conn(str(DB_PATH))
     cursor = conn.cursor()
 
     print("Starting database migration...\n")

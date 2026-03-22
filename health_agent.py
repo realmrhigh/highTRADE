@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import sqlite3
+from trading_db import get_sqlite_conn
 import subprocess
 import time
 from collections import Counter
@@ -55,7 +56,7 @@ TRACKED_MODEL_PREFIXES = ('gemini-2.5', 'gemini-3', 'gemini-3.1', 'gemini-2.0', 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = get_sqlite_conn(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn

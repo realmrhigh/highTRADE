@@ -83,7 +83,8 @@ _VERIFIER_JSON_TEMPLATE = """{
 
 
 def _get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(DB_PATH))
+    from trading_db import get_sqlite_conn
+    conn = get_sqlite_conn(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn

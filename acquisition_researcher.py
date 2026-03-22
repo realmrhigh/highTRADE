@@ -25,6 +25,7 @@ Staleness policy:
 import json
 import logging
 import sqlite3
+from trading_db import get_sqlite_conn
 import time
 import requests
 from datetime import datetime, timedelta
@@ -43,7 +44,7 @@ SEC_HEADERS = {'User-Agent': 'HighTrade research@hightrade.local'}
 # ── DB helpers ─────────────────────────────────────────────────────────────────
 
 def _get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = get_sqlite_conn(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn

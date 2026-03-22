@@ -16,7 +16,7 @@ Gemini 3 Pro with dynamic thinking is the primary signal source once calibrated.
 
 import json
 import logging
-import sqlite3
+from trading_db import get_sqlite_conn
 import requests
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -601,7 +601,7 @@ def _parse_briefing_response(text: str) -> Dict:
 
 def _save_to_db(date_str: str, ctx: Dict, results: Dict):
     """Save daily briefing results to database."""
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = get_sqlite_conn(str(DB_PATH))
     conn.execute("PRAGMA journal_mode=WAL")
     cursor = conn.cursor()
 
@@ -777,7 +777,7 @@ def _queue_acquisition_watchlist(date_str: str, results: Dict):
     opportunity      = result.get('biggest_opportunity_today', '')
 
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = get_sqlite_conn(str(DB_PATH))
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS acquisition_watchlist (

@@ -7,6 +7,7 @@ If we lose money -> we throttle background thinking.
 """
 
 import sqlite3
+from trading_db import get_sqlite_conn
 import json
 import logging
 from pathlib import Path
@@ -28,7 +29,7 @@ class TokenEconomics:
         self._init_db()
 
     def _init_db(self):
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = get_sqlite_conn(str(DB_PATH))
         conn.execute("""
             CREATE TABLE IF NOT EXISTS token_burn_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,7 +48,7 @@ class TokenEconomics:
         rates = COSTS.get(model, {'input': 0, 'output': 0})
         cost = (in_tok / 1_000_000 * rates['input']) + (out_tok / 1_000_000 * rates['output'])
         
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = get_sqlite_conn(str(DB_PATH))
         conn.execute(
             "INSERT INTO token_burn_log (model, caller, input_tokens, output_tokens, estimated_cost_usd) VALUES (?, ?, ?, ?, ?)",
             (model, caller, in_tok, out_tok, cost)
@@ -57,7 +58,7 @@ class TokenEconomics:
         return cost
 
     def get_monthly_stats(self):
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = get_sqlite_conn(str(DB_PATH))
         conn.row_factory = sqlite3.Row
         
         # Token costs

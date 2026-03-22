@@ -4,7 +4,7 @@ Add Claude Analysis Feedback Schema
 Creates table to store Claude's enhanced news analysis for AI-augmented trading
 """
 
-import sqlite3
+from trading_db import get_sqlite_conn
 import sys
 from pathlib import Path
 
@@ -13,7 +13,7 @@ DB_PATH = Path.home() / "trading_data" / "trading_history.db"
 def add_claude_analysis_table():
     """Create claude_analysis table for storing Claude's enhanced analysis"""
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = get_sqlite_conn(str(DB_PATH))
         cursor = conn.cursor()
         
         print("🧠 Creating claude_analysis table...")
@@ -65,7 +65,7 @@ def add_claude_analysis_table():
 def update_defcon_history_table():
     """Add Claude tracking columns to defcon_history table"""
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = get_sqlite_conn(str(DB_PATH))
         cursor = conn.cursor()
         
         print("\n🔧 Updating defcon_history table for audit trail...")

@@ -5,6 +5,7 @@ Queries SQLite and produces a rich, self-contained HTML dashboard.
 Run:  python dashboard.py [--open]
 """
 
+from trading_db import get_sqlite_conn
 import sqlite3
 import json
 import sys
@@ -66,7 +67,7 @@ from contextlib import contextmanager
 
 @contextmanager
 def _conn():
-    db = sqlite3.connect(str(DB_PATH))
+    db = get_sqlite_conn(str(DB_PATH))
     db.row_factory = sqlite3.Row
     try:
         yield db

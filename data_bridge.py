@@ -411,9 +411,9 @@ def get_news_mention_count(ticker: str, days: int = 30) -> dict:
     Returns count + reason string if zero.
     """
     try:
-        import sqlite3
+        from trading_db import get_sqlite_conn
         since = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = get_sqlite_conn(str(DB_PATH))
         cursor = conn.execute("""
             SELECT COUNT(*) FROM news_signals
             WHERE DATE(timestamp) >= ?
