@@ -10,6 +10,7 @@ import logging
 import requests
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
+import time
 
 try:
     from dotenv import load_dotenv
@@ -18,6 +19,9 @@ except ImportError:
     pass
 
 logger = logging.getLogger(__name__)
+
+# Shared requests Session to avoid socket leaks from ad-hoc requests
+_SESSION = requests.Session()
 
 # Which system is running this client (mirrors gemini_client.py convention)
 SYSTEM_NAME: str = os.environ.get("HIGHTRADE_SYSTEM", "hightrade")
@@ -38,6 +42,36 @@ class GrokClient:
         self.base_url = "https://api.x.ai/v1"
         self.default_model = "grok-4-1-fast-reasoning"  # As suggested by Grok
 
+    def _post_json_with_backoff(self, url: str, json_payload: dict, timeout: int = 180, max_retries: int = 3):
+        """POST helper that reuses the module Session, closes responses, and backs off on 429s."""
+        backoff = 1.0
+        for attempt in range(1, max_retries + 1):
+            resp = None
+            try:
+                resp = _SESSION.post(url, headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}, json=json_payload, timeout=timeout)
+                if resp.status_code == 429:
+                    # Rate limited — close socket before sleeping to prevent FD leak
+                    logger.warning(f"Grok 429 on attempt {attempt}. Backing off {backoff}s")
+                    try:
+                        resp.close()
+                    except Exception:
+                        pass
+                    resp = None
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+                return resp
+            except Exception:
+                # Ensure any partially opened connection is closed
+                if resp is not None:
+                    try:
+                        resp.close()
+                    except Exception:
+                        pass
+                raise
+        # Final attempt
+        return resp
+
     def call(self, prompt: str, system_prompt: Optional[str] = None, 
              model_id: Optional[str] = None, temperature: float = 0.4) -> Tuple[Optional[str], int, int]:
         """Generic chat completion call."""
@@ -56,10 +90,9 @@ class GrokClient:
             _Choreographer.pace_and_record(model, SYSTEM_NAME)
 
         try:
-            response = requests.post(
+            resp = self._post_json_with_backoff(
                 f"{self.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-                json={
+                {
                     "model": model,
                     "messages": messages,
                     "temperature": temperature,
@@ -67,19 +100,29 @@ class GrokClient:
                 },
                 timeout=180
             )
-            
-            if response.status_code != 200:
-                logger.error(f"Grok API Error: {response.status_code} - {response.text}")
+
+            if resp is None:
+                logger.error("Grok API Error: no response (backoff/exhausted)")
                 return None, 0, 0
 
-            data = response.json()
-            text = data.get('choices', [{}])[0].get('message', {}).get('content', '').strip()
-            usage = data.get('usage', {})
-            in_tok = usage.get('prompt_tokens', 0)
-            out_tok = usage.get('completion_tokens', 0)
+            try:
+                if resp.status_code != 200:
+                    logger.error(f"Grok API Error: {resp.status_code} - {resp.text}")
+                    return None, 0, 0
 
-            logger.debug(f"Grok ✅ {model} | in={in_tok} out={out_tok}")
-            return text, in_tok, out_tok
+                data = resp.json()
+                text = data.get('choices', [{}])[0].get('message', {}).get('content', '').strip()
+                usage = data.get('usage', {})
+                in_tok = usage.get('prompt_tokens', 0)
+                out_tok = usage.get('completion_tokens', 0)
+
+                logger.debug(f"Grok ✅ {model} | in={in_tok} out={out_tok}")
+                return text, in_tok, out_tok
+            finally:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
 
         except Exception as e:
             logger.error(f"Grok call failed: {e}")
@@ -114,10 +157,9 @@ class GrokClient:
             _Choreographer.pace_and_record(model, SYSTEM_NAME)
 
         try:
-            response = requests.post(
+            resp = self._post_json_with_backoff(
                 f"{self.base_url}/responses",
-                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-                json={
+                {
                     "model": model,
                     "input": input_messages,
                     "tools": tools,
@@ -126,28 +168,38 @@ class GrokClient:
                 timeout=120
             )
 
-            if response.status_code != 200:
-                logger.error(f"Grok Responses API Error: {response.status_code} - {response.text[:300]}")
-                logger.info("  Falling back to chat completions (no search)...")
-                return self.call(prompt, system_prompt=system_prompt, temperature=temperature)
+            if resp is None:
+                logger.error("Grok Responses API Error: no response (backoff/exhausted)")
+                return None, 0, 0
 
-            data = response.json()
+            try:
+                if resp.status_code != 200:
+                    logger.error(f"Grok Responses API Error: {resp.status_code} - {resp.text[:300]}")
+                    logger.info("  Falling back to chat completions (no search)...")
+                    return self.call(prompt, system_prompt=system_prompt, temperature=temperature)
 
-            # Responses API returns an 'output' array — extract text from message items
-            text_parts = []
-            for item in data.get('output', []):
-                if item.get('type') == 'message':
-                    for content in item.get('content', []):
-                        if content.get('type') == 'output_text':
-                            text_parts.append(content.get('text', ''))
+                data = resp.json()
 
-            text = '\n'.join(text_parts).strip()
-            usage = data.get('usage', {})
-            in_tok = usage.get('input_tokens', 0)
-            out_tok = usage.get('output_tokens', 0)
+                # Responses API returns an 'output' array — extract text from message items
+                text_parts = []
+                for item in data.get('output', []):
+                    if item.get('type') == 'message':
+                        for content in item.get('content', []):
+                            if content.get('type') == 'output_text':
+                                text_parts.append(content.get('text', ''))
 
-            logger.debug(f"Grok Responses ✅ {model} | in={in_tok} out={out_tok}")
-            return text, in_tok, out_tok
+                text = '\n'.join(text_parts).strip()
+                usage = data.get('usage', {})
+                in_tok = usage.get('input_tokens', 0)
+                out_tok = usage.get('output_tokens', 0)
+
+                logger.debug(f"Grok Responses ✅ {model} | in={in_tok} out={out_tok}")
+                return text, in_tok, out_tok
+            finally:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
 
         except Exception as e:
             logger.error(f"Grok Responses API call failed: {e}")

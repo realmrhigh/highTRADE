@@ -145,7 +145,8 @@ def _load_fred_api_key() -> Optional[str]:
 
 
 def _safe_get(url: str, params: dict, timeout: int = 15) -> Optional[dict]:
-    """Safe HTTP GET"""
+    """Safe HTTP GET — always closes the response socket."""
+    resp = None
     try:
         resp = requests.get(url, params=params, timeout=timeout)
         if resp.status_code == 200:
@@ -156,6 +157,9 @@ def _safe_get(url: str, params: dict, timeout: int = 15) -> Optional[dict]:
     except Exception as e:
         logger.debug(f"FRED request failed: {e}")
         return None
+    finally:
+        if resp is not None:
+            resp.close()
 
 
 class FREDMacroTracker:
@@ -517,11 +521,11 @@ class FREDMacroTracker:
             return
 
         conn = sqlite3.connect(self.db_path)
-        conn.execute("PRAGMA journal_mode=WAL")
-        cursor = conn.cursor()
-
-        d = macro_data.get('data', {})
         try:
+            # PRAGMA and cursor setup inside try so conn.close() in finally always fires
+            conn.execute("PRAGMA journal_mode=WAL")
+            cursor = conn.cursor()
+            d = macro_data.get('data', {})
             cursor.execute('''
                 INSERT INTO macro_indicators
                 (yield_curve_spread, fed_funds_rate, unemployment_rate,
@@ -552,6 +556,7 @@ class FREDMacroTracker:
 
     def get_latest_from_db(self) -> Optional[Dict]:
         """Get most recent macro data from DB for Gemini context"""
+        conn = None
         try:
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row
@@ -562,13 +567,15 @@ class FREDMacroTracker:
                 LIMIT 1
             ''')
             row = cursor.fetchone()
-            conn.close()
-
             if row:
                 return dict(row)
             return None
         except Exception:
             return None
+        finally:
+            # Ensure connection is always closed, even on exception paths
+            if conn is not None:
+                conn.close()
 
 
 # Standalone test

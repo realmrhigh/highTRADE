@@ -1537,7 +1537,7 @@ def build_html(status, positions, closed, stats, briefings, macro, watchlist,
     realized      = float(stats.get('realized_pnl') or 0)
     unrealized    = float(stats.get('unrealized_pnl') or 0)
     deployed      = float(stats.get('deployed') or 0)
-    total_capital = broker_equity if broker_equity > 0 else 100_000.0
+    total_capital = broker_equity if broker_equity > 0 else 1_000.0
     account_value = broker_equity if broker_equity > 0 else (total_capital + realized + unrealized)
     cash          = broker_cash if broker_cash > 0 else (total_capital + realized - deployed)
     total_pnl     = realized + unrealized

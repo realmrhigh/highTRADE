@@ -8,6 +8,7 @@ import sqlite3
 import json
 import logging
 import os
+import requests as _requests
 from datetime import datetime, timedelta
 from pathlib import Path
 import sys
@@ -28,6 +29,10 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
 
 logger = logging.getLogger(__name__)
+
+# Module-level session reuses TCP connections to Alpaca across all broker calls,
+# preventing socket exhaustion under rapid order sequences.
+_BROKER_SESSION = _requests.Session()
 
 
 def _canonical_symbol(symbol: str) -> str:
@@ -99,8 +104,8 @@ class AlpacaBroker:
         if qty <= 0:
             return {'ok': False, 'error': f'Invalid qty {qty}'}
 
+        r = None
         try:
-            import requests as _req
             broker_symbol = _broker_symbol(symbol)
             is_crypto = broker_symbol.endswith('/USD')
             payload = {
@@ -110,7 +115,7 @@ class AlpacaBroker:
                 'type':          'market',
                 'time_in_force': 'gtc' if is_crypto else 'day',
             }
-            r = _req.post(
+            r = _BROKER_SESSION.post(
                 f'{self.base_url}/v2/orders',
                 headers=self._headers(),
                 json=payload,
@@ -130,14 +135,17 @@ class AlpacaBroker:
         except Exception as e:
             logger.warning(f"Alpaca order exception for {symbol}: {e}")
             return {'ok': False, 'error': str(e)}
+        finally:
+            if r is not None:
+                r.close()  # release socket back to the pool
 
     def get_position(self, symbol: str) -> Optional[dict]:
         """Return Alpaca position dict for symbol, or None if not held / error."""
         if not self._configured:
             return None
+        r = None
         try:
-            import requests as _req
-            r = _req.get(
+            r = _BROKER_SESSION.get(
                 f'{self.base_url}/v2/positions/{_broker_symbol(symbol)}',
                 headers=self._headers(),
                 timeout=10,
@@ -145,14 +153,17 @@ class AlpacaBroker:
             return r.json() if r.ok else None
         except Exception:
             return None
+        finally:
+            if r is not None:
+                r.close()
 
     def get_positions(self) -> List[dict]:
         """Return all Alpaca positions, or an empty list if unavailable."""
         if not self._configured:
             return []
+        r = None
         try:
-            import requests as _req
-            r = _req.get(
+            r = _BROKER_SESSION.get(
                 f'{self.base_url}/v2/positions',
                 headers=self._headers(),
                 timeout=10,
@@ -161,14 +172,17 @@ class AlpacaBroker:
         except Exception as e:
             logger.warning(f"Alpaca positions sync failed: {e}")
             return []
+        finally:
+            if r is not None:
+                r.close()
 
     def get_account(self) -> Optional[dict]:
         """Return Alpaca account summary, or None if unavailable."""
         if not self._configured:
             return None
+        r = None
         try:
-            import requests as _req
-            r = _req.get(
+            r = _BROKER_SESSION.get(
                 f'{self.base_url}/v2/account',
                 headers=self._headers(),
                 timeout=10,
@@ -177,6 +191,9 @@ class AlpacaBroker:
         except Exception as e:
             logger.warning(f"Alpaca account fetch failed: {e}")
             return None
+        finally:
+            if r is not None:
+                r.close()
 
 
 class PaperTradingEngine:

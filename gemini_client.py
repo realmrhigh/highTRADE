@@ -763,6 +763,7 @@ def _call_via_api(prompt: str, model_id: str, temperature: float,
     if _google_search_grounding_enabled():
         payload['tools'] = [{'google_search': {}}]
 
+    resp = None  # ensure resp is always defined for the finally block
     try:
         resp = requests.post(url, json=payload, timeout=180)
         if not resp.ok:
@@ -806,6 +807,10 @@ def _call_via_api(prompt: str, model_id: str, temperature: float,
     except Exception as e:
         logger.error(f"REST API call failed ({model_id}): {e}")
         return None, 0, 0
+    finally:
+        # Always release the socket back to the connection pool
+        if resp is not None:
+            resp.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

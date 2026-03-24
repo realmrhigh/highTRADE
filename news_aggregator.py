@@ -75,30 +75,32 @@ class NewsCache:
     def _init_db(self):
         """Initialize cache database"""
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS news_cache (
-                article_hash TEXT PRIMARY KEY,
-                article_json TEXT,
-                cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        conn.commit()
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS news_cache (
+                    article_hash TEXT PRIMARY KEY,
+                    article_json TEXT,
+                    cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
+        finally:
+            conn.close()
 
     def get(self, article_hash: str) -> Optional[Dict]:
         """Retrieve cached article if not expired"""
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
-        cutoff_time = datetime.now() - timedelta(minutes=self.ttl_minutes)
-        cursor.execute("""
-            SELECT article_json FROM news_cache
-            WHERE article_hash = ? AND cached_at > ?
-        """, (article_hash, cutoff_time))
-
-        result = cursor.fetchone()
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            cutoff_time = datetime.now() - timedelta(minutes=self.ttl_minutes)
+            cursor.execute("""
+                SELECT article_json FROM news_cache
+                WHERE article_hash = ? AND cached_at > ?
+            """, (article_hash, cutoff_time))
+            result = cursor.fetchone()
+        finally:
+            conn.close()
 
         if result:
             return json.loads(result[0])
@@ -107,26 +109,26 @@ class NewsCache:
     def set(self, article_hash: str, article_data: Dict):
         """Cache article data"""
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
-        cursor.execute("""
-            INSERT OR REPLACE INTO news_cache (article_hash, article_json, cached_at)
-            VALUES (?, ?, ?)
-        """, (article_hash, json.dumps(article_data), datetime.now()))
-
-        conn.commit()
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO news_cache (article_hash, article_json, cached_at)
+                VALUES (?, ?, ?)
+            """, (article_hash, json.dumps(article_data), datetime.now()))
+            conn.commit()
+        finally:
+            conn.close()
 
     def cleanup_expired(self):
         """Remove expired cache entries"""
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
-        cutoff_time = datetime.now() - timedelta(minutes=self.ttl_minutes)
-        cursor.execute("DELETE FROM news_cache WHERE cached_at < ?", (cutoff_time,))
-
-        conn.commit()
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            cutoff_time = datetime.now() - timedelta(minutes=self.ttl_minutes)
+            cursor.execute("DELETE FROM news_cache WHERE cached_at < ?", (cutoff_time,))
+            conn.commit()
+        finally:
+            conn.close()
 
 
 class AlphaVantageNewsSource:
@@ -161,9 +163,11 @@ class AlphaVantageNewsSource:
 
             logger.info(f"Fetching news from Alpha Vantage (topics: {self.topics})")
             response = requests.get(self.BASE_URL, params=params, timeout=self.timeout)
-            response.raise_for_status()
-
-            data = response.json()
+            try:
+                response.raise_for_status()
+                data = response.json()
+            finally:
+                response.close()  # release socket regardless of parse success
 
             # Check for API errors
             if 'Error Message' in data:
@@ -281,8 +285,11 @@ class FinnhubNewsSource:
         try:
             logger.info(f"Fetching Finnhub company news for {symbol} from {from_date} to {to_date}")
             resp = requests.get(self.BASE_COMPANY_NEWS, params=params, timeout=self.timeout)
-            resp.raise_for_status()
-            items = resp.json()
+            try:
+                resp.raise_for_status()
+                items = resp.json()
+            finally:
+                resp.close()  # release socket regardless of parse success
 
             articles = []
             for it in items[:self.max_articles]:
@@ -322,8 +329,11 @@ class FinnhubNewsSource:
         try:
             logger.info(f"Fetching Finnhub general news category={category}")
             resp = requests.get(self.BASE_GENERAL_NEWS, params=params, timeout=self.timeout)
-            resp.raise_for_status()
-            items = resp.json()
+            try:
+                resp.raise_for_status()
+                items = resp.json()
+            finally:
+                resp.close()  # release socket regardless of parse success
 
             articles = []
             for it in items[:self.max_articles]:
@@ -431,9 +441,11 @@ class RedditSentimentSource:
                 logger.info(f"Fetching Reddit: r/{subreddit}")
 
                 response = requests.get(url, headers=headers, timeout=self.timeout)
-                response.raise_for_status()
-
-                data = response.json()
+                try:
+                    response.raise_for_status()
+                    data = response.json()
+                finally:
+                    response.close()  # release socket regardless of parse success
 
                 # Record successful request
                 if self.rate_limiter:

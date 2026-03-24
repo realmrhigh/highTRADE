@@ -62,17 +62,20 @@ class SignalMonitor:
                    f"?series_id=DGS10&api_key={api_key}"
                    f"&file_type=json&sort_order=desc&limit=5")
             response = requests.get(url, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                observations = data.get('observations', [])
-                # Skip entries with missing value '.'
-                for obs in observations:
-                    if obs['value'] != '.':
-                        yield_value = float(obs['value'])
-                        yield_date = obs['date']
-                        return {'yield': yield_value, 'date': yield_date}
-            else:
-                print(f"  FRED API Error: {response.status_code} - {response.text[:100]}")
+            try:
+                if response.status_code == 200:
+                    data = response.json()
+                    observations = data.get('observations', [])
+                    # Skip entries with missing value '.'
+                    for obs in observations:
+                        if obs['value'] != '.':
+                            yield_value = float(obs['value'])
+                            yield_date = obs['date']
+                            return {'yield': yield_value, 'date': yield_date}
+                else:
+                    print(f"  FRED API Error: {response.status_code} - {response.text[:100]}")
+            finally:
+                response.close()  # release socket regardless of outcome
         except Exception as e:
             print(f"  FRED API Exception: {e}")
         return None
@@ -83,12 +86,15 @@ class SignalMonitor:
             url = "https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=1d"
             headers = {'User-Agent': 'Mozilla/5.0'}
             response = requests.get(url, headers=headers, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                price = data['chart']['result'][0]['meta']['regularMarketPrice']
-                return {'vix': price, 'timestamp': datetime.now().isoformat()}
-            else:
-                print(f"  Yahoo VIX Error: {response.status_code}")
+            try:
+                if response.status_code == 200:
+                    data = response.json()
+                    price = data['chart']['result'][0]['meta']['regularMarketPrice']
+                    return {'vix': price, 'timestamp': datetime.now().isoformat()}
+                else:
+                    print(f"  Yahoo VIX Error: {response.status_code}")
+            finally:
+                response.close()  # release socket regardless of outcome
         except Exception as e:
             print(f"  Warning: Could not fetch VIX: {e}")
         return None
@@ -99,15 +105,18 @@ class SignalMonitor:
             url = "https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?interval=1d&range=1d"
             headers = {'User-Agent': 'Mozilla/5.0'}
             response = requests.get(url, headers=headers, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                meta = data['chart']['result'][0]['meta']
-                price = meta['regularMarketPrice']
-                prev_close = meta['chartPreviousClose']
-                change_pct = ((price - prev_close) / prev_close) * 100
-                return {'sp500': price, 'change_pct': round(change_pct, 2)}
-            else:
-                print(f"  Yahoo S&P Error: {response.status_code}")
+            try:
+                if response.status_code == 200:
+                    data = response.json()
+                    meta = data['chart']['result'][0]['meta']
+                    price = meta['regularMarketPrice']
+                    prev_close = meta['chartPreviousClose']
+                    change_pct = ((price - prev_close) / prev_close) * 100
+                    return {'sp500': price, 'change_pct': round(change_pct, 2)}
+                else:
+                    print(f"  Yahoo S&P Error: {response.status_code}")
+            finally:
+                response.close()  # release socket regardless of outcome
         except Exception as e:
             print(f"  Yahoo Finance Exception: {e}")
         return None

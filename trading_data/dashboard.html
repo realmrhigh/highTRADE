@@ -184,8 +184,8 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
   <div></div>
   <div class="header-meta">
     <span class="live-dot"></span>LIVE &nbsp;&middot;&nbsp;
-    Generated: 2026-03-12 15:33:39 EDT &nbsp;&middot;&nbsp;
-    Last cycle: —<br/>
+    Generated: 2026-03-23 09:55:50 PDT &nbsp;&middot;&nbsp;
+    Last cycle: 2026-03-23 09:34:12 PDT<br/>
     <span style="opacity:0.35;font-size:9px;letter-spacing:2px;">v2.4-INTERACTIVE</span>
   </div>
 </div>
@@ -283,6 +283,38 @@ async function sendCommand(cmd) {
         showToast('❌ ' + e, false);
     } finally {
         if (btn) { btn.innerText = originalText; btn.disabled = false; }
+    }
+}
+
+async function forceRefreshNews() {
+    const btn = document.getElementById('news-refresh-btn');
+    const originalText = btn?.innerText;
+    if (btn) {
+        btn.disabled = true;
+        btn.innerText = 'FORCING...';
+    }
+
+    try {
+        const resp = await fetch('/api/news-refresh', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await resp.json();
+        const ok = resp.ok && data.ok !== false;
+        if (ok && data.news_html) {
+            const scroll = document.querySelector('.news-scroll');
+            if (scroll) {
+                scroll.innerHTML = data.news_html;
+            }
+        }
+        showToast((ok ? '✅ ' : '❌ ') + (data.message || 'News refresh completed'), ok);
+    } catch (err) {
+        showToast('❌ News refresh failed: ' + err, false);
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerText = originalText || 'FORCE NEWS REFRESH';
+        }
     }
 }
 
@@ -455,27 +487,27 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
 <div class="grid-top">
 
   <!-- DEFCON PANEL -->
-  <div class="panel" style="display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;border-color:#ff333344;">
+  <div class="panel" style="display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;border-color:#ff8c0044;">
     <div class="panel-title" style="justify-content:center;">System Status</div>
-    <div class="defcon-num" style="color:#ff3333;">D5</div>
-    <div class="defcon-label" style="color:#ff3333;">BEARISH</div>
-    <div class="defcon-row"><div style="background:#1a1a2e;color:#00ff88;font-weight:400;width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:14px;border:1px solid #00ff8833;">1</div><div style="background:#1a1a2e;color:#7fff00;font-weight:400;width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:14px;border:1px solid #7fff0033;">2</div><div style="background:#1a1a2e;color:#ffd700;font-weight:400;width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:14px;border:1px solid #ffd70033;">3</div><div style="background:#1a1a2e;color:#ff8c00;font-weight:400;width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:14px;border:1px solid #ff8c0033;">4</div><div style="background:#ff3333;color:#000;font-weight:900;width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:14px;border:1px solid #ff333333;">5</div></div>
+    <div class="defcon-num" style="color:#ff8c00;">D4</div>
+    <div class="defcon-label" style="color:#ff8c00;">DEFENSIVE</div>
+    <div class="defcon-row"><div style="background:#1a1a2e;color:#00ff88;font-weight:400;width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:14px;border:1px solid #00ff8833;">1</div><div style="background:#1a1a2e;color:#7fff00;font-weight:400;width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:14px;border:1px solid #7fff0033;">2</div><div style="background:#1a1a2e;color:#ffd700;font-weight:400;width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:14px;border:1px solid #ffd70033;">3</div><div style="background:#ff8c00;color:#000;font-weight:900;width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:14px;border:1px solid #ff8c0033;">4</div><div style="background:#1a1a2e;color:#ff3333;font-weight:400;width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:14px;border:1px solid #ff333333;">5</div></div>
     <div style="margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%;">
       <div class="stat">
         <div class="stat-label">Signal Score</div>
-        <div class="stat-value" style="font-size:18px;color:#00d4ff;">0.0</div>
+        <div class="stat-value" style="font-size:18px;color:#00d4ff;">21.3</div>
       </div>
       <div class="stat">
         <div class="stat-label">VIX</div>
-        <div class="stat-value" style="font-size:18px;color:#00ff88;">0.00</div>
+        <div class="stat-value" style="font-size:18px;color:#ff8c00;">26.12</div>
       </div>
       <div class="stat">
         <div class="stat-label">10Y Yield</div>
-        <div class="stat-value" style="font-size:16px;color:#aaa;">0.00%</div>
+        <div class="stat-value" style="font-size:16px;color:#aaa;">4.25%</div>
       </div>
       <div class="stat">
         <div class="stat-label">2Y Yield</div>
-        <div class="stat-value" style="font-size:16px;color:#aaa;">0.00%</div>
+        <div class="stat-value" style="font-size:16px;color:#aaa;">3.79%</div>
       </div>
     </div>
   </div>
@@ -486,18 +518,18 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
     <div class="stat-grid">
       <div class="stat">
         <div class="stat-label">Account Value</div>
-        <div class="stat-value" style="font-size:22px;color:#00ff88;">$100,000</div>
-        <div class="stat-sub">Base Capital: $100,000</div>
+        <div class="stat-value" style="font-size:22px;color:#00ff88;">$1,002</div>
+        <div class="stat-sub">Base Capital: $1,000</div>
       </div>
       <div class="stat">
         <div class="stat-label">Total P&amp;L</div>
-        <div class="stat-value" style="font-size:22px;color:#00ff88;">+$0.00</div>
-        <div class="stat-sub">+0.00% on capital</div>
+        <div class="stat-value" style="font-size:22px;color:#00ff88;">+$2.06</div>
+        <div class="stat-sub">+0.21% on capital</div>
       </div>
       <div class="stat">
         <div class="stat-label">Realized P&amp;L</div>
-        <div class="stat-value" style="font-size:18px;color:#00ff88;">+$0.00</div>
-        <div class="stat-sub">0W / 0L closed</div>
+        <div class="stat-value" style="font-size:18px;color:#00ff88;">+$2.06</div>
+        <div class="stat-sub">4W / 5L closed</div>
       </div>
       <div class="stat">
         <div class="stat-label">Unrealized P&amp;L</div>
@@ -506,13 +538,13 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
       </div>
       <div class="stat">
         <div class="stat-label">Cash Available</div>
-        <div class="stat-value" style="font-size:18px;">$100,000</div>
+        <div class="stat-value" style="font-size:18px;">$1,002</div>
         <div class="stat-sub">Deployed: $0</div>
       </div>
       <div class="stat">
         <div class="stat-label">Win Rate</div>
-        <div class="stat-value" style="font-size:18px;color:#ff8c00;">0%</div>
-        <div class="wr-bar"><div class="wr-fill" style="width:0%;"></div></div>
+        <div class="stat-value" style="font-size:18px;color:#ff8c00;">44%</div>
+        <div class="wr-bar"><div class="wr-fill" style="width:44.44444444444444%;"></div></div>
       </div>
     </div>
   </div>
@@ -522,20 +554,20 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
     <div class="panel-title">Macro Environment</div>
     <div class="macro-grid">
       <div style="display:flex;flex-direction:column;align-items:center;">
-        <svg width="100" height="100" viewBox="0 0 100 100"><circle cx="50" cy="50" r="38" fill="none" stroke="#1a1a2e" stroke-width="10"/><circle cx="50" cy="50" r="38" fill="none" stroke="#ffd700" stroke-width="10" stroke-dasharray="119.4 238.8" stroke-dashoffset="59.7" stroke-linecap="round"/><text x="50" y="45" text-anchor="middle" fill="#ffd700" font-size="18" font-weight="bold" font-family="monospace">50</text><text x="50" y="62" text-anchor="middle" fill="#888" font-size="9" font-family="monospace">MACRO</text></svg>
+        <svg width="100" height="100" viewBox="0 0 100 100"><circle cx="50" cy="50" r="38" fill="none" stroke="#1a1a2e" stroke-width="10"/><circle cx="50" cy="50" r="38" fill="none" stroke="#ffd700" stroke-width="10" stroke-dasharray="112.2 238.8" stroke-dashoffset="59.7" stroke-linecap="round"/><text x="50" y="45" text-anchor="middle" fill="#ffd700" font-size="18" font-weight="bold" font-family="monospace">47</text><text x="50" y="62" text-anchor="middle" fill="#888" font-size="9" font-family="monospace">MACRO</text></svg>
         <div style="font-size:9px;color:#555;margin-top:4px;text-align:center;">NEUTRAL</div>
       </div>
       <div>
-        <div class="macro-row"><span style="color:#888;">Fed Funds</span><span>0.00%</span></div>
-        <div class="macro-row"><span style="color:#888;">Yield Curve</span><span style="color:#ff4444;">+0.00%</span></div>
-        <div class="macro-row"><span style="color:#888;">Unemployment</span><span>0.0%</span></div>
-        <div class="macro-row"><span style="color:#888;">HY Spreads</span><span style="color:#00ff88;">0 bps</span></div>
-        <div class="macro-row"><span style="color:#888;">Cons. Sentiment</span><span style="color:#ff4444;">0.0</span></div>
-        <div class="macro-row"><span style="color:#888;">M2 YoY</span><span>+0.00%</span></div>
+        <div class="macro-row"><span style="color:#888;">Fed Funds</span><span>3.64%</span></div>
+        <div class="macro-row"><span style="color:#888;">Yield Curve</span><span style="color:#00ff88;">+0.51%</span></div>
+        <div class="macro-row"><span style="color:#888;">Unemployment</span><span>4.4%</span></div>
+        <div class="macro-row"><span style="color:#888;">HY Spreads</span><span style="color:#00ff88;">324 bps</span></div>
+        <div class="macro-row"><span style="color:#888;">Cons. Sentiment</span><span style="color:#ff4444;">56.4</span></div>
+        <div class="macro-row"><span style="color:#888;">M2 YoY</span><span>+3.62%</span></div>
       </div>
     </div>
     <div style="margin-top:10px;border-top:1px solid #111;padding-top:8px;">
-      
+      <div style="color:#888;font-size:12px;margin:3px 0;">&#9670; Yield curve normal (+0.51%)</div><div style="color:#ff4444;font-size:12px;margin:3px 0;">&#9660; Consumer sentiment low (56.4) — demand slowdown risk</div>
     </div>
   </div>
 
@@ -544,22 +576,22 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
 <!-- ═══ SIGNAL SPARKLINES ═══ -->
 <div class="grid-full">
   <div class="panel">
-    <div class="panel-title">Signal History &mdash; Last 0 Monitoring Cycles</div>
+    <div class="panel-title">Signal History &mdash; Last 48 Monitoring Cycles</div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;">
       <div class="spark-row">
         <div class="spark-label">VIX</div>
-        <svg width="180" height="40"></svg>
-        <div class="spark-val" style="color:#ff8c00;">—</div>
+        <svg width="180" height="40" viewBox="0 0 180 40"><defs><linearGradient id="sg21479" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ff8c00" stop-opacity="0.4"/><stop offset="100%" stop-color="#ff8c00" stop-opacity="0"/></linearGradient></defs><polygon points="0,40 0,9 3,9 7,9 11,9 15,9 19,9 22,9 26,9 30,9 34,9 38,9 42,9 45,9 49,9 53,9 57,9 61,9 65,9 68,9 72,9 76,9 80,9 84,9 88,9 91,9 95,36 99,2 103,2 107,3 111,38 114,2 118,2 122,2 126,2 130,11 134,12 137,15 141,14 145,14 149,15 153,15 157,14 160,14 164,15 168,15 172,13 176,11 180,11 180,40" fill="url(#sg21479)"/><polyline points="0,9 3,9 7,9 11,9 15,9 19,9 22,9 26,9 30,9 34,9 38,9 42,9 45,9 49,9 53,9 57,9 61,9 65,9 68,9 72,9 76,9 80,9 84,9 88,9 91,9 95,36 99,2 103,2 107,3 111,38 114,2 118,2 122,2 126,2 130,11 134,12 137,15 141,14 145,14 149,15 153,15 157,14 160,14 164,15 168,15 172,13 176,11 180,11" fill="none" stroke="#ff8c00" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        <div class="spark-val" style="color:#ff8c00;">26.12</div>
       </div>
       <div class="spark-row">
         <div class="spark-label">News Score</div>
-        <svg width="180" height="40"></svg>
-        <div class="spark-val" style="color:#c084fc;">—</div>
+        <svg width="180" height="40" viewBox="0 0 180 40"><defs><linearGradient id="sg41107" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#c084fc" stop-opacity="0.4"/><stop offset="100%" stop-color="#c084fc" stop-opacity="0"/></linearGradient></defs><polygon points="0,40 0,28 3,34 7,28 11,38 15,26 19,24 22,15 26,13 30,14 34,17 38,17 42,19 45,17 49,10 53,8 57,11 61,3 65,2 68,10 72,16 76,13 80,2 84,4 88,11 91,11 95,11 99,15 103,21 107,23 111,23 114,8 118,9 122,15 126,12 130,23 134,26 137,20 141,26 145,26 149,28 153,27 157,30 160,35 164,29 168,24 172,16 176,13 180,14 180,40" fill="url(#sg41107)"/><polyline points="0,28 3,34 7,28 11,38 15,26 19,24 22,15 26,13 30,14 34,17 38,17 42,19 45,17 49,10 53,8 57,11 61,3 65,2 68,10 72,16 76,13 80,2 84,4 88,11 91,11 95,11 99,15 103,21 107,23 111,23 114,8 118,9 122,15 126,12 130,23 134,26 137,20 141,26 145,26 149,28 153,27 157,30 160,35 164,29 168,24 172,16 176,13 180,14" fill="none" stroke="#c084fc" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        <div class="spark-val" style="color:#c084fc;">47.9</div>
       </div>
       <div class="spark-row">
         <div class="spark-label">Signal</div>
-        <svg width="180" height="40"></svg>
-        <div class="spark-val" style="color:#00d4ff;">—</div>
+        <svg width="180" height="40" viewBox="0 0 180 40"><defs><linearGradient id="sg69639" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#00d4ff" stop-opacity="0.4"/><stop offset="100%" stop-color="#00d4ff" stop-opacity="0"/></linearGradient></defs><polygon points="0,40 0,9 3,10 7,9 11,10 15,7 19,6 22,5 26,5 30,5 34,5 38,5 42,6 45,5 49,4 53,4 57,4 61,3 65,3 68,4 72,5 76,5 80,3 84,3 88,4 91,20 95,37 99,3 103,4 107,4 111,38 114,2 118,2 122,3 126,2 130,7 134,8 137,8 141,13 145,13 149,13 153,13 157,14 160,15 164,14 168,13 172,11 176,10 180,10 180,40" fill="url(#sg69639)"/><polyline points="0,9 3,10 7,9 11,10 15,7 19,6 22,5 26,5 30,5 34,5 38,5 42,6 45,5 49,4 53,4 57,4 61,3 65,3 68,4 72,5 76,5 80,3 84,3 88,4 91,20 95,37 99,3 103,4 107,4 111,38 114,2 118,2 122,3 126,2 130,7 134,8 137,8 141,13 145,13 149,13 153,13 157,14 160,15 164,14 168,13 172,11 176,10 180,10" fill="none" stroke="#00d4ff" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        <div class="spark-val" style="color:#00d4ff;">21.3</div>
       </div>
     </div>
   </div>
@@ -567,18 +599,18 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
 
 <!-- ═══ DAILY INTELLIGENCE CONSENSUS ═══ -->
 <!-- ═══ DAILY ANALYSIS SCHEDULE ═══ -->
-<div class="section-head">&#128197; Daily Analysis Schedule &mdash; 2026-03-12</div>
+<div class="section-head">&#128197; Daily Analysis Schedule &mdash; 2026-03-23</div>
 
 <div class="grid-mid" style="margin-bottom:0;">
-  <div class="model-card" style="border-color:#00d4ff33;opacity:0.45;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><div class="card-label" style="font-size:11px;">🌅 MARKET OPEN</div><div style="color:#555;font-size:10px;">9:30 AM</div></div><div style="color:#444;font-size:11px;font-style:italic;">Not yet fired</div></div>
-  <div class="model-card" style="border-color:#ffd70033;opacity:0.45;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><div class="card-label" style="font-size:11px;">☀️ MID-DAY</div><div style="color:#555;font-size:10px;">12:00 PM</div></div><div style="color:#444;font-size:11px;font-style:italic;">Not yet fired</div></div>
+  <div class="model-card" style="border-color:#00d4ff33;display:flex;flex-direction:column;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-shrink:0;"><div class="card-label" style="font-size:11px;">🌅 MARKET OPEN</div><div style="color:#888;font-size:10px;">9:30 AM · 2026-03-23 14:33</div></div><div style="color:#999;font-size:10px;margin-bottom:6px;">FRED macro data is unavailable today, making it difficult to confirm if the current risk-on rally is supported by underlying credit or yield curve dynamics; current Macro Score sits at a neutral 47/100.</div><div style="color:#ccc;font-size:11px;line-height:1.6;flex:1;">The market is experiencing a broad-based relief rally characterized by significant VIX compression and outperformance in high-beta sectors. Despite the lack of fresh macro catalysts or breaking news, buyers have stepped in aggressively to push the indices higher.</div></div>
+  <div class="model-card" style="border-color:#ffd70033;display:flex;flex-direction:column;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-shrink:0;"><div class="card-label" style="font-size:11px;">☀️ MID-DAY</div><div style="color:#888;font-size:10px;">12:00 PM · 2026-03-23 16:17</div></div><div style="color:#999;font-size:10px;margin-bottom:6px;">Unable to assess macro alignment as FRED data is currently unavailable today.</div><div style="color:#ccc;font-size:11px;line-height:1.6;flex:1;">Midday price action demonstrates robust bullish momentum, led by small caps, despite a lack of fresh fundamental catalysts or news cycles. Volatility is contracting but remains at an elevated baseline (VIX > 25), suggesting cautious underlying sentiment despite the rally.</div></div>
 </div>
 
 <!-- ═══ CLOSE DEEP DIVE — FULL ANALYSIS ═══ -->
-<div class="section-head" style="margin-top:18px;">&#129504; Close Deep Dive &mdash; —</div>
+<div class="section-head" style="margin-top:18px;">&#129504; Close Deep Dive &mdash; 2026-03-21</div>
 
 <div class="grid-full">
-  <div class="model-card"><div class="card-label">𝕏 DEEP DIVE (Grok 4.1)</div><p style="color:#555;margin-top:8px;">No data yet</p></div>
+  <div class="model-card" style="display:flex;flex-direction:column;max-height:600px;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-shrink:0;"><div class="card-label">𝕏 DEEP DIVE (Grok 4.1)</div><div style="display:flex;gap:8px;align-items:center;"><span style="background:#ff444422;color:#ff4444;border:1px solid #ff4444;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">risk-off</span> <span style="background:#ffd70022;color:#ffd700;border:1px solid #ffd700;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;">CAUTIOUS</span><span style="color:#00ff88;font-weight:700;font-size:13px;">82%</span></div></div><div class="scroll-wrap" style="flex:1;overflow-y:auto;padding-right:5px;"><div style="color:#ddd;font-size:12px;line-height:1.6;margin-bottom:12px;font-weight:bold;">Geopolitical tensions centered on Iran-US conflicts and energy supply chain disruptions drove a market correction narrative throughout the weekend news flow. Neutral-heavy sentiment (56-57%) with bearish undertones (43-44%) reflects high-volume but indecisive risk-off positioning. Stagflation fears amplified by steepening yield curve and elevated HY spreads set a cautious tone ahead of Monday open.</div><div class="themes-row" style="margin-bottom:12px;"><div class="theme-pill">Geopolitical Energy Shock</div><div class="theme-pill">Stagflationary De-risking</div><div class="theme-pill">Neutral-Heavy Holding Pattern</div></div><div style="margin-bottom:10px;"><div class="micro-label">SIGNAL QUALITY</div><div style="color:#aaa;font-size:11px;line-height:1.5;">Moderate quality signals with high concentration (96-100) but low urgency (0-8) and neutral-heavy flow (56-57%) indicate structural risk-off noise rather than decisive regime shift trigger.</div></div><div style="margin-bottom:10px;"><div class="micro-label">PORTFOLIO ASSESSMENT</div><div style="color:#aaa;font-size:11px;line-height:1.5;">TTD open position shows modest +1.9% unrealized gain but vulnerable to broad risk-off correction; recent manual exits on TTD highlight choppy performance in this environment.</div></div><div class="two-col" style="margin-bottom:10px;"><div><div class="micro-label">BIGGEST RISK</div><div style="color:#ff8888;font-size:11px;line-height:1.5;">Binary geopolitical escalation from conflicting Iran signals (Diego Garcia strike vs. de-escalation talks), evidenced by persistent DEFCON 3, elevated VIX at 26.78, and news urgency component at 8 despite neutral dominance.</div></div><div><div class="micro-label">OPPORTUNITY</div><div style="color:#88ff88;font-size:11px;line-height:1.5;">Energy sector resiliency amid supply chain fragility, as noted in Gemini themes and intraday flashes, with opportunistic strength unconfirmed but positioned for gap-up if de-escalation prevails.</div></div></div><div style="margin-bottom:10px;"><div class="micro-label">WATCHLIST</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;"><span class="ticker-tag" style="cursor:pointer;" onclick="showChart('XOM')">XOM</span><span class="ticker-tag" style="cursor:pointer;" onclick="showChart('CVX')">CVX</span><span class="ticker-tag" style="cursor:pointer;" onclick="showChart('SLB')">SLB</span></div></div><div><div class="micro-label">DEFCON FORECAST</div><div style="color:#888;font-size:11px;line-height:1.5;">DEFCON 3</div></div></div></div>
 </div>
 
 
@@ -587,9 +619,26 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
 
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
   
-        <div class="panel" style="border-color:#333;">
+        <div class="panel" style="border-color:#ffd70044;">
           <div class="panel-title">⚡ Today's Pick</div>
-          <div style="color:#555;text-align:center;padding:20px;">No day trade session today</div>
+          <div style="display:flex;gap:20px;align-items:flex-start;">
+            <div style="flex:1;">
+              <div style="font-size:24px;font-weight:bold;color:var(--accent);">PL</div>
+              <div style="font-size:11px;color:var(--dim);margin:2px 0;">
+                Confidence: 88% · Size: $2 · 0 shares
+              </div>
+              <div style="display:inline-block;padding:2px 8px;border-radius:3px;font-size:10px;
+                          background:#66622;color:#666;font-weight:bold;letter-spacing:1px;
+                          text-transform:uppercase;">skipped</div>
+                            <div style="margin-top:6px;font-size:11px;color:var(--dim);">Gap: +25.5% · RelVol: 15.0× · Risk: 1.0%</div>
+              
+              
+              
+              <div style="margin-top:6px;font-size:11px;color:var(--dim);font-style:italic;">Earnings beat after Friday close with record revenue, $900M backlog gaining attention, analyst PT raised to $40 from $20 by Cantor Fitzgerald</div>
+                            <div style="margin-top:6px;font-size:11px;color:#9ad0ff;">Fresh multi-quarter earnings catalyst with analyst confirmation and exceptional volume supports 3:1 R:R intraday; gap justified by recency of news and acceleration.</div>
+                            
+            </div>
+          </div>
         </div>
   
         <div class="panel" style="border-color:#333;">
@@ -607,7 +656,12 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
           <th>Date</th><th>Ticker</th><th>Size</th><th>Entry</th>
           <th>Exit</th><th>P&amp;L</th><th>Return</th><th>Reason</th>
         </tr></thead>
-        <tbody><tr><td colspan="8" style="color:#555;text-align:center;padding:20px;">No history yet</td></tr></tbody>
+        <tbody><tr class="trow"><td>2026-03-20</td><td class="sym">None</td><td>$0</td><td>$0.00</td><td>$0.00</td><td style="color:#00ff88;font-weight:bold;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td>skipped</td></tr>
+<tr class="trow"><td>2026-03-19</td><td class="sym">None</td><td>$0</td><td>$0.00</td><td>$0.00</td><td style="color:#00ff88;font-weight:bold;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td>error</td></tr>
+<tr class="trow"><td>2026-03-17</td><td class="sym">NO TRADE</td><td>$0</td><td>$0.00</td><td>$0.00</td><td style="color:#00ff88;font-weight:bold;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td>skipped</td></tr>
+<tr class="trow"><td>2026-03-16</td><td class="sym">None</td><td>$0</td><td>$0.00</td><td>$0.00</td><td style="color:#00ff88;font-weight:bold;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td>skipped</td></tr>
+<tr class="trow"><td>2026-03-13</td><td class="sym">None</td><td>$0</td><td>$0.00</td><td>$0.00</td><td style="color:#00ff88;font-weight:bold;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td>error</td></tr>
+<tr class="trow"><td>2026-03-12</td><td class="sym">None</td><td>$0</td><td>$0.00</td><td>$0.00</td><td style="color:#00ff88;font-weight:bold;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td>error</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -662,7 +716,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
           <th>Symbol</th><th>Shares</th><th>Entry</th><th>Exit</th>
           <th>P&amp;L</th><th>Return</th><th>Exit Reason</th><th>Close Date</th>
         </tr></thead>
-        <tbody><tr><td colspan="8" style="color:#555;text-align:center;padding:20px;">No closed trades</td></tr></tbody>
+        <tbody><tr class="trow"><td class="sym" onclick="showChart('TTD')">TTD</td><td>41</td><td>$23.66</td><td>$23.76</td><td style="color:#00ff88;">+$4.10</td><td style="color:#00ff88;">+0.42%</td><td><span style="color:#ff4444;font-size:11px;">&#10007; STOP LOSS</span></td><td style="color:#666;font-size:11px;">2026-03-23</td></tr><tr class="trow"><td class="sym" onclick="showChart('TTD')">TTD</td><td>41</td><td>$23.66</td><td>$24.10</td><td style="color:#00ff88;">+$18.04</td><td style="color:#00ff88;">+1.86%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-22</td></tr><tr class="trow"><td class="sym" onclick="showChart('TTD')">TTD</td><td>41</td><td>$23.66</td><td>$23.66</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-21</td></tr><tr class="trow"><td class="sym" onclick="showChart('TTD')">TTD</td><td>41</td><td>$23.66</td><td>$24.10</td><td style="color:#00ff88;">+$18.04</td><td style="color:#00ff88;">+1.86%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-21</td></tr><tr class="trow"><td class="sym" onclick="showChart('TTD')">TTD</td><td>41</td><td>$23.66</td><td>$24.10</td><td style="color:#00ff88;">+$18.04</td><td style="color:#00ff88;">+1.86%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-20</td></tr><tr class="trow"><td class="sym" onclick="showChart('TTD')">TTD</td><td>41</td><td>$23.66</td><td>$23.51</td><td style="color:#ff4444;">$-6.15</td><td style="color:#ff4444;">-0.63%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-20</td></tr><tr class="trow"><td class="sym" onclick="showChart('TTD')">TTD</td><td>41</td><td>$23.66</td><td>$23.51</td><td style="color:#ff4444;">$-6.15</td><td style="color:#ff4444;">-0.63%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-19</td></tr><tr class="trow"><td class="sym" onclick="showChart('TTD')">TTD</td><td>41</td><td>$23.66</td><td>$23.25</td><td style="color:#ff4444;">$-16.61</td><td style="color:#ff4444;">-1.71%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-19</td></tr><tr class="trow"><td class="sym" onclick="showChart('TTD')">TTD</td><td>41</td><td>$23.66</td><td>$23.54</td><td style="color:#ff4444;">$-4.92</td><td style="color:#ff4444;">-0.51%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-18</td></tr><tr class="trow"><td class="sym" onclick="showChart('AAPL')">AAPL</td><td>1</td><td>$150.00</td><td>$150.00</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-18</td></tr><tr class="trow"><td class="sym" onclick="showChart('TTD')">TTD</td><td>157</td><td>$23.87</td><td>$23.87</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-18</td></tr><tr class="trow"><td class="sym" onclick="showChart('BTC-USD')">BTC-USD</td><td>0</td><td>$74,651.63</td><td>$72,412.72</td><td style="color:#ff4444;">$-22.33</td><td style="color:#ff4444;">-3.00%</td><td><span style="color:#ff4444;font-size:11px;">&#10007; STOP LOSS</span></td><td style="color:#666;font-size:11px;">2026-03-18</td></tr><tr class="trow"><td class="sym" onclick="showChart('BTC-USD')">BTC-USD</td><td>1</td><td>$30,000.00</td><td>$30,000.00</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-16</td></tr><tr class="trow"><td class="sym" onclick="showChart('BTC-USD')">BTC-USD</td><td>1</td><td>$30,000.00</td><td>$75,227.78</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#00ff88;font-size:11px;">&#10003; PROFIT TARGET</span></td><td style="color:#666;font-size:11px;">2026-03-16</td></tr><tr class="trow"><td class="sym" onclick="showChart('ARM')">ARM</td><td>0</td><td>$0.00</td><td>$0.00</td><td style="color:#00ff88;">+$0.00</td><td style="color:#00ff88;">+0.00%</td><td><span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span></td><td style="color:#666;font-size:11px;">2026-03-14</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -679,7 +733,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
         <thead><tr>
           <th>Ticker</th><th>Source</th><th>Conf</th><th>Regime</th><th>Thesis</th><th>Status</th><th>Added</th>
         </tr></thead>
-        <tbody><tr><td colspan="7" style="color:#555;text-align:center;padding:20px;">Watchlist empty — waiting for next daily briefing</td></tr></tbody>
+        <tbody><tr class="trow"><td class="sym" onclick="showChart('TTD')">TTD</td><td><span style="background:#ff444422;color:#ff4444;border:1px solid #ff444455;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🔄 REBOUND</span></td><td><span style="color:#ffd700;font-weight:700;">50%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">recovery</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="REBOUND ENTRY — exited via stop-loss at $23.76 (0.4%, $4). Original entry was $23.66. Look for bottoming pattern and reversal signals below $23.76. Target: recover the stop-loss loss before seeking new profit." data-ticker="TTD">REBOUND ENTRY — exited via stop-loss at $23.76 (0.4%, $4). Original entry was $23.66. Look for bottoming pattern and reversal signals below $23.76. Target: recover the stop-loss loss before seeking new profit.</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">researched</span></td><td style="color:#666;font-size:11px;">2026-03-23</td></tr><tr class="trow"><td class="sym" onclick="showChart('SNOW')">SNOW</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#ffd700;font-weight:700;">68%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="Post-earnings dip buy with breakout above key resistance today on 3x volume, AI data momentum expected to drive 4-7% upside over next 3 days" data-ticker="SNOW">Post-earnings dip buy with breakout above key resistance today on 3x volume, AI data momentum expected to drive 4-7% upside over next 3 days</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">researched</span></td><td style="color:#666;font-size:11px;">2026-03-23</td></tr><tr class="trow"><td class="sym" onclick="showChart('JBL')">JBL</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">72%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="Semiconductor equipment momentum with unusual volume on AI server buildout reports; potential 4-7% rip in 1-3 days as sector rotates in premarket" data-ticker="JBL">Semiconductor equipment momentum with unusual volume on AI server buildout reports; potential 4-7% rip in 1-3 days as sector rotates in premarket</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">researched</span></td><td style="color:#666;font-size:11px;">2026-03-23</td></tr><tr class="trow"><td class="sym" onclick="showChart('PARA')">PARA</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">72%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#888;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="PASS (30% conf) — Unusual options activity suggests a potential short-term bounce into earnings, but missing fundamental data and contradictory event dates invalidate the setup. ◆ Re-entry if: Current stock price is completely missing; Clarification on exact earnings date to resolve the April 25 vs 5-day contradiction ◆ Risks: Missing current price data makes risk calculation impossible, Earnings date discrepancy (April 25 vs 5 days from March 23)" data-ticker="PARA">PASS (30% conf) — Unusual options activity suggests a potential short-term bounce into earnings, but missing fundamental data and contradictory event dates invalidate the setup. ◆ Re-entry if: Current stock price is completely missing; Clarification …</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">analyst_pass</span></td><td style="color:#666;font-size:11px;">2026-03-22</td></tr><tr class="trow"><td class="sym" onclick="showChart('PARA')">PARA</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#ffd700;font-weight:700;">50%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#888;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="PASS (30% conf) — Unusual options activity suggests a potential short-term bounce into earnings, but missing fundamental data and contradictory event dates invalidate the setup. ◆ Re-entry if: Current stock price is completely missing; Clarification on exact earnings date to resolve the April 25 vs 5-day contradiction ◆ Risks: Missing current price data makes risk calculation impossible, Earnings date discrepancy (April 25 vs 5 days from March 23)" data-ticker="PARA">PASS (30% conf) — Unusual options activity suggests a potential short-term bounce into earnings, but missing fundamental data and contradictory event dates invalidate the setup. ◆ Re-entry if: Current stock price is completely missing; Clarification …</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">analyst_pass</span></td><td style="color:#666;font-size:11px;">2026-03-23</td></tr><tr class="trow"><td class="sym" onclick="showChart('MRNA')">MRNA</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#ffd700;font-weight:700;">68%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="Phase 3 data readout for next-gen COVID/flu combo vaccine on 3/25, 17% short interest with gamma squeeze potential if positive, pre-market volume up 3x avg" data-ticker="MRNA">Phase 3 data readout for next-gen COVID/flu combo vaccine on 3/25, 17% short interest with gamma squeeze potential if positive, pre-market volume up 3x avg</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">researched</span></td><td style="color:#666;font-size:11px;">2026-03-23</td></tr><tr class="trow"><td class="sym" onclick="showChart('LULU')">LULU</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">72%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="Q4 earnings beat after-hours Friday with raised FY guidance, gapping up premarket Monday on volume, catalyst for 4-7% ride into Wed FOMC" data-ticker="LULU">Q4 earnings beat after-hours Friday with raised FY guidance, gapping up premarket Monday on volume, catalyst for 4-7% ride into Wed FOMC</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">researched</span></td><td style="color:#666;font-size:11px;">2026-03-22</td></tr><tr class="trow"><td class="sym" onclick="showChart('NRG')">NRG</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">72%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="Energy sector momentum with oil rebounding on Middle East tensions, NRG up 5% today on volume spike, poised for 5-8% continuation into FOMC week" data-ticker="NRG">Energy sector momentum with oil rebounding on Middle East tensions, NRG up 5% today on volume spike, poised for 5-8% continuation into FOMC week</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">researched</span></td><td style="color:#666;font-size:11px;">2026-03-22</td></tr><tr class="trow"><td class="sym" onclick="showChart('SPOT')">SPOT</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">72%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="Q1 earnings on 3/25 premarket with expected subscriber add beat from podcast/ad momentum, 4-7% move in 1-3 days" data-ticker="SPOT">Q1 earnings on 3/25 premarket with expected subscriber add beat from podcast/ad momentum, 4-7% move in 1-3 days</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">researched</span></td><td style="color:#666;font-size:11px;">2026-03-22</td></tr><tr class="trow"><td class="sym" onclick="showChart('SOFI')">SOFI</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#ffd700;font-weight:700;">62%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="Earnings reaction dip buy with fintech sector rotation tailwind; Q1 report beat expectations yesterday, volume spike confirming breakout potential for 4-7% move next 3 days" data-ticker="SOFI">Earnings reaction dip buy with fintech sector rotation tailwind; Q1 report beat expectations yesterday, volume spike confirming breakout potential for 4-7% move next 3 days</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">researched</span></td><td style="color:#666;font-size:11px;">2026-03-21</td></tr><tr class="trow"><td class="sym" onclick="showChart('FUBO')">FUBO</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">72%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="High short interest 28% + unusual call buying 5x normal today ahead of subscriber metrics release Monday; positioned for 5-8% squeeze move in next 1-3 days." data-ticker="FUBO">High short interest 28% + unusual call buying 5x normal today ahead of subscriber metrics release Monday; positioned for 5-8% squeeze move in next 1-3 days.</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">researched</span></td><td style="color:#666;font-size:11px;">2026-03-21</td></tr><tr class="trow"><td class="sym" onclick="showChart('LYFT')">LYFT</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">72%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="Unusual call buying spike + price breakout above $15 on high volume, short squeeze potential with 18% SI, eyeing 5-7% move in 2-3 days as ride-share sector rotates on travel demand" data-ticker="LYFT">Unusual call buying spike + price breakout above $15 on high volume, short squeeze potential with 18% SI, eyeing 5-7% move in 2-3 days as ride-share sector rotates on travel demand</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">researched</span></td><td style="color:#666;font-size:11px;">2026-03-21</td></tr><tr class="trow"><td class="sym" onclick="showChart('XOM')">XOM</td><td><span style="background:#c084fc22;color:#c084fc;border:1px solid #c084fc55;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🧠 BRIEFING</span></td><td><span style="color:#00ff88;font-weight:700;">85%</span></td><td><span style="background:#ff444422;color:#ff4444;border:1px solid #ff4444;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">risk-off</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="Require clear de-escalation news combined with a drop in the VIX below 20 before entering broad market longs. For energy plays, look for sustained pre-market strength and confirmation of supply disruptions." data-ticker="XOM">Require clear de-escalation news combined with a drop in the VIX below 20 before entering broad market longs. For energy plays, look for sustained pre-market strength and confirmation of supply disruptions.</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">researched</span></td><td style="color:#666;font-size:11px;">2026-03-21</td></tr><tr class="trow"><td class="sym" onclick="showChart('CVX')">CVX</td><td><span style="background:#c084fc22;color:#c084fc;border:1px solid #c084fc55;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🧠 BRIEFING</span></td><td><span style="color:#00ff88;font-weight:700;">85%</span></td><td><span style="background:#ff444422;color:#ff4444;border:1px solid #ff4444;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">risk-off</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="Require clear de-escalation news combined with a drop in the VIX below 20 before entering broad market longs. For energy plays, look for sustained pre-market strength and confirmation of supply disruptions." data-ticker="CVX">Require clear de-escalation news combined with a drop in the VIX below 20 before entering broad market longs. For energy plays, look for sustained pre-market strength and confirmation of supply disruptions.</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">researched</span></td><td style="color:#666;font-size:11px;">2026-03-21</td></tr><tr class="trow"><td class="sym" onclick="showChart('USO')">USO</td><td><span style="background:#c084fc22;color:#c084fc;border:1px solid #c084fc55;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🧠 BRIEFING</span></td><td><span style="color:#00ff88;font-weight:700;">85%</span></td><td><span style="background:#ff444422;color:#ff4444;border:1px solid #ff4444;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">risk-off</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="Require clear de-escalation news combined with a drop in the VIX below 20 before entering broad market longs. For energy plays, look for sustained pre-market strength and confirmation of supply disruptions." data-ticker="USO">Require clear de-escalation news combined with a drop in the VIX below 20 before entering broad market longs. For energy plays, look for sustained pre-market strength and confirmation of supply disruptions.</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">researched</span></td><td style="color:#666;font-size:11px;">2026-03-21</td></tr><tr class="trow"><td class="sym" onclick="showChart('OKTA')">OKTA</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#ffd700;font-weight:700;">68%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="Earnings on 3/25/26 expected to beat on cybersecurity tailwinds + dip from recent sector rotation, 4-7% upside in 1-3 days post-report" data-ticker="OKTA">Earnings on 3/25/26 expected to beat on cybersecurity tailwinds + dip from recent sector rotation, 4-7% upside in 1-3 days post-report</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">researched</span></td><td style="color:#666;font-size:11px;">2026-03-21</td></tr><tr class="trow"><td class="sym" onclick="showChart('MSTR')">MSTR</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">72%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="BTC surging past key resistance with macro tailwind, MSTR as high-beta proxy with short squeeze building (SI&gt;15%), targeting 6-8% upside in 2-3 days on continued crypto momentum" data-ticker="MSTR">BTC surging past key resistance with macro tailwind, MSTR as high-beta proxy with short squeeze building (SI>15%), targeting 6-8% upside in 2-3 days on continued crypto momentum</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">researched</span></td><td style="color:#666;font-size:11px;">2026-03-21</td></tr><tr class="trow"><td class="sym" onclick="showChart('CLS')">CLS</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">81%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="Breakout on 3x volume from AI supply chain catalyst (new MSFT deal rumors), momentum intact for 4-7% ride to $58 in next 3 trading days" data-ticker="CLS">Breakout on 3x volume from AI supply chain catalyst (new MSFT deal rumors), momentum intact for 4-7% ride to $58 in next 3 trading days</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">researched</span></td><td style="color:#666;font-size:11px;">2026-03-21</td></tr><tr class="trow"><td class="sym" onclick="showChart('PINS')">PINS</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">75%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="Q1 earnings in 3 trading days with bullish ad spend catalyst from sector rotation, positioned for 5-8% breakout on beat" data-ticker="PINS">Q1 earnings in 3 trading days with bullish ad spend catalyst from sector rotation, positioned for 5-8% breakout on beat</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">researched</span></td><td style="color:#666;font-size:11px;">2026-03-21</td></tr><tr class="trow"><td class="sym" onclick="showChart('DKNG')">DKNG</td><td><span style="background:#ff8c0022;color:#ff8c00;border:1px solid #ff8c0055;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">🦮 HOUND</span></td><td><span style="color:#00ff88;font-weight:700;">72%</span></td><td><span style="background:#88822;color:#888;border:1px solid #888;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">—</span></td><td class="has-thesis" style="color:#aaa;font-size:11px;max-width:320px;word-wrap:break-word;overflow-wrap:break-word;" data-thesis="NCAA March Madness tournament in full swing (started March 18), peak betting volume expected next 3-5 days driving 4-7% upside on confirmed volume surge" data-ticker="DKNG">NCAA March Madness tournament in full swing (started March 18), peak betting volume expected next 3-5 days driving 4-7% upside on confirmed volume surge</td><td><span style="color:#888;font-size:11px;text-transform:uppercase;">researched</span></td><td style="color:#666;font-size:11px;">2026-03-20</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -704,8 +758,11 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
 <div class="grid-mid">
 
   <div class="panel">
-    <div class="panel-title">News Intelligence &mdash; Recent Signals</div>
-    <div class="news-scroll"><div style="color:#555;text-align:center;padding:20px;">No news signals</div></div>
+    <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+      <span>News Intelligence &mdash; Recent Signals</span>
+      <button id="news-refresh-btn" onclick="forceRefreshNews()" style="background:#1a1b29;color:#00ff88;border:1px solid rgba(0,255,136,0.4);padding:6px 12px;border-radius:6px;font-size:11px;font-weight:600;letter-spacing:1px;cursor:pointer;">FORCE NEWS REFRESH</button>
+    </div>
+    <div class="news-scroll"><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#666;font-size:10px;">3/23 09:34 AM ET <span onclick="sendCommand('/update')" style="cursor:pointer;margin-left:5px;color:#555;" title="Rerun Analysis">&#8635;</span></span><span style="color:#ffd700;font-size:13px;font-weight:700;">47.9</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><div><span style="color:#ffd700;font-weight:700;font-size:12px;">WAIT</span></div></div><div style="font-size:11px;color:#555;">60 articles &middot; 0 breaking</div><div style="font-size:11px;color:#888;margin-top:4px;font-style:italic;">Relief rally on Trump-Iran de-escalation lacks deal substance, faces denials, and clashes with persistent VIX 26 and correction dy…</div></div><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#666;font-size:10px;">3/23 09:17 AM ET <span onclick="sendCommand('/update')" style="cursor:pointer;margin-left:5px;color:#555;" title="Rerun Analysis">&#8635;</span></span><span style="color:#ffd700;font-size:13px;font-weight:700;">48.2</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><div><span style="color:#888;font-weight:700;font-size:12px;">—</span></div></div><div style="font-size:11px;color:#555;">69 articles &middot; 0 breaking</div><div style="font-size:11px;color:#777;margin-top:4px;">Bearish: 14%, Bullish: 29%, Neutral: 57%</div></div><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#666;font-size:10px;">3/23 08:58 AM ET <span onclick="sendCommand('/update')" style="cursor:pointer;margin-left:5px;color:#555;" title="Rerun Analysis">&#8635;</span></span><span style="color:#ffd700;font-size:13px;font-weight:700;">46.8</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><div><span style="color:#ffd700;font-weight:700;font-size:12px;">WAIT</span></div></div><div style="font-size:11px;color:#555;">58 articles &middot; 0 breaking</div><div style="font-size:11px;color:#888;margin-top:4px;font-style:italic;">Signal driven by consistent postponement narrative scores moderately but lacks depth for regime shift given 5-day horizon and bina…</div></div><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#666;font-size:10px;">3/23 08:41 AM ET <span onclick="sendCommand('/update')" style="cursor:pointer;margin-left:5px;color:#555;" title="Rerun Analysis">&#8635;</span></span><span style="color:#888;font-size:13px;font-weight:700;">42.8</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><div><span style="color:#888;font-weight:700;font-size:12px;">—</span></div></div><div style="font-size:11px;color:#555;">58 articles &middot; 0 breaking</div><div style="font-size:11px;color:#777;margin-top:4px;">Bearish: 17%, Bullish: 28%, Neutral: 55%</div></div><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#666;font-size:10px;">3/23 08:25 AM ET <span onclick="sendCommand('/update')" style="cursor:pointer;margin-left:5px;color:#555;" title="Rerun Analysis">&#8635;</span></span><span style="color:#888;font-size:13px;font-weight:700;">40.0</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><div><span style="color:#888;font-weight:700;font-size:12px;">HOLD</span></div></div><div style="font-size:11px;color:#555;">53 articles &middot; 0 breaking</div><div style="font-size:11px;color:#888;margin-top:4px;font-style:italic;">40/100 score reflects noise from Trump tweet-driven rally, not tradeable regime shift; de-escalation tactical but unresolved confl…</div></div><div class="news-item"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="color:#666;font-size:10px;">3/23 08:08 AM ET <span onclick="sendCommand('/update')" style="cursor:pointer;margin-left:5px;color:#555;" title="Rerun Analysis">&#8635;</span></span><span style="color:#888;font-size:13px;font-weight:700;">37.4</span><span style="color:#aaa;font-size:11px;">MARKET CORRECTION</span><div><span style="color:#888;font-weight:700;font-size:12px;">—</span></div></div><div style="font-size:11px;color:#555;">54 articles &middot; 0 breaking</div><div style="font-size:11px;color:#777;margin-top:4px;">Bearish: 13%, Bullish: 26%, Neutral: 61%</div></div></div>
   </div>
 
   <div class="panel">
@@ -739,7 +796,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
         <thead><tr>
           <th>Ticker</th><th>Alpha Score</th><th>Alpha Thesis</th><th>Suggestion</th><th>Found</th><th>Action</th>
         </tr></thead>
-        <tbody><tr><td colspan="6" style="color:#555;text-align:center;padding:16px;">🐕 Hound is still hunting...</td></tr></tbody>
+        <tbody><tr class="trow"><td class="sym" onclick="showChart('PANW')">PANW</td><td style="color:#ffd700;font-weight:700;">74</td><td style="color:#ddd;font-size:11px;">Cybersecurity momentum wave with unusual options flow and price consolidation breakout, short interest 12% + catalyst from recent sector inflows for 5% move in 2-4 days</td><td><span style="color:#888;font-weight:700;font-size:12px;">ADD_TO_WATCH</span></td><td style="color:#666;font-size:11px;">03/23</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('PANW')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('PANW')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('GDX')">GDX</td><td style="color:#ffd700;font-weight:700;">72</td><td style="color:#ddd;font-size:11px;">Gold breaking $2500/oz today with macro flight-to-safety, ETF inflows visible for 3-5% move in miners amid commodity crisis</td><td><span style="color:#888;font-weight:700;font-size:12px;">ADD_TO_WATCH</span></td><td style="color:#666;font-size:11px;">03/21</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('GDX')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('GDX')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('ROKU')">ROKU</td><td style="color:#ffd700;font-weight:700;">68</td><td style="color:#ddd;font-size:11px;">Partnership announcement with major content provider leaked on X (event tomorrow), platform revenue momentum + ad cycle uptick for 4-7% pop</td><td><span style="color:#888;font-weight:700;font-size:12px;">ADD_TO_WATCH</span></td><td style="color:#666;font-size:11px;">03/23</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('ROKU')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('ROKU')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('FANG')">FANG</td><td style="color:#ffd700;font-weight:700;">68</td><td style="color:#ddd;font-size:11px;">Oil above $80 with OPEC whispers; short interest 12% + price consolidation breakout targeting 5% move in 2-4 days</td><td><span style="color:#888;font-weight:700;font-size:12px;">MONITOR</span></td><td style="color:#666;font-size:11px;">03/23</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('FANG')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('FANG')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('COP')">COP</td><td style="color:#ffd700;font-weight:700;">62</td><td style="color:#ddd;font-size:11px;">Oil rebounding on Middle East tensions, COP leading XLE peers with volume spike, macro tailwind for 3-6% in 1-3 days</td><td><span style="color:#888;font-weight:700;font-size:12px;">MONITOR</span></td><td style="color:#666;font-size:11px;">03/23</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('COP')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('COP')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('SIRI')">SIRI</td><td style="color:#ffd700;font-weight:700;">61</td><td style="color:#ddd;font-size:11px;">Media sector rotation with ad recovery tailwinds; broke 200DMA on 2.5x volume today post-upgrade, momentum for 4-7% ride next 3 days.</td><td><span style="color:#888;font-weight:700;font-size:12px;">MONITOR</span></td><td style="color:#666;font-size:11px;">03/21</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('SIRI')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('SIRI')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('ABNB')">ABNB</td><td style="color:#ffd700;font-weight:700;">61</td><td style="color:#ddd;font-size:11px;">Spring travel booking data released today shows +15% YoY, basing for breakout with summer catalyst in 3-5 days</td><td><span style="color:#888;font-weight:700;font-size:12px;">MONITOR</span></td><td style="color:#666;font-size:11px;">03/22</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('ABNB')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('ABNB')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('INTC')">INTC</td><td style="color:#ffd700;font-weight:700;">58</td><td style="color:#ddd;font-size:11px;">Chip sector rotation tailwind from ASML orders + CEO fab update, breaking 200DMA on volume, potential 3-5% squeeze into Wed</td><td><span style="color:#888;font-weight:700;font-size:12px;">ADD_TO_WATCH</span></td><td style="color:#666;font-size:11px;">03/23</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('INTC')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('INTC')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('RDDT')">RDDT</td><td style="color:#ffd700;font-weight:700;">55</td><td style="color:#ddd;font-size:11px;">Retail meme revival with X chatter exploding post-weekend conference buzz; high SI at 22% + gamma squeeze setup for 5% pop in 1-2 days</td><td><span style="color:#888;font-weight:700;font-size:12px;">ADD_TO_WATCH</span></td><td style="color:#666;font-size:11px;">03/22</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('RDDT')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('RDDT')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr><tr class="trow"><td class="sym" onclick="showChart('COST')">COST</td><td style="color:#ffd700;font-weight:700;">55</td><td style="color:#ddd;font-size:11px;">Q4 earnings 3/27 after bell, consensus beat expected on membership growth + e-comm surge, already +4% on Friday volume</td><td><span style="color:#888;font-weight:700;font-size:12px;">MONITOR</span></td><td style="color:#666;font-size:11px;">03/23</td><td><div style="display:flex;gap:5px;"><button onclick="approveTicker('COST')" style="background:#00ff8822;color:#00ff88;border:1px solid #00ff8844;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">APPROVE</button><button onclick="rejectTicker('COST')" style="background:#ff444422;color:#ff4444;border:1px solid #ff444444;padding:2px 6px;border-radius:3px;font-size:9px;cursor:pointer;">REJECT</button></div></td></tr></tbody>
       </table>
     </div>
   </div>
@@ -760,7 +817,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
       </div>
       <div class="stat">
         <div class="stat-label">FRED Macro Tracker</div>
-        <div style="color:#00ff88;font-size:11px;">&#9679; ACTIVE &mdash; Score 50/100 &middot; every ~60 min</div>
+        <div style="color:#00ff88;font-size:11px;">&#9679; ACTIVE &mdash; Score 47/100 &middot; every ~60 min</div>
         <div style="color:#666;font-size:10px;margin-top:3px;">9 indicators: yield curve &middot; fed funds &middot; unemployment &middot; M2 &middot; HY spreads &middot; consumer sentiment &middot; DEFCON modifier</div>
       </div>
       <div class="stat">
@@ -777,7 +834,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
         <div class="stat-label">🦮 Grok Hound &mdash; Alpha Scanner</div>
         <div style="color:#ff8c00;font-size:11px;">&#9679; grok-4-1-fast-reasoning &middot; X.com momentum feed &middot; hourly cycles</div>
         <div style="color:#666;font-size:10px;margin-top:3px;">5-signal scoring (sentiment &middot; concentration &middot; urgency &middot; confidence &middot; specificity) &middot; auto-promotes &ge;75 alpha &middot; feeds researcher &rarr; analyst pipeline</div>
-        <div style="color:#555;font-size:10px;margin-top:2px;">Last run: No runs yet</div>
+        <div style="color:#555;font-size:10px;margin-top:2px;">Last run: 03/23 08:59 AM (56m ago)</div>
       </div>
     </div>
   </div>
@@ -815,9 +872,9 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
         <div class="stat-label">&#120143; Grok Usage &mdash; Since Midnight UTC</div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
           <span style="color:#aaa;font-size:9px;">grok-4-1-fast-reasoning &nbsp;&middot;&nbsp; pay-per-token</span>
-          <span style="color:#555;font-size:10px;font-weight:600;">0 calls &nbsp;&middot;&nbsp; 0 in &nbsp;&middot;&nbsp; 0 out</span>
+          <span style="color:#00ff88;font-size:10px;font-weight:600;">20 calls &nbsp;&middot;&nbsp; 163,163 in &nbsp;&middot;&nbsp; 40,631 out</span>
         </div>
-        <div style="color:#444;font-size:9px;">deep_dives: 0 &nbsp;&middot;&nbsp; briefings: 0 &nbsp;&middot;&nbsp; total tok: 0</div>
+        <div style="color:#444;font-size:9px;">deep_dives: 20 &nbsp;&middot;&nbsp; briefings: 0 &nbsp;&middot;&nbsp; total tok: 203,794</div>
       </div>
 
       <div class="stat">
@@ -826,22 +883,22 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
         <div style="margin-bottom:8px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
             <span style="color:#aaa;font-size:9px;">3.1 Pro Preview ★ REASONING (250/d, 25 RPM)</span>
-            <span style="color:#00ff88;font-size:10px;font-weight:600;">0/250 &nbsp;·&nbsp; 0% &nbsp;·&nbsp; OK</span>
+            <span style="color:#00ff88;font-size:10px;font-weight:600;">10/250 &nbsp;·&nbsp; 4% &nbsp;·&nbsp; OK</span>
           </div>
           <div style="background:#1a1a2e;border-radius:3px;height:5px;overflow:hidden;">
-            <div style="width:0%;height:5px;background:#00ff88;border-radius:3px;transition:width 0.3s;"></div>
+            <div style="width:4%;height:5px;background:#00ff88;border-radius:3px;transition:width 0.3s;"></div>
           </div>
-          <div style="color:#444;font-size:9px;margin-top:1px;">in: 0 tok &nbsp;·&nbsp; out: 0 tok &nbsp;·&nbsp; no calls &nbsp;·&nbsp; resets at midnight UTC (4h 26m)</div>
+          <div style="color:#444;font-size:9px;margin-top:1px;">in: 103,919 tok &nbsp;·&nbsp; out: 8,165 tok &nbsp;·&nbsp; 🔐cli:10 &nbsp;·&nbsp; resets at midnight UTC (7h 4m)</div>
         </div>
         <div style="margin-bottom:8px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
             <span style="color:#aaa;font-size:9px;">3 Flash ★ FAST (1500/d, 120 RPM)</span>
-            <span style="color:#00ff88;font-size:10px;font-weight:600;">0/1500 &nbsp;·&nbsp; 0% &nbsp;·&nbsp; OK</span>
+            <span style="color:#00ff88;font-size:10px;font-weight:600;">23/1500 &nbsp;·&nbsp; 2% &nbsp;·&nbsp; OK</span>
           </div>
           <div style="background:#1a1a2e;border-radius:3px;height:5px;overflow:hidden;">
-            <div style="width:0%;height:5px;background:#00ff88;border-radius:3px;transition:width 0.3s;"></div>
+            <div style="width:1%;height:5px;background:#00ff88;border-radius:3px;transition:width 0.3s;"></div>
           </div>
-          <div style="color:#444;font-size:9px;margin-top:1px;">in: 0 tok &nbsp;·&nbsp; out: 0 tok &nbsp;·&nbsp; no calls &nbsp;·&nbsp; resets at midnight UTC (4h 26m)</div>
+          <div style="color:#444;font-size:9px;margin-top:1px;">in: 216,889 tok &nbsp;·&nbsp; out: 9,674 tok &nbsp;·&nbsp; 🔐cli:23 &nbsp;·&nbsp; resets at midnight UTC (7h 4m)</div>
         </div>
         <div style="margin-bottom:8px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
@@ -851,7 +908,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
           <div style="background:#1a1a2e;border-radius:3px;height:5px;overflow:hidden;">
             <div style="width:0%;height:5px;background:#00ff88;border-radius:3px;transition:width 0.3s;"></div>
           </div>
-          <div style="color:#444;font-size:9px;margin-top:1px;">in: 0 tok &nbsp;·&nbsp; out: 0 tok &nbsp;·&nbsp; no calls &nbsp;·&nbsp; resets at midnight UTC (4h 26m)</div>
+          <div style="color:#444;font-size:9px;margin-top:1px;">in: 0 tok &nbsp;·&nbsp; out: 0 tok &nbsp;·&nbsp; no calls &nbsp;·&nbsp; resets at midnight UTC (7h 4m)</div>
         </div>
         <div style="margin-bottom:8px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
@@ -861,7 +918,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
           <div style="background:#1a1a2e;border-radius:3px;height:5px;overflow:hidden;">
             <div style="width:0%;height:5px;background:#00ff88;border-radius:3px;transition:width 0.3s;"></div>
           </div>
-          <div style="color:#444;font-size:9px;margin-top:1px;">in: 0 tok &nbsp;·&nbsp; out: 0 tok &nbsp;·&nbsp; no calls &nbsp;·&nbsp; resets at midnight UTC (4h 26m)</div>
+          <div style="color:#444;font-size:9px;margin-top:1px;">in: 0 tok &nbsp;·&nbsp; out: 0 tok &nbsp;·&nbsp; no calls &nbsp;·&nbsp; resets at midnight UTC (7h 4m)</div>
         </div>
       </div>
 
@@ -878,7 +935,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
     <div style="display:flex;flex-direction:column;gap:8px;">
       <div class="stat">
         <div class="stat-label">DEFCON System</div>
-        <div style="color:#ff3333;font-size:11px;">&#9679; D5 &mdash; BEARISH &middot; Macro modifier: +0.0</div>
+        <div style="color:#ff8c00;font-size:11px;">&#9679; D4 &mdash; DEFENSIVE &middot; Macro modifier: +0.0</div>
         <div style="color:#666;font-size:10px;margin-top:3px;">Signal-driven 1&ndash;5 scale &middot; news + yield + VIX + macro composite &middot; escalation AND de-escalation tracked</div>
       </div>
       <div class="stat">
@@ -904,7 +961,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
 <!-- ═══ DATA LAYER ═══ -->
 <div style="margin-top:16px;">
   <div class="panel" style="border-color:#2a2a3a;">
-    <div class="panel-title" style="color:#888;">&#128451; Data Layer &mdash; SQLite WAL &middot; 0 active rows across 6 tables &middot; 5 performance indexes &middot; 3 SQL views</div>
+    <div class="panel-title" style="color:#888;">&#128451; Data Layer &mdash; SQLite WAL &middot; 1563 active rows across 6 tables &middot; 5 performance indexes &middot; 3 SQL views</div>
     <div style="display:flex;gap:24px;flex-wrap:wrap;margin-top:6px;">
       <div style="color:#555;font-size:10px;">&#128202; signal_monitoring &mdash; 15-min cycle snapshots</div>
       <div style="color:#555;font-size:10px;">&#128240; news_signals &mdash; scored article batches + Flash JSON</div>
@@ -917,7 +974,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
   </div>
 </div>
 
-<div class="footer">HIGHTRADE &middot; PAPER TRADING &middot; NOT FINANCIAL ADVICE &middot; 2026-03-12 15:33:39 EDT</div>
+<div class="footer">HIGHTRADE &middot; PAPER TRADING &middot; NOT FINANCIAL ADVICE &middot; 2026-03-23 09:55:50 PDT</div>
 </div>
 
 <!-- ═══ CHART MODAL ═══ -->

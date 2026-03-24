@@ -518,6 +518,7 @@ Return ONLY valid JSON with exactly these keys:
                              analysis: Dict, trigger_type: str) -> Optional[int]:
         """Save Gemini analysis to gemini_analysis table"""
         import sqlite3
+        conn = None
         try:
             conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
@@ -551,17 +552,20 @@ Return ONLY valid JSON with exactly these keys:
                 analysis.get('output_tokens', 0),
                 json.dumps(analysis.get('data_gaps', [])),
             ))
-            
+
             conn.commit()
             analysis_id = cursor.lastrowid
-            conn.close()
-            
+
             logger.debug(f"  💾 Saved Gemini analysis ID={analysis_id}")
             return analysis_id
-            
+
         except Exception as e:
             logger.error(f"  ❌ Failed to save Gemini analysis: {e}")
             return None
+        finally:
+            # Always close the connection to prevent FD leaks on exception paths
+            if conn is not None:
+                conn.close()
 
 
 if __name__ == '__main__':

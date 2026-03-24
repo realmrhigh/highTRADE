@@ -200,7 +200,7 @@ class HighTradeOrchestrator:
 
         self.monitor = SignalMonitor(DB_PATH)
         self.alerts = AlertSystem()
-        self.paper_trading = PaperTradingEngine(DB_PATH, total_capital=100000)
+        self.paper_trading = PaperTradingEngine(DB_PATH, total_capital=1000)
 
         # Initialize broker agent
         # semi_auto: executes signal-driven trades but requires Slack approval for acquisitions
