@@ -7,7 +7,7 @@ buys at open with confidence-scaled sizing, and exits strategically
 by close. Grok owns 100% of decisions.
 
 Schedule (Eastern Time):
-  7:00 AM   — Pre-market scan (Grok Responses API w/ web_search + x_search)
+  6:00 AM   — Pre-market scan (Grok Responses API w/ web_search + x_search)
   9:35 AM   — Auto-buy (confidence-scaled from available cash)
   Every 15m — Check stop-loss / take-profit / stretch target
   3:50 PM   — Hard EOD exit backstop
@@ -38,15 +38,17 @@ def _et_now():
 _STOP_MIN, _STOP_MAX = 0.005, 0.02       # 0.5% – 2%
 _TP_MIN, _TP_MAX     = 0.015, 0.06       # 1.5% – 6%
 _STRETCH_MIN, _STRETCH_MAX = 0.04, 0.10  # 4% – 10%
-_MIN_CONFIDENCE = 50                       # Below this → skip trade
-_MIN_POSITION = 1000                       # Don't trade if sized below $1K
-_MAX_RISK_PER_TRADE_PCT = 0.01             # Risk max 1% of capital per day trade
+_MIN_CONFIDENCE = 45                       # Below this → skip trade
+_MIN_POSITION = 500                        # Don't trade if sized below $500
+_MAX_RISK_PER_TRADE_PCT = 0.02             # Risk max 2% of capital per day trade
 _SOFT_MAX_GAP_PCT = 12.0                   # Above this → log warning but still allow if thesis is strong
 _MAX_PICKS_PER_DAY = 3                     # Try up to this many picks before giving up for the day
 _RETRY_CUTOFF_HOUR = 14                    # Don't start a new pick after 2 PM ET
 _STRETCH_CUTOFF_HOUR = 11                  # Before 11:30 AM → hold for stretch
 _STRETCH_CUTOFF_MINUTE = 30
 _TRAILING_STOP_PCT = 0.01                  # 1% trailing stop in stretch mode
+_SCAN_RETRY_INTERVAL_MINS = 30             # Re-scan every 30 min if no pick yet
+_SCAN_RETRY_WINDOW_HOURS = 3               # Stop retrying after 3 hours of scanning
 
 
 class DayTrader:
@@ -64,6 +66,10 @@ class DayTrader:
         self._buy_date = None
         self._eod_exit_date = None
         self._enabled = True
+
+        # Retry-scan state: rescan every 30 min for first 3 hours if no pick found yet
+        self._first_scan_time: Optional[datetime] = None  # when today's first scan fired
+        self._last_scan_time: Optional[datetime] = None   # when last scan attempt ran
 
         self._ensure_table()
 
@@ -236,7 +242,7 @@ class DayTrader:
     # ══════════════════════════════════════════════════════════════════════════
 
     def check_premarket_scan(self):
-        """Fire once per day at/after 7:00 AM ET. Calls Grok for today's pick."""
+        """Fire at/after 6 AM ET. Retries every 30 min for 3 hours until a pick is found."""
         now = _et_now()
         today = now.strftime('%Y-%m-%d')
 
@@ -245,35 +251,69 @@ class DayTrader:
             return
 
         # Time gate
-        if now.hour < 7:
+        if now.hour < 6:
             return
 
-        # In-memory guard
+        # Terminal state guard — skip if we already have a qualified pick or live trade
         if self._scan_date == today:
             return
 
-        # DB guard (survive restarts)
+        # DB guard (survive restarts) — only lock out on terminal states, not 'skipped'
         try:
             conn = sqlite3.connect(self.db_path)
             row = conn.execute(
                 "SELECT status FROM day_trade_sessions WHERE date = ?", (today,)
             ).fetchone()
             conn.close()
-            if row and row[0] in ('scanned', 'bought', 'stretching', 'closed', 'skipped'):
+            if row and row[0] in ('scanned', 'bought', 'stretching', 'closed'):
                 self._scan_date = today
                 return
         except Exception:
-            pass
+            row = None
 
-        logger.info("🌅 Day Trader: pre-market scan firing...")
-        self._scan_date = today
+        # Reset retry state on a new trading day
+        if self._first_scan_time and self._first_scan_time.strftime('%Y-%m-%d') != today:
+            self._first_scan_time = None
+            self._last_scan_time = None
+
+        # Enforce retry interval if we've scanned before today
+        if self._last_scan_time and self._last_scan_time.strftime('%Y-%m-%d') == today:
+            elapsed_mins = (now - self._last_scan_time).total_seconds() / 60
+            if elapsed_mins < _SCAN_RETRY_INTERVAL_MINS:
+                return  # Too soon for another attempt
+
+        # Stop retrying after the 3-hour window
+        if self._first_scan_time and self._first_scan_time.strftime('%Y-%m-%d') == today:
+            window_elapsed = (now - self._first_scan_time).total_seconds() / 3600
+            if window_elapsed >= _SCAN_RETRY_WINDOW_HOURS:
+                self._scan_date = today  # Give up for the day
+                logger.info("⏹️  Day Trader: scan retry window expired (3h), no pick found today")
+                return
+
+        # Record first scan time
+        if not self._first_scan_time or self._first_scan_time.strftime('%Y-%m-%d') != today:
+            self._first_scan_time = now
+
+        attempt_num = 1
+        if self._last_scan_time and self._last_scan_time.strftime('%Y-%m-%d') == today:
+            elapsed_mins = (now - self._first_scan_time).total_seconds() / 60
+            attempt_num = int(elapsed_mins // _SCAN_RETRY_INTERVAL_MINS) + 1
+
+        self._last_scan_time = now
+        logger.info(f"🌅 Day Trader: pre-market scan firing (attempt #{attempt_num})...")
 
         try:
             result = self._run_premarket_scan(today, now)
             if result:
                 logger.info(f"  ✅ Pick: {result.get('ticker')} (confidence: {result.get('confidence')}%)")
+                self._scan_date = today  # Found a pick — stop retrying
             else:
-                logger.info("  ⏭️  No pick today (scan returned nothing or confidence too low)")
+                window_remaining = _SCAN_RETRY_WINDOW_HOURS - (now - self._first_scan_time).total_seconds() / 3600
+                if window_remaining > 0:
+                    logger.info(f"  ⏭️  No pick yet — will retry in {_SCAN_RETRY_INTERVAL_MINS}m ({window_remaining:.1f}h window remaining)")
+                else:
+                    logger.info("  ⏭️  No pick found and retry window closed")
+                    self._scan_date = today
         except Exception as e:
             logger.error(f"  ❌ Pre-market scan failed: {e}")
             self._save_session_error(today, str(e))
@@ -405,8 +445,13 @@ Respond with ONLY valid JSON:
 Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to avoid NO TRADE). If truly nothing qualifies, return empty picks array with no_trade_reason."""
 
         day_name = now.strftime('%A')
+        # Compute dynamic time-to-open string
+        from datetime import time as _time
+        market_open_et = now.replace(hour=9, minute=30, second=0, microsecond=0)
+        mins_to_open = max(0, int((market_open_et - now).total_seconds() / 60))
+        time_to_open = f"~{mins_to_open // 60}h {mins_to_open % 60}m" if mins_to_open >= 60 else f"~{mins_to_open}m"
         user_prompt = (
-            f"Today is {today} ({day_name}). Market opens in ~2.5 hours.\n"
+            f"Today is {today} ({day_name}). Market opens in {time_to_open}.\n"
             f"Available trading capital: ${available_cash:,.0f}. Max portfolio risk per trade: {(_MAX_RISK_PER_TRADE_PCT * 100):.1f}%.\n\n"
             "Search the web and X/Twitter right now for:\n"
             "1. Tickers trending on X/Twitter with high post velocity and price confirmation\n"

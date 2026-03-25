@@ -341,7 +341,7 @@ class HighTradeOrchestrator:
         self.cmd_processor = CommandProcessor(self)
 
         logger.info("✅ Orchestrator initialized successfully")
-        logger.info(f"🤖 Broker Mode: {broker_mode.upper()}")
+        logger.info("🤖 Broker Mode: FULL_AUTO")
         logger.info(f"📰 News Monitoring: {'ENABLED' if self.news_enabled else 'DISABLED'}")
         logger.info(f"🔴 Real-time Stream: {'ENABLED' if self.realtime_enabled else 'DISABLED'}")
         logger.info(f"🌅 Day Trader: {'ENABLED' if self.day_trader_enabled else 'DISABLED'}")

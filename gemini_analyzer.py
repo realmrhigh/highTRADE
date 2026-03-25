@@ -46,8 +46,7 @@ class GrokAnalyzer:
         """
         logger.info(f"  🧠 Running Grok DEEP analysis (score={news_score:.1f}, defcon={current_defcon})...")
 
-        _gem = GeminiAnalyzer()
-        prompt = _gem._build_grok_deep_prompt(
+        prompt = self._build_grok_deep_prompt(
             articles, score_components, sentiment_summary, crisis_type,
             news_score, flash_analysis, current_defcon, positions,
             sector_rotation, vix_term_structure, briefing_context
@@ -74,7 +73,7 @@ class GrokAnalyzer:
             return None
 
         try:
-            result = _gem._parse_json_response(text)
+            result = GeminiAnalyzer()._parse_json_response(text)
             result['model'] = self.model
             result['input_tokens'] = in_tok
             result['output_tokens'] = out_tok

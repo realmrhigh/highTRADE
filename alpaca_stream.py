@@ -633,6 +633,13 @@ class RealtimeMonitor:
                 self._stats['last_error'] = f"dispatch {ticker}: {e}"
             finally:
                 lock.release()
+                try:
+                    from yfinance.cache import _TzDBManager
+                    db = _TzDBManager.get_database()
+                    if db and not db.is_closed():
+                        db.close()
+                except Exception:
+                    pass
 
         threading.Thread(target=_run, daemon=True, name=f'trigger-{ticker}').start()
 
@@ -762,6 +769,14 @@ class RealtimeMonitor:
             except Exception as e:
                 logger.error(f"🔴 Exit dispatch failed for {ticker}: {e}")
                 self._stats['errors'] += 1
+            finally:
+                try:
+                    from yfinance.cache import _TzDBManager
+                    db = _TzDBManager.get_database()
+                    if db and not db.is_closed():
+                        db.close()
+                except Exception:
+                    pass
 
         threading.Thread(target=_run, daemon=True, name=f'exit-{ticker}').start()
 

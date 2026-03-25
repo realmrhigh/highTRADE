@@ -17,6 +17,7 @@ Gemini 3 Pro with dynamic thinking is the primary signal source once calibrated.
 import json
 import logging
 from trading_db import get_sqlite_conn
+import sqlite3
 import requests
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
