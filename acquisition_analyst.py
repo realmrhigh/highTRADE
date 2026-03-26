@@ -843,8 +843,7 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection,
             conn.commit()
 
         except Exception as e:
-            import traceback as _tb
-            logger.error(f"  ❌ conditional_tracking write failed for {ticker}: {e}\n{_tb.format_exc()}")
+            logger.error(f"  ❌ conditional_tracking write failed for {ticker}: {e}")
 
     else:
         reason = (
