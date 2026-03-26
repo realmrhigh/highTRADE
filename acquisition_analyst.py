@@ -781,7 +781,7 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection,
                     catalyst_spike_pct, catalyst_failure_pct,
                     source,
                     status, last_verified
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'active',?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'active',?)
             """, (
                 ticker, date_str,
                 result.get('entry_price_target'),
@@ -843,7 +843,8 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection,
             conn.commit()
 
         except Exception as e:
-            logger.error(f"  ❌ conditional_tracking write failed for {ticker}: {e}")
+            import traceback as _tb
+            logger.error(f"  ❌ conditional_tracking write failed for {ticker}: {e}\n{_tb.format_exc()}")
 
     else:
         reason = (

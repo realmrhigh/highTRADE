@@ -942,8 +942,8 @@ class HighTradeOrchestrator:
                             _sc = self.sector_analyzer.get_sector_context(
                                 crisis_type=_crisis_type,
                                 defcon_level=self.monitor.defcon_level,
-                                is_winding_down=_is_winding_down,
-                                deescalation_score=_deesc_score,
+                                is_winding_down=getattr(self.monitor, 'is_winding_down', False),
+                                deescalation_score=getattr(self, '_last_deesc_score', 0),
                             )
                             _sector_ctx = _sc.get('rotation_guidance', '')
                         except Exception as _se:
@@ -951,9 +951,9 @@ class HighTradeOrchestrator:
 
                         run_analyst_cycle(extra_context={   # always - don't gate on researched
                             'defcon_level': self.monitor.defcon_level,
-                            'news_score':   _news_score,
-                            'is_winding_down': _is_winding_down,
-                            'deescalation_score': _deesc_score,
+                            'news_score':   getattr(self, '_last_news_score', 0),
+                            'is_winding_down': getattr(self.monitor, 'is_winding_down', False),
+                            'deescalation_score': getattr(self, '_last_deesc_score', 0),
                             'sector_guidance': _sector_ctx,
                         })
                     except Exception as e:
@@ -1168,8 +1168,11 @@ Check dashboard for detailed analysis.
                 # Use real Alpaca account equity/cash if available; fall back to DB-computed values
                 alpaca_snapshot = self.paper_trading._get_alpaca_account_snapshot()
                 if alpaca_snapshot and alpaca_snapshot.get('equity', 0) > 0:
-                    account_value  = alpaca_snapshot['equity']
-                    cash_available = alpaca_snapshot['cash']
+                    # Alpaca equity reflects only the broker deposit; paper trades are
+                    # tracked locally in the DB and not mirrored to Alpaca. Add
+                    # DB-computed P&L to get the true account value.
+                    account_value  = alpaca_snapshot['equity'] + realized_pnl + unrealized_pnl
+                    cash_available = alpaca_snapshot['cash'] + realized_pnl - deployed
                 else:
                     account_value  = total_capital + realized_pnl + unrealized_pnl
                     cash_available = total_capital + realized_pnl - sum(

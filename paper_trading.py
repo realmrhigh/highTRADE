@@ -34,6 +34,12 @@ logger = logging.getLogger(__name__)
 # preventing socket exhaustion under rapid order sequences.
 _BROKER_SESSION = _requests.Session()
 
+# Module-level cache for the last successful Alpaca account snapshot.
+# Survives PaperTradingEngine re-creation (e.g. per-request in dashboard).
+_account_snapshot_cache: dict = {}
+_account_snapshot_cache_ts: float = 0.0
+_ACCOUNT_CACHE_TTL = 300  # seconds — serve stale data for up to 5 min on API failure
+
 
 def _canonical_symbol(symbol: str) -> str:
     """Normalize broker/local symbol variants to a single DB form.
@@ -419,18 +425,35 @@ class PaperTradingEngine:
             logger.warning(f"Alpaca open-position sync skipped: {e}")
 
     def _get_alpaca_account_snapshot(self) -> Optional[Dict[str, float]]:
-        """Fetch a normalized broker account snapshot for portfolio summaries when available."""
+        """Fetch a normalized broker account snapshot for portfolio summaries when available.
+
+        Caches the last successful response at module level so that transient API
+        failures (DNS blip, FD exhaustion) don't zero out the dashboard.  Stale
+        cache is served for up to _ACCOUNT_CACHE_TTL seconds, then discarded.
+        """
+        global _account_snapshot_cache, _account_snapshot_cache_ts
+        import time as _time
+
         account = self.alpaca.get_account()
-        if not account:
-            return None
-        return {
-            'equity': self._safe_float(account.get('equity')),
-            'cash': self._safe_float(account.get('cash')),
-            'buying_power': self._safe_float(account.get('buying_power')),
-            'portfolio_value': self._safe_float(account.get('portfolio_value')),
-            'long_market_value': self._safe_float(account.get('long_market_value')),
-            'last_equity': self._safe_float(account.get('last_equity')),
-        }
+        if account:
+            snapshot = {
+                'equity': self._safe_float(account.get('equity')),
+                'cash': self._safe_float(account.get('cash')),
+                'buying_power': self._safe_float(account.get('buying_power')),
+                'portfolio_value': self._safe_float(account.get('portfolio_value')),
+                'long_market_value': self._safe_float(account.get('long_market_value')),
+                'last_equity': self._safe_float(account.get('last_equity')),
+            }
+            _account_snapshot_cache = snapshot
+            _account_snapshot_cache_ts = _time.time()
+            return snapshot
+
+        # Live fetch failed — return cached value if still fresh
+        if _account_snapshot_cache and (_time.time() - _account_snapshot_cache_ts) < _ACCOUNT_CACHE_TTL:
+            logger.debug("Alpaca account fetch failed — serving cached snapshot")
+            return _account_snapshot_cache
+
+        return None
 
     def calculate_position_size_vix_adjusted(self, vix_level: float) -> float:
         """

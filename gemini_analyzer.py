@@ -46,7 +46,7 @@ class GrokAnalyzer:
         """
         logger.info(f"  🧠 Running Grok DEEP analysis (score={news_score:.1f}, defcon={current_defcon})...")
 
-        prompt = self._build_grok_deep_prompt(
+        prompt = GeminiAnalyzer()._build_grok_deep_prompt(
             articles, score_components, sentiment_summary, crisis_type,
             news_score, flash_analysis, current_defcon, positions,
             sector_rotation, vix_term_structure, briefing_context
