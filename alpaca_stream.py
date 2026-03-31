@@ -419,6 +419,7 @@ class RealtimeMonitor:
 
     def _refresh_subscriptions(self):
         """Scan DB for active conditionals + open positions and update subscription set."""
+        conn = None
         try:
             conn = get_sqlite_conn(str(DB_PATH), timeout=5)
             conn.row_factory = sqlite3.Row
@@ -455,8 +456,6 @@ class RealtimeMonitor:
                 ticker = row['asset_symbol']
                 self._positions[ticker] = row
 
-            conn.close()
-
             # Prioritize and cap to feed limit
             self._subscribed_tickers = set(self._prioritize_tickers())
 
@@ -464,6 +463,9 @@ class RealtimeMonitor:
             logger.warning(f"🔴 Subscription refresh DB error: {e}")
             self._stats['errors'] += 1
             self._stats['last_error'] = str(e)
+        finally:
+            if conn:
+                conn.close()
 
     # ── Trade Tick Handler ────────────────────────────────────────────────────
 
@@ -784,6 +786,7 @@ class RealtimeMonitor:
 
     def _update_peak_in_db(self, trade_id: int, new_peak: float):
         """Write new peak_price to trade_records."""
+        conn = None
         try:
             conn = get_sqlite_conn(str(DB_PATH), timeout=3)
             conn.execute("""
@@ -792,12 +795,15 @@ class RealtimeMonitor:
                 WHERE trade_id = ? AND status = 'open'
             """, (new_peak, datetime.now().isoformat(), trade_id))
             conn.commit()
-            conn.close()
         except Exception:
             pass  # Non-critical — will be retried on next tick
+        finally:
+            if conn:
+                conn.close()
 
     def _update_current_price_in_db(self, ticker: str, price: float):
         """Write current price + PnL to trade_records so process_exits() sees fresh data."""
+        conn = None
         try:
             conn = get_sqlite_conn(str(DB_PATH), timeout=3)
             conn.execute("""
@@ -810,12 +816,15 @@ class RealtimeMonitor:
                 WHERE asset_symbol = ? AND status = 'open'
             """, (price, price, price, datetime.now().isoformat(), price, ticker))
             conn.commit()
-            conn.close()
         except Exception as e:
             logger.debug(f"DB price update failed for {ticker}: {e}")
+        finally:
+            if conn:
+                conn.close()
 
     def _write_health_to_db(self, status: dict):
         """Persist stream health snapshot for the dashboard."""
+        conn = None
         try:
             conn = get_sqlite_conn(str(DB_PATH), timeout=3)
             conn.execute("""
@@ -867,13 +876,16 @@ class RealtimeMonitor:
                 WHERE timestamp < datetime('now', '-1 day')
             """)
             conn.commit()
-            conn.close()
         except Exception as e:
             logger.debug(f"Health DB write failed: {e}")
+        finally:
+            if conn:
+                conn.close()
 
     def _build_live_state(self) -> dict:
         """Build a live_state dict for the broker from latest available data."""
         live_state = {}
+        conn = None
         try:
             conn = get_sqlite_conn(str(DB_PATH), timeout=3)
 
@@ -900,11 +912,13 @@ class RealtimeMonitor:
             if vix_price:
                 live_state['vix'] = vix_price
 
-            conn.close()
         except Exception:
             live_state.setdefault('defcon', 5)
             live_state.setdefault('macro_score', 50.0)
             live_state.setdefault('news_score', 0)
+        finally:
+            if conn:
+                conn.close()
 
         return live_state
 

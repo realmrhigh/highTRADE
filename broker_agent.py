@@ -64,6 +64,10 @@ def _queue_rebound_watchlist(exit: dict) -> None:
     - The exit price as a soft ceiling (don't re-enter above where we got stopped)
     - A note to watch for bottoming / reversal signals
     - The loss amount so the analyst knows the recovery target
+
+    Guards (skip rebound if any are true):
+    - DEFCON ≤ 3: market conditions are still hostile; re-entry likely fails again
+    - Round-trips ≥ 2 in last 30 days: ticker is churning; require manual review
     """
     ticker      = exit.get('asset_symbol', '')
     exit_price  = exit.get('current_price', 0)
@@ -73,6 +77,49 @@ def _queue_rebound_watchlist(exit: dict) -> None:
     date_str    = datetime.now().strftime('%Y-%m-%d')
 
     if not ticker:
+        return
+
+    # ── Guard 1: DEFCON gate ──────────────────────────────────────────────────
+    # If the market is in a hostile regime (DEFCON ≤ 3), don't auto-queue a
+    # rebound — the same conditions that caused the stop-loss are still active.
+    try:
+        _gconn = get_sqlite_conn(str(DB_PATH), timeout=5)
+        row = _gconn.execute(
+            "SELECT defcon_level FROM signal_monitoring ORDER BY monitor_id DESC LIMIT 1"
+        ).fetchone()
+        _gconn.close()
+        current_defcon = row[0] if row else 5
+    except Exception:
+        current_defcon = 5  # assume safe if DB unreadable
+
+    if current_defcon <= 3:
+        logger.info(
+            f"  ⛔ Rebound watchlist SKIPPED for {ticker} — DEFCON {current_defcon} "
+            f"(market too hostile; re-entry blocked until DEFCON ≥ 4)"
+        )
+        return
+
+    # ── Guard 2: Round-trip churn check ──────────────────────────────────────
+    # If this ticker has been bought and fully closed ≥ 2 times in the last
+    # 30 days, it's churning. Block the auto-rebound and require manual review.
+    try:
+        _gconn = get_sqlite_conn(str(DB_PATH), timeout=5)
+        cutoff = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+        row = _gconn.execute(
+            """SELECT COUNT(*) FROM trade_records
+               WHERE asset_symbol = ? AND status = 'closed' AND exit_date >= ?""",
+            (ticker.upper().strip(), cutoff)
+        ).fetchone()
+        _gconn.close()
+        recent_round_trips = row[0] if row else 0
+    except Exception:
+        recent_round_trips = 0
+
+    if recent_round_trips >= 2:
+        logger.warning(
+            f"  ⛔ Rebound watchlist SKIPPED for {ticker} — {recent_round_trips} closed trades "
+            f"in last 30 days (churn guard); manual review required before re-entry"
+        )
         return
 
     entry_conditions = (
@@ -1868,7 +1915,7 @@ class AutonomousBroker:
                     'SELL_EARLY_PROFIT':     'profit_target',
                     'SELL_MANUAL':           'manual',
                     'SELL_TIME_LIMIT':       'manual',
-                    'SELL_DEFCON_REVERT':    'manual',
+                    'SELL_DEFCON_REVERT':    'invalidation',    # market regime forced exit
                     'SELL_CATALYST_SPIKE':   'profit_target',   # sold into strength
                     'SELL_CATALYST_FAILED':  'invalidation',    # event went wrong direction
                     'SELL_CATALYST_EXPIRED': 'invalidation',    # window closed, no move

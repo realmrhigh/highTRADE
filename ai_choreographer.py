@@ -167,29 +167,31 @@ class AIChoreographer:
 
                     # ── Critical section ──────────────────────────────────────
                     conn = sqlite3.connect(str(_SHARED_DB), timeout=10)
-                    conn.execute("PRAGMA journal_mode=WAL")
+                    try:
+                        conn.execute("PRAGMA journal_mode=WAL")
 
-                    row     = conn.execute(
-                        "SELECT MAX(ts) FROM api_calls WHERE model_id = ?",
-                        (model_id,)
-                    ).fetchone()
-                    last_ts = row[0] if (row and row[0] is not None) else 0.0
-                    now     = time.time()
-                    wait    = min_interval - (now - last_ts)
+                        row     = conn.execute(
+                            "SELECT MAX(ts) FROM api_calls WHERE model_id = ?",
+                            (model_id,)
+                        ).fetchone()
+                        last_ts = row[0] if (row and row[0] is not None) else 0.0
+                        now     = time.time()
+                        wait    = min_interval - (now - last_ts)
 
-                    if wait > 0.0:
-                        logger.debug(
-                            f"[AIChoreographer] {model_id} — sleeping {wait:.2f}s "
-                            f"(rpm={rpm}, caller={system_name})"
+                        if wait > 0.0:
+                            logger.debug(
+                                f"[AIChoreographer] {model_id} — sleeping {wait:.2f}s "
+                                f"(rpm={rpm}, caller={system_name})"
+                            )
+                            time.sleep(wait)
+
+                        conn.execute(
+                            "INSERT INTO api_calls(model_id, system, ts) VALUES (?, ?, ?)",
+                            (model_id, system_name, time.time()),
                         )
-                        time.sleep(wait)
-
-                    conn.execute(
-                        "INSERT INTO api_calls(model_id, system, ts) VALUES (?, ?, ?)",
-                        (model_id, system_name, time.time()),
-                    )
-                    conn.commit()
-                    conn.close()
+                        conn.commit()
+                    finally:
+                        conn.close()
                     # ── End critical section ──────────────────────────────────
 
                 finally:

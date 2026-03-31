@@ -81,12 +81,55 @@ class GrokHound:
             
         return exclude
 
+    def _get_post_catalyst_tickers(self) -> List[str]:
+        """
+        Return low-float names that had a +30-50% move in the past 7-14 days and are now
+        consolidating — prime candidates for a second leg if X velocity picks up.
+        Pulls from conditional_tracking (active setups) and recent acquisition_watchlist entries.
+        """
+        tickers = []
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cutoff = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d %H:%M:%S')
+            # Active conditional setups added in the last 14 days that came from a big-move catalyst
+            cursor.execute("""
+                SELECT ticker FROM conditional_tracking
+                WHERE status = 'active'
+                  AND created_at > ?
+                  AND (watch_tag LIKE '%momentum%' OR watch_tag LIKE '%breakout%'
+                       OR watch_tag LIKE '%squeeze%' OR watch_tag LIKE '%catalyst%')
+            """, (cutoff,))
+            tickers.extend([row[0].upper() for row in cursor.fetchall() if row[0]])
+            # Recent grok_hound_candidates that hit ≥70 alpha and are now watched/expired
+            cursor.execute("""
+                SELECT ticker FROM grok_hound_candidates
+                WHERE alpha_score >= 70
+                  AND created_at > ?
+                  AND status IN ('watched', 'expired')
+            """, (cutoff,))
+            tickers.extend([row[0].upper() for row in cursor.fetchall() if row[0]])
+            # Reverse-split names from acquisition_watchlist (last 14 days)
+            cursor.execute("""
+                SELECT ticker FROM acquisition_watchlist
+                WHERE created_at > ?
+                  AND (notes LIKE '%reverse split%' OR notes LIKE '%1-for-%'
+                       OR entry_conditions LIKE '%reverse split%')
+                  AND status != 'archived'
+            """, (cutoff,))
+            tickers.extend([row[0].upper() for row in cursor.fetchall() if row[0]])
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Could not build post-catalyst list: {e}")
+        return list(dict.fromkeys(tickers))  # dedupe, preserve order
+
     def hunt(self, current_state: Dict, focus_tickers: List[str] = None) -> Dict:
         """
         Queries Grok for the next high-alpha setups, excluding known tickers.
         """
         exclude_list = self._get_exclude_list()
-        logger.info(f"🐕 Grok Hound is on the scent... excluding {len(exclude_list)} tickers.")
+        post_catalyst = self._get_post_catalyst_tickers()
+        logger.info(f"🐕 Grok Hound is on the scent... excluding {len(exclude_list)} tickers, {len(post_catalyst)} post-catalyst candidates.")
 
         system_prompt = f"""
         You are Grok Hound — short-term momentum hunter for HighTrade.
@@ -106,6 +149,24 @@ class GrokHound:
         - Sector rotations: money visibly flowing INTO a sector today
         - Crisis commodities: energy/commodity plays with active macro tailwind (e.g. USO, XLE during oil spike)
         - Retail velocity plays: meme revival, unusual volume, social spike with price action confirming
+        - Post-catalyst consolidation plays: low-float names (<5M shares) that already moved +30-50%
+          in the past 7-14 days and are now coiling. Apply +10 score boost for any modest X velocity
+          during the pullback (reversal watch chatter, squeeze talk, unusual volume commentary).
+          Post-catalyst tickers to rescan: {', '.join(post_catalyst) if post_catalyst else 'None identified yet'}
+        - Dark catalyst setups: low-float names with recent clinical/regulatory news + any financing
+          event (private placement, S-1 withdrawal, registered direct, at-the-market offering,
+          debt retirement, debt settlement via equity, balance sheet cleanup).
+          News is THE signal when float is this tight. Score ≥65 if float <2M and a capital-raise
+          or debt-removal PR appeared within 48h of a prior catalyst.
+        - Reverse-split low-float runners: post-reverse-split names with float <3M. Even with zero
+          X pre-fuel, score ≥65 if the split was effective within the past 14 days and any modest
+          X velocity, pipeline mention, or unusual volume appears. Apply +15 score boost.
+        - Pipeline/license dark catalysts: low-float names (<2M float) with a license agreement,
+          exclusive worldwide rights, strategic collaboration, or pipeline expansion PR. Score ≥65
+          even with no X chatter — news is the whole signal here.
+        - Financing + debt overhang removal: flag ≥65 as dark-catalyst when float <2M and news
+          shows debt retirement or insider debenture conversion — removes the dilution ceiling and
+          can unlock violent upside with no prior retail buzz.
 
         ❌ DO NOT RECOMMEND:
         - NVDA, AAPL, MSFT, GOOGL, META, AMZN, TSLA as recovery/mean-reversion plays
@@ -142,6 +203,10 @@ class GrokHound:
             "watchlist": current_state.get("watchlist", []),
             "focus_tickers": focus_tickers,
             "recent_signals": current_state.get("latest_gemini_briefing_summary", ""),
+            "low_float_financing_alert": current_state.get("low_float_financing_alert", False),
+            "reverse_split_alert": current_state.get("reverse_split_alert", False),
+            "pipeline_deal_alert": current_state.get("pipeline_deal_alert", False),
+            "post_catalyst_tickers": post_catalyst,
             "timestamp": datetime.now().isoformat()
         }
 
@@ -224,10 +289,17 @@ class GrokHound:
             ))
 
             # --- AUTO-PROMOTION LOGIC ---
-            # Tiered: buy_small promotes at alpha >= 60 (short-term speculative);
-            # add_to_watch / monitor stay at >= 75 (full pipeline conviction).
+            # Tiered thresholds by action:
+            #   buy_small    → 60 (short-term speculative, fast lane)
+            #   add_to_watch → 65 (moderate conviction, full pipeline)
+            #   monitor/other → 72 (higher bar before spending analyst quota)
             _action_lower = (c.get('action_suggestion') or '').lower()
-            _promo_threshold = 60 if _action_lower == 'buy_small' else 75
+            if _action_lower == 'buy_small':
+                _promo_threshold = 60
+            elif _action_lower == 'add_to_watch':
+                _promo_threshold = 65
+            else:
+                _promo_threshold = 72
             if score >= _promo_threshold:
                 # Check if already in watchlist
                 cursor.execute("SELECT 1 FROM acquisition_watchlist WHERE ticker = ? AND status != 'archived'", (ticker,))
@@ -256,6 +328,25 @@ class GrokHound:
         conn.close()
         logger.info(f"  💾 Processed {len(candidates)} candidates. Auto-promoted: {promoted_tickers}")
         return promoted_tickers
+
+def run_hound_cycle(extra_context: Optional[Dict] = None) -> Dict:
+    """Module-level entry point for triggering a Grok Hound scan.
+
+    Used by ollama_client._exec_run_hound and the force-trigger script.
+    """
+    hound = GrokHound()
+    state = {
+        "defcon_level": (extra_context or {}).get("defcon_level", 3),
+        "macro_score":  (extra_context or {}).get("news_score", 50),
+        "watchlist": [],
+        "low_float_financing_alert": False,
+        "reverse_split_alert": False,
+        "pipeline_deal_alert": False,
+    }
+    results = hound.hunt(state)
+    hound.save_candidates(results)
+    return results
+
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

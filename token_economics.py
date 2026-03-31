@@ -47,38 +47,45 @@ class TokenEconomics:
     def log_usage(self, model: str, caller: str, in_tok: int, out_tok: int):
         rates = COSTS.get(model, {'input': 0, 'output': 0})
         cost = (in_tok / 1_000_000 * rates['input']) + (out_tok / 1_000_000 * rates['output'])
-        
-        conn = get_sqlite_conn(str(DB_PATH))
-        conn.execute(
-            "INSERT INTO token_burn_log (model, caller, input_tokens, output_tokens, estimated_cost_usd) VALUES (?, ?, ?, ?, ?)",
-            (model, caller, in_tok, out_tok, cost)
-        )
-        conn.commit()
-        conn.close()
+        conn = None
+        try:
+            conn = get_sqlite_conn(str(DB_PATH))
+            conn.execute(
+                "INSERT INTO token_burn_log (model, caller, input_tokens, output_tokens, estimated_cost_usd) VALUES (?, ?, ?, ?, ?)",
+                (model, caller, in_tok, out_tok, cost)
+            )
+            conn.commit()
+        finally:
+            if conn:
+                conn.close()
         return cost
 
     def get_monthly_stats(self):
-        conn = get_sqlite_conn(str(DB_PATH))
-        conn.row_factory = sqlite3.Row
-        
-        # Token costs
-        cost_row = conn.execute("""
-            SELECT SUM(estimated_cost_usd) as total_cost 
-            FROM token_burn_log 
-            WHERE timestamp >= datetime('now', '-30 days')
-        """).fetchone()
-        total_cost = cost_row['total_cost'] or 0.0
+        conn = None
+        try:
+            conn = get_sqlite_conn(str(DB_PATH))
+            conn.row_factory = sqlite3.Row
 
-        # P&L
-        pnl_row = conn.execute("""
-            SELECT SUM(profit_loss_dollars) as total_pnl 
-            FROM trade_records 
-            WHERE status = 'closed' AND exit_date >= datetime('now', '-30 days')
-        """).fetchone()
-        
-        total_pnl = pnl_row['total_pnl'] or 0.0
-        conn.close()
-        
+            # Token costs
+            cost_row = conn.execute("""
+                SELECT SUM(estimated_cost_usd) as total_cost
+                FROM token_burn_log
+                WHERE timestamp >= datetime('now', '-30 days')
+            """).fetchone()
+            total_cost = cost_row['total_cost'] or 0.0
+
+            # P&L
+            pnl_row = conn.execute("""
+                SELECT SUM(profit_loss_dollars) as total_pnl
+                FROM trade_records
+                WHERE status = 'closed' AND exit_date >= datetime('now', '-30 days')
+            """).fetchone()
+
+            total_pnl = pnl_row['total_pnl'] or 0.0
+        finally:
+            if conn:
+                conn.close()
+
         roi = total_pnl - total_cost
         
         return {

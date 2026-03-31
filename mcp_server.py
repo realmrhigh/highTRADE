@@ -220,6 +220,7 @@ class HighTradeMCPServer:
 
     def _get_system_status(self) -> Dict:
         """Get current system status"""
+        conn = None
         try:
             conn = get_sqlite_conn(str(DB_PATH))
             cursor = conn.cursor()
@@ -256,15 +257,18 @@ class HighTradeMCPServer:
 
             status["total_pnl"] = round(total_pnl, 2)
 
-            conn.close()
             return status
 
         except Exception as e:
             logger.error(f"Error getting system status: {e}")
             return {"error": str(e)}
+        finally:
+            if conn:
+                conn.close()
 
     def _get_recent_signals(self, limit: int = 10) -> Dict:
         """Get recent market signals"""
+        conn = None
         try:
             conn = get_sqlite_conn(str(DB_PATH))
             cursor = conn.cursor()
@@ -288,15 +292,18 @@ class HighTradeMCPServer:
                     "news_score": round(row[6], 1) if row[6] else 0,
                 })
 
-            conn.close()
             return {"signals": signals, "count": len(signals)}
 
         except Exception as e:
             logger.error(f"Error getting signals: {e}")
             return {"error": str(e)}
+        finally:
+            if conn:
+                conn.close()
 
     def _get_recent_news(self, limit: int = 10) -> Dict:
         """Get recent news signals with full scoring context and Gemini analysis"""
+        conn = None
         try:
             conn = get_sqlite_conn(str(DB_PATH))
             cursor = conn.cursor()
@@ -354,7 +361,6 @@ class HighTradeMCPServer:
                 }
                 news_signals.append(entry)
 
-            conn.close()
             return {
                 "news": news_signals,
                 "count": len(news_signals),
@@ -364,9 +370,13 @@ class HighTradeMCPServer:
         except Exception as e:
             logger.error(f"Error getting news: {e}")
             return {"error": str(e)}
+        finally:
+            if conn:
+                conn.close()
 
     def _submit_claude_analysis(self, args: Dict) -> Dict:
         """Submit Claude's enhanced analysis"""
+        conn = None
         try:
             conn = get_sqlite_conn(str(DB_PATH))
             cursor = conn.cursor()
@@ -392,20 +402,23 @@ class HighTradeMCPServer:
             
             conn.commit()
             analysis_id = cursor.lastrowid
-            conn.close()
-            
+
             return {
                 "success": True,
                 "analysis_id": analysis_id,
                 "message": "Analysis submitted successfully"
             }
-            
+
         except Exception as e:
             logger.error(f"Error submitting analysis: {e}")
             return {"error": str(e)}
+        finally:
+            if conn:
+                conn.close()
     
     def _get_article_details(self, news_signal_id: int) -> Dict:
         """Get full article details for a news signal including Gemini analyses"""
+        conn = None
         try:
             conn = get_sqlite_conn(str(DB_PATH))
             cursor = conn.cursor()
@@ -423,7 +436,6 @@ class HighTradeMCPServer:
 
             row = cursor.fetchone()
             if not row:
-                conn.close()
                 return {"error": f"News signal {news_signal_id} not found"}
 
             # Parse JSON fields safely
@@ -483,7 +495,6 @@ class HighTradeMCPServer:
                     for r in pro_rows
                 ]
 
-            conn.close()
             return result
 
         except Exception as e:
@@ -491,6 +502,9 @@ class HighTradeMCPServer:
             import traceback
             logger.error(traceback.format_exc())
             return {"error": str(e)}
+        finally:
+            if conn:
+                conn.close()
     
     def _get_system_architecture(self) -> Dict:
         """Get system architecture info"""
@@ -528,6 +542,7 @@ class HighTradeMCPServer:
 
     def _get_congressional_trades(self, days_back: int = 30, min_signal_strength: float = 0) -> Dict:
         """Get congressional trading data from DB"""
+        conn = None
         try:
             conn = get_sqlite_conn(str(DB_PATH))
             conn.row_factory = sqlite3.Row
@@ -565,8 +580,6 @@ class HighTradeMCPServer:
                     pass
                 clusters.append(c)
 
-            conn.close()
-
             # Summary stats
             buy_count = sum(1 for t in trades if t.get('direction') == 'buy')
             sell_count = sum(1 for t in trades if t.get('direction') == 'sell')
@@ -585,9 +598,13 @@ class HighTradeMCPServer:
 
         except Exception as e:
             return {'error': str(e), 'congressional_trades': [], 'clusters': []}
+        finally:
+            if conn:
+                conn.close()
 
     def _get_macro_environment(self, limit: int = 5) -> Dict:
         """Get FRED macro economic data from DB"""
+        conn = None
         try:
             conn = get_sqlite_conn(str(DB_PATH))
             conn.row_factory = sqlite3.Row
@@ -604,8 +621,6 @@ class HighTradeMCPServer:
             ''', (limit,))
 
             rows = cursor.fetchall()
-            conn.close()
-
             snapshots = []
             for row in rows:
                 d = dict(row)
@@ -639,6 +654,9 @@ class HighTradeMCPServer:
                 'has_data': False,
                 'note': 'Add fred_api_key to orchestrator_config.json to enable FRED macro data'
             }
+        finally:
+            if conn:
+                conn.close()
 
     async def run(self):
         """Run the MCP server"""

@@ -197,7 +197,17 @@ class NewsSignalGenerator:
         # score higher than generic ones (rate, market, stocks)
         HIGH_SPECIFICITY = ['emergency', 'circuit breaker', 'bank run', 'sovereign default',
                             'systemic', 'contagion', 'margin call', 'liquidity crunch',
-                            'flash crash', 'halt', 'intervention', 'bailout', 'bankruptcy']
+                            'flash crash', 'halt', 'intervention', 'bailout', 'bankruptcy',
+                            # Low-float financing
+                            'private placement', 's-1 withdrawal', 'bridge debt',
+                            'at-the-market', 'reverse split', 'registered direct', 'pipe financing',
+                            'debt retirement', 'debt settlement via equity',
+                            # Reverse-split runners
+                            'reverse stock split effective', '1-for-', 'post-split float',
+                            'tightest float', 'nasdaq compliance reverse split',
+                            # Pipeline/license dark catalysts
+                            'license agreement', 'exclusive worldwide rights', 'pipeline expansion',
+                            'oncolytic', 'strategic collaboration']
         MED_SPECIFICITY = ['crisis', 'crash', 'plunge', 'collapse', 'panic', 'recession',
                            'selloff', 'slump', 'tumble', 'plummet', 'fear', 'warning']
 

@@ -43,7 +43,9 @@ class GrokClient:
         self.default_model = "grok-4-1-fast-reasoning"  # As suggested by Grok
 
     def _post_json_with_backoff(self, url: str, json_payload: dict, timeout: int = 180, max_retries: int = 3):
-        """POST helper that reuses the module Session, closes responses, and backs off on 429s."""
+        """POST helper that reuses the module Session, closes responses, and backs off on 429s.
+        Fails immediately on 400/401/403 (auth/key errors) — no point retrying those.
+        """
         backoff = 1.0
         for attempt in range(1, max_retries + 1):
             resp = None
@@ -60,6 +62,14 @@ class GrokClient:
                     time.sleep(backoff)
                     backoff *= 2
                     continue
+                if resp.status_code in (400, 401, 403):
+                    # Auth/key error — retrying won't help, bail immediately
+                    logger.error(f"Grok API Error: {resp.status_code} - {resp.text}")
+                    try:
+                        resp.close()
+                    except Exception:
+                        pass
+                    return None
                 return resp
             except Exception:
                 # Ensure any partially opened connection is closed

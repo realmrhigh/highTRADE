@@ -341,7 +341,7 @@ class HighTradeOrchestrator:
         self.cmd_processor = CommandProcessor(self)
 
         logger.info("✅ Orchestrator initialized successfully")
-        logger.info("🤖 Broker Mode: FULL_AUTO")
+        logger.info(f"🤖 Broker Mode: {broker_mode.upper()}")
         logger.info(f"📰 News Monitoring: {'ENABLED' if self.news_enabled else 'DISABLED'}")
         logger.info(f"🔴 Real-time Stream: {'ENABLED' if self.realtime_enabled else 'DISABLED'}")
         logger.info(f"🌅 Day Trader: {'ENABLED' if self.day_trader_enabled else 'DISABLED'}")
@@ -377,6 +377,7 @@ class HighTradeOrchestrator:
     def _load_last_defcon(self) -> int:
         """Load last known DEFCON from DB so restarts don't trigger phantom buys.
         Falls back to 5 (safe/no-trade) if no history exists."""
+        conn = None
         try:
             from trading_db import get_sqlite_conn
             conn = get_sqlite_conn(str(DB_PATH), timeout=5)
@@ -385,13 +386,15 @@ class HighTradeOrchestrator:
                 "SELECT defcon_level FROM signal_monitoring "
                 "ORDER BY monitor_id DESC LIMIT 1"
             ).fetchone()
-            conn.close()
             if row and row[0] is not None:
                 level = int(row[0])
                 logger.info(f"📋 Restored previous DEFCON from DB: {level}")
                 return level
         except Exception as e:
             logger.warning(f"⚠️  Could not load last DEFCON: {e}")
+        finally:
+            if conn:
+                conn.close()
         logger.info("📋 No prior DEFCON found - defaulting to 5 (safe)")
         return 5
 
@@ -902,18 +905,37 @@ class HighTradeOrchestrator:
                 except Exception:
                     pass
 
-            # ── Grok Hound (every ~60 min) ────────────────────────────────
+            # ── Grok Hound (every ~60 min or force-trigger file) ─────────
+            _force_hound = Path(DB_PATH).parent / ".force_hound"
+            _hound_forced = _force_hound.exists()
+            if _hound_forced:
+                _force_hound.unlink(missing_ok=True)
+                logger.info("🐕 Force-trigger detected — running Grok Hound now")
             self._hound_scan_cycle = getattr(self, '_hound_scan_cycle', 0) + 1
-            if self.hound_enabled and self._hound_scan_cycle >= self._hound_scan_interval:
+            if self.hound_enabled and (_hound_forced or self._hound_scan_cycle >= self._hound_scan_interval):
                 self._hound_scan_cycle = 0
                 logger.info("🐕 Running Grok Hound hourly alpha scan...")
                 try:
                     open_pos_tickers = [p.get('asset_symbol') for p in self.paper_trading.get_open_positions()]
+                    _news_crisis = news_signal.get('dominant_crisis_type') if news_signal else None
+                    _financing_alert = _news_crisis == 'low_float_financing'
+                    _reverse_split_alert = _news_crisis == 'reverse_split_low_float'
+                    _pipeline_deal_alert = _news_crisis == 'pipeline_deal_boost'
+                    for _flag, _label in [
+                        (_financing_alert, 'low_float_financing'),
+                        (_reverse_split_alert, 'reverse_split_low_float'),
+                        (_pipeline_deal_alert, 'pipeline_deal_boost'),
+                    ]:
+                        if _flag:
+                            logger.info(f"  💉 Cross-feed: {_label} news detected — flagging Grok Hound for velocity scan")
                     hound_state = {
                         "defcon_level": self.monitor.defcon_level,
                         "macro_score": macro_result.get('macro_score', 50) if macro_result else 50,
                         "watchlist": open_pos_tickers,
-                        "latest_gemini_briefing_summary": ""
+                        "latest_gemini_briefing_summary": "",
+                        "low_float_financing_alert": _financing_alert,
+                        "reverse_split_alert": _reverse_split_alert,
+                        "pipeline_deal_alert": _pipeline_deal_alert
                     }
                     hound_results = self.hound.hunt(hound_state, focus_tickers=open_pos_tickers)
                     self.hound.save_candidates(hound_results)
@@ -2488,6 +2510,7 @@ Respond in this EXACT JSON format - no prose, no markdown, no code fences:
 
     def _get_latest_macro_score(self) -> float:
         """Return the most recent macro_score from DB (used for pre-purchase gate live_state)."""
+        conn = None
         try:
             from trading_db import get_sqlite_conn
             conn = get_sqlite_conn(str(DB_PATH))
@@ -2497,13 +2520,16 @@ Respond in this EXACT JSON format - no prose, no markdown, no code fences:
                 ORDER BY created_at DESC LIMIT 1
             """)
             row = cursor.fetchone()
-            conn.close()
             return float(row[0]) if row else 50.0
         except Exception:
             return 50.0  # neutral fallback - don't block gate on DB error
+        finally:
+            if conn:
+                conn.close()
 
     def _check_breaking_news_in_db(self):
         """Check database for recent breaking news signals (within last 4 hours)"""
+        conn = None
         try:
             import sqlite3
             from datetime import datetime, timedelta
@@ -2530,7 +2556,6 @@ Respond in this EXACT JSON format - no prose, no markdown, no code fences:
             """, (cutoff_time,))
 
             row = cursor.fetchone()
-            conn.close()
 
             if row:
                 logger.warning(f"  🔥 ACTIVE BREAKING NEWS from database (ID: {row[0]})")
@@ -2558,9 +2583,13 @@ Respond in this EXACT JSON format - no prose, no markdown, no code fences:
             import traceback
             logger.error(traceback.format_exc())
             return None
+        finally:
+            if conn:
+                conn.close()
 
     def _record_news_signal(self, news_signal, articles_full=None, gemini_flash=None):
         """Store news signal in database with full rich data for LLM access"""
+        conn = None
         try:
             from trading_db import get_sqlite_conn
             conn = get_sqlite_conn(str(DB_PATH))
@@ -2612,7 +2641,6 @@ Respond in this EXACT JSON format - no prose, no markdown, no code fences:
 
             conn.commit()
             signal_id = cursor.lastrowid
-            conn.close()
             logger.debug(f"News signal recorded to database (ID={signal_id})")
             return signal_id
 
@@ -2621,6 +2649,9 @@ Respond in this EXACT JSON format - no prose, no markdown, no code fences:
             import traceback
             logger.error(traceback.format_exc())
             return None
+        finally:
+            if conn:
+                conn.close()
 
     def _detect_new_news(self, fresh_news_signal: dict) -> tuple:
         """
@@ -2637,6 +2668,7 @@ Respond in this EXACT JSON format - no prose, no markdown, no code fences:
             - new_article_count: Number of articles not in previous signal
             - latest_articles: Articles sorted by publish time (newest first)
         """
+        conn = None
         try:
             from trading_db import get_sqlite_conn
             from datetime import datetime, timedelta
@@ -2654,7 +2686,6 @@ Respond in this EXACT JSON format - no prose, no markdown, no code fences:
             """)
 
             last_signal = cursor.fetchone()
-            conn.close()
 
             # If this is the first news signal ever, all articles are "new"
             if not last_signal:
@@ -2704,6 +2735,9 @@ Respond in this EXACT JSON format - no prose, no markdown, no code fences:
             # On error, return all articles as potentially new
             return (fresh_news_signal['article_count'],
                     fresh_news_signal['contributing_articles'])
+        finally:
+            if conn:
+                conn.close()
 
     def monitor_and_exit_positions(self):
         """Monitor all open positions and detect exit conditions"""

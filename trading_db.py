@@ -32,6 +32,12 @@ def get_sqlite_conn(db_path: str, retries: int = 6, backoff: float = 0.5, timeou
                 if not os.access(parent, os.W_OK):
                     raise PermissionError(f"DB parent not writable: {parent}")
             conn = sqlite3.connect(db_path, timeout=timeout, check_same_thread=False)
+            # WAL mode: multiple readers don't block writers, reduces "unable to open" errors
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            # Limit open file handles held by SQLite's page cache
+            conn.execute("PRAGMA cache_size=-4096")  # 4 MB cap
+            conn.execute("PRAGMA temp_store=MEMORY")
             log.debug("Opened sqlite DB %s (attempt %d/%d)", db_path, attempt, retries)
             return conn
         except Exception as e:

@@ -562,9 +562,11 @@ def exit_badge(reason):
         return '<span style="color:#00ff88;font-size:11px;">&#10003; PROFIT TARGET</span>'
     elif reason == 'stop_loss':
         return '<span style="color:#ff4444;font-size:11px;">&#10007; STOP LOSS</span>'
+    elif reason == 'invalidation':
+        return '<span style="color:#ffd700;font-size:11px;">&#9888; INVALIDATED</span>'
     elif reason == 'manual':
         return '<span style="color:#7eb8f7;font-size:11px;">&#8617; MANUAL</span>'
-    return f'<span style="color:#888;font-size:11px;">{reason or "—"}</span>'
+    return '<span style="color:#888;font-size:11px;">—</span>'
 
 def action_badge(action):
     c = {'BUY': '#00ff88', 'SELL': '#ff4444', 'WAIT': '#ffd700', 'HOLD': '#888'}.get(action, '#888')
@@ -749,7 +751,7 @@ def _build_day_trade_section(sessions, stats):
             hpct = h.get('pnl_percent') or 0
             hcolor = '#00ff88' if hpnl >= 0 else '#ff4444'
             hsign = '+' if hpnl >= 0 else ''
-            hreason = (h.get('exit_reason') or h.get('status') or '—')
+            hreason = (h.get('exit_reason') or '—')
             hsize = h.get('position_size_dollars') or 0
             hist_rows.append(
                 f'<tr class="trow">'
@@ -779,7 +781,7 @@ def _build_day_trade_section(sessions, stats):
 <div class="grid-full" style="margin-top:0;">
   <div class="panel">
     <div class="panel-title">📜 Day Trade History</div>
-    <div class="scroll-wrap">
+    <div class="scroll-wrap mob-scroll-x">
       <table>
         <thead><tr>
           <th>Date</th><th>Ticker</th><th>Size</th><th>Entry</th>
@@ -1872,6 +1874,62 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
 }
 .has-thesis { cursor:default; }
 .has-thesis:hover { color:#ddd !important; }
+
+/* ── Mobile / responsive ── */
+@media (max-width: 768px) {
+  .page { padding: 10px; }
+
+  /* Collapse all named grids to single column */
+  .grid-top, .grid-mid, .grid-three, .grid-four, .spark-grid { grid-template-columns: 1fr !important; }
+
+  /* Prevent grid children from overflowing their column */
+  .grid-top > *, .grid-mid > *, .grid-three > *, .grid-four > *,
+  .spark-grid > * { min-width: 0; }
+  /* Panels clip overflow so nothing bleeds outside the column */
+  .panel { overflow: hidden; }
+  /* But scroll containers inside panels need their own scroll */
+  .mob-scroll-x { overflow-x: auto !important; }
+
+  /* Two-col helpers inside cards */
+  .two-col, .macro-grid { grid-template-columns: 1fr !important; }
+
+  /* Header: stack vertically */
+  .header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 14px; }
+  .header-meta { text-align: left; }
+
+  /* Stat grid: 2-up on mobile instead of auto */
+  .stat-grid { grid-template-columns: 1fr 1fr !important; }
+
+  /* DEFCON number smaller on mobile */
+  .defcon-num { font-size: 52px; }
+
+  /* Command center: collapse inline 1fr 300px grid */
+  .cmd-grid { grid-template-columns: 1fr !important; }
+  .cmd-sidebar { border-left: none !important; border-top: 1px solid #111; padding-left: 0 !important; padding-top: 14px !important; margin-top: 4px; }
+  .cmd-sidebar-grid { grid-template-columns: repeat(4, 1fr) !important; }
+
+  /* Prompt row: stack select + input + button */
+  .prompt-row { flex-wrap: wrap !important; }
+  .prompt-row select { width: 100%; }
+  .prompt-row input  { width: 100%; flex: none !important; }
+
+  /* Wide tables: horizontal scroll */
+  .mob-scroll-x { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .mob-scroll-x table { min-width: 600px; }
+
+  /* Larger tap targets for buttons */
+  button { min-height: 38px; }
+
+  /* Chart modal full-width */
+  .modal-content { width: 96% !important; margin: 2% auto !important; padding: 14px !important; }
+  .chart-controls { flex-wrap: wrap; }
+
+  /* Hide header image log overlay on mobile (too small to read) */
+  #log-overlay-wrap { display: none; }
+
+  /* Panel padding tighter */
+  .panel { padding: 12px; }
+}
 </style>
 </head>
 <body>
@@ -1898,12 +1956,12 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
 <div class="grid-full">
   <div class="panel" style="border-color:var(--accent)44;">
     <div class="panel-title">📡 Command Center &mdash; AI &amp; Execution Control</div>
-    <div style="display:grid;grid-template-columns:1fr 300px;gap:20px;">
-      
+    <div class="cmd-grid" style="display:grid;grid-template-columns:1fr 300px;gap:20px;">
+
       <!-- Custom Prompt Box -->
       <div>
         <div class="micro-label">CUSTOM AI PROMPT</div>
-        <div style="display:flex;gap:10px;margin-bottom:10px;">
+        <div class="prompt-row" style="display:flex;gap:10px;margin-bottom:10px;">
           <select id="model-select" style="background:#1a1a2e;color:#ddd;border:1px solid var(--border);padding:5px;border-radius:4px;">
             <option value="reasoning">Gemini 3.1 Pro (Reasoning)</option>
             <option value="balanced">Gemini 3 Flash (Balanced)</option>
@@ -1919,9 +1977,9 @@ th { font-size:9px; color:var(--dim); letter-spacing:1.5px; text-transform:upper
       </div>
 
       <!-- Quick Control Buttons -->
-      <div style="border-left:1px solid #111;padding-left:20px;">
+      <div class="cmd-sidebar" style="border-left:1px solid #111;padding-left:20px;">
         <div class="micro-label">SYSTEM OVERRIDES</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:5px;">
+        <div class="cmd-sidebar-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:5px;">
           <button onclick="sendCommand('/status')" style="background:#1a1a2e;color:var(--accent);border:1px solid var(--accent)44;padding:8px;border-radius:4px;cursor:pointer;">STATUS</button>
           <button onclick="sendCommand('/update')" style="background:#1a1a2e;color:var(--green);border:1px solid var(--green)44;padding:8px;border-radius:4px;cursor:pointer;">RUN CYCLE</button>
           <button onclick="sendCommand('/hold')" style="background:#1a1a2e;color:var(--gold);border:1px solid var(--gold)44;padding:8px;border-radius:4px;cursor:pointer;">HOLD</button>
@@ -2281,7 +2339,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
 <div class="grid-full">
   <div class="panel">
     <div class="panel-title">Signal History &mdash; Last {len(sig_history)} Monitoring Cycles</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;">
+    <div class="spark-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;">
       <div class="spark-row">
         <div class="spark-label">VIX</div>
         {vix_spark}
@@ -2325,7 +2383,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
 <div class="grid-full">
   <div class="panel">
     <div class="panel-title">Open Positions</div>
-    <div class="scroll-wrap">
+    <div class="scroll-wrap mob-scroll-x">
       <table>
         <thead><tr>
           <th>Symbol</th><th>Shares</th><th>Entry</th><th>Current</th>
@@ -2345,7 +2403,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
         <span style="background:#1a2a1a;color:#00ff88;padding:1px 5px;border-radius:2px;font-size:9px;">🎯 ANALYST</span> = analyst exit framework attached
       </span>
     </div>
-    <div class="scroll-wrap">
+    <div class="scroll-wrap mob-scroll-x">
       <table>
         <thead><tr>
           <th>Symbol</th><th>Entry → Current</th><th>Unrealized P&amp;L</th>
@@ -2361,7 +2419,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
 <div class="grid-full">
   <div class="panel">
     <div class="panel-title">Closed Trades</div>
-    <div class="scroll-wrap">
+    <div class="scroll-wrap mob-scroll-x">
       <table>
         <thead><tr>
           <th>Symbol</th><th>Shares</th><th>Entry</th><th>Exit</th>
@@ -2379,7 +2437,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
 <div class="grid-full">
   <div class="panel">
     <div class="panel-title">Watchlist &mdash; Research Queue</div>
-    <div class="scroll-wrap">
+    <div class="scroll-wrap mob-scroll-x">
       <table>
         <thead><tr>
           <th>Ticker</th><th>Source</th><th>Conf</th><th>Regime</th><th>Thesis</th><th>Status</th><th>Added</th>
@@ -2394,7 +2452,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
 <div class="grid-full">
   <div class="panel">
     <div class="panel-title">Active Conditionals &mdash; Entry Queue &nbsp;<span style="font-size:10px;color:#666;font-weight:400;">🔥 hot (&ge;75) &nbsp; 🟡 warm (&ge;40) &nbsp; ⬜ cold</span></div>
-    <div class="scroll-wrap">
+    <div class="scroll-wrap mob-scroll-x">
       <table>
         <thead><tr>
           <th>Ticker</th><th>Attention</th><th>Conf</th><th>Target</th><th>Stop</th><th>TP1</th><th>Tag</th><th>Thesis</th>
@@ -2420,10 +2478,10 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
     <div class="panel-title">Congressional Intelligence</div>
     <div style="margin-bottom:14px;">
       <div class="micro-label" style="margin-bottom:6px;">Cluster Buy Signals</div>
-      <table>
+      <div class="mob-scroll-x"><table>
         <thead><tr><th>Ticker</th><th>Strength</th><th>Count</th><th>$ Volume</th><th>Flag</th><th>Date</th></tr></thead>
         <tbody>{cong_cl_rows}</tbody>
-      </table>
+      </table></div>
     </div>
     <div>
       <div class="micro-label" style="margin-bottom:6px;">Recent Disclosures</div>
@@ -2442,7 +2500,7 @@ document.getElementById('custom-prompt')?.addEventListener('keypress', function 
 <div class="grid-full">
   <div class="panel" style="border-color:#ff8c0044;">
     <div class="panel-title">🐕 Grok Hound &mdash; High-Alpha &amp; Momentum Opportunities</div>
-    <div class="scroll-wrap">
+    <div class="scroll-wrap mob-scroll-x">
       <table>
         <thead><tr>
           <th>Ticker</th><th>Alpha Score</th><th>Alpha Thesis</th><th>Suggestion</th><th>Found</th><th>Action</th>
@@ -2768,13 +2826,72 @@ def generate_dashboard_html():
 
 def run_server(host='0.0.0.0', port=5055):
     try:
-        from flask import Flask, Response, request as flask_request
+        from flask import Flask, Response, request as flask_request, redirect, make_response
     except ImportError:
         print("Flask not installed. Run:  pip install flask")
         sys.exit(1)
 
     import socket
+    import hashlib
+    import secrets
     app = Flask(__name__)
+
+    # ── Auth ──────────────────────────────────────────────────────────────────
+    _DASH_PASSWORD = os.environ.get('HT_DASH_PASSWORD', 'kjn')
+    _COOKIE_NAME   = 'ht_auth'
+    _COOKIE_DAYS   = 90
+
+    def _make_token(pw: str) -> str:
+        return hashlib.sha256(pw.encode()).hexdigest()
+
+    def _is_authed(req) -> bool:
+        return req.cookies.get(_COOKIE_NAME) == _make_token(_DASH_PASSWORD)
+
+    @app.before_request
+    def _require_auth():
+        if flask_request.path in ('/login', '/health'):
+            return
+        # Allow ?token= one-tap login
+        token_param = flask_request.args.get('token')
+        if token_param == _DASH_PASSWORD:
+            resp = make_response(redirect(flask_request.path))
+            resp.set_cookie(_COOKIE_NAME, _make_token(_DASH_PASSWORD),
+                            max_age=_COOKIE_DAYS * 86400, httponly=True, samesite='Lax')
+            return resp
+        if not _is_authed(flask_request):
+            return redirect(f'/login?next={flask_request.path}')
+
+    @app.route('/login', methods=['GET', 'POST'])
+    def _login():
+        if flask_request.method == 'POST':
+            pw = flask_request.form.get('password', '')
+            if pw == _DASH_PASSWORD:
+                next_url = flask_request.args.get('next', '/')
+                resp = make_response(redirect(next_url))
+                resp.set_cookie(_COOKIE_NAME, _make_token(_DASH_PASSWORD),
+                                max_age=_COOKIE_DAYS * 86400, httponly=True, samesite='Lax')
+                return resp
+            error = '<p style="color:#f66;margin:8px 0">Wrong password.</p>'
+        else:
+            error = ''
+        next_q = flask_request.args.get('next', '/')
+        return Response(f"""<!doctype html><html><head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>highTRADE Login</title>
+<style>body{{background:#0a0a0a;color:#ccc;font-family:monospace;display:flex;
+align-items:center;justify-content:center;height:100vh;margin:0}}
+form{{background:#111;padding:32px;border-radius:8px;border:1px solid #222;min-width:280px}}
+h2{{color:#4af;margin:0 0 20px}}
+input{{width:100%;padding:8px;background:#1a1a1a;border:1px solid #333;color:#eee;
+border-radius:4px;font-size:16px;box-sizing:border-box}}
+button{{margin-top:12px;width:100%;padding:10px;background:#4af;border:none;
+color:#000;font-weight:bold;border-radius:4px;cursor:pointer;font-size:15px}}</style>
+</head><body><form method="POST" action="/login?next={next_q}">
+<h2>highTRADE</h2>{error}
+<input type="password" name="password" placeholder="Password" autofocus>
+<button type="submit">Enter</button>
+</form></body></html>""", mimetype='text/html')
+    # ── End Auth ──────────────────────────────────────────────────────────────
 
     # Detect local IP for share link
     try:

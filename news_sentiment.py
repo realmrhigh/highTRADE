@@ -40,6 +40,31 @@ CRISIS_PATTERNS = {
     'market_correction': {
         'keywords': ['correction', 'selloff', 'drawdown', 'decline', 'drop', 'crash'],
         'rationale': 'Flight to mega-cap quality and defensive positioning'
+    },
+    'low_float_financing': {
+        'keywords': [
+            'private placement', 'at-the-market', 'at the market', 's-1 withdrawal',
+            'bridge loan', 'bridge debt', 'registered direct', 'pipe financing',
+            'reverse split', 'warrant', 'capital raise', 'public offering',
+            'dilutive offering', 'shelf registration', 'prospectus supplement',
+            'debt retirement', 'debt settlement via equity', 'insider debenture',
+            'balance sheet strengthen', 'debt-to-equity'
+        ],
+        'rationale': 'Low-float financing events (incl. debt cleanup) can trigger violent squeezes; flag for Grok Hound velocity scan'
+    },
+    'reverse_split_low_float': {
+        'keywords': [
+            '1-for-', 'reverse stock split effective', 'post-split float',
+            'tightest float', 'nasdaq compliance reverse split', 'reverse split low float'
+        ],
+        'rationale': 'Post-reverse-split low-float names often have violent second legs; seed Grok Hound consolidation watchlist'
+    },
+    'pipeline_deal_boost': {
+        'keywords': [
+            'license agreement', 'exclusive worldwide rights', 'pipeline expansion',
+            'oncolytic', 'strategic collaboration'
+        ],
+        'rationale': 'Quiet pipeline/license deals on low-float names are dark catalysts with no X pre-fuel; flag for velocity scan'
     }
 }
 
