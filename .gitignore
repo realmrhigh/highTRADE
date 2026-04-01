@@ -61,6 +61,8 @@ credentials.json
 *.tmp
 *.bak
 *.cache
+*.rtf
+temp slack creds .rtf
 
 # Jupyter Notebooks
 .ipynb_checkpoints/
