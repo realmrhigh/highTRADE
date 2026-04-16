@@ -8,6 +8,7 @@ Runs autonomously to gather data, analyze it, and send alerts
 import sys
 import os
 import logging
+import logging.handlers
 import json
 import atexit
 from pathlib import Path
@@ -48,6 +49,11 @@ from news_signals import NewsSignalGenerator
 from config_validator import ConfigValidator
 import exit_analyst
 
+# ── yfinance FD-leak guard (extracted to yf_guard.py) ─────────────────────
+import yf_guard as _yf_guard
+_yf_guard.install()
+# ── end yfinance FD-leak guard ─────────────────────────────────────────────
+
 # Configuration
 SCRIPT_DIR = Path(__file__).parent.resolve()
 DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
@@ -62,9 +68,13 @@ LEGACY_LOGS_PATH.mkdir(parents=True, exist_ok=True)
 
 # Set up logging - force=True overrides any root logger already configured by
 # imported modules; StreamHandler goes to stdout which launchd writes to
-# logs/orchestrator.log; FileHandler writes a dated backup copy.
+# logs/orchestrator_srv_v3.log; RotatingFileHandler writes a dated backup copy.
 LOG_FILE = LOGS_PATH / f"hightrade_{datetime.now().strftime('%Y%m%d')}.log"
-_file_handler = logging.FileHandler(LOG_FILE)
+_file_handler = logging.handlers.RotatingFileHandler(
+    LOG_FILE,
+    maxBytes=100 * 1024 * 1024,  # 100MB per dated log file
+    backupCount=3,
+)
 _file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 _stream_handler = logging.StreamHandler(sys.stdout)
 _stream_handler.setFormatter(logging.Formatter('%(levelname)s:%(name)s:%(message)s'))
@@ -74,6 +84,12 @@ logging.basicConfig(
     handlers=[_file_handler, _stream_handler],
     force=True,
 )
+# Silence noisy third-party loggers that produce high-volume reconnect tracebacks
+logging.getLogger('alpaca').setLevel(logging.WARNING)
+logging.getLogger('alpaca.data.live').setLevel(logging.WARNING)
+logging.getLogger('alpaca.data.live.websocket').setLevel(logging.WARNING)
+logging.getLogger('websockets').setLevel(logging.WARNING)
+logging.getLogger('asyncio').setLevel(logging.WARNING)
 # Ensure log lines are flushed immediately so tail -f works in real time
 sys.stdout.reconfigure(line_buffering=True)
 logger = logging.getLogger(__name__)
@@ -128,6 +144,28 @@ class SingleInstanceLock:
         except Exception:
             return ''
 
+    def is_stale(self, holder_text: str) -> bool:
+        """Return True when the on-disk lock payload points at a dead PID.
+
+        This keeps stale lock files from wedging startup after crashes or hard
+        kills, while still preserving the single-instance guarantee when the
+        owning process is alive.
+        """
+        if not holder_text:
+            return False
+        try:
+            data = json.loads(holder_text)
+            pid = int(data.get('pid', 0) or 0)
+            if pid <= 0:
+                return False
+            try:
+                os.kill(pid, 0)
+                return False
+            except OSError as e:
+                return e.errno == errno.ESRCH
+        except Exception:
+            return False
+
     def release(self):
         if not self._fh:
             return
@@ -148,12 +186,27 @@ _INSTANCE_LOCK = SingleInstanceLock(ORCHESTRATOR_LOCK_PATH)
 
 
 def ensure_single_orchestrator_instance() -> None:
-    """Exit early if another orchestrator instance already owns the runtime lock."""
+    """Exit early if another orchestrator instance already owns the runtime lock.
+
+    If the lock payload is stale and the recorded PID is dead, clear it and take
+    ownership. That gives us a real single-instance guard without getting wedged
+    after a crash or SIGKILL.
+    """
     if _INSTANCE_LOCK.acquire():
         atexit.register(_INSTANCE_LOCK.release)
         return
 
     holder = _INSTANCE_LOCK.read_holder()
+    if _INSTANCE_LOCK.is_stale(holder):
+        try:
+            _INSTANCE_LOCK.lock_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        if _INSTANCE_LOCK.acquire():
+            atexit.register(_INSTANCE_LOCK.release)
+            logger.warning("♻️  Recovered stale orchestrator lock and continued startup")
+            return
+
     holder_msg = f" Lock holder: {holder}" if holder else ""
     logger.error(
         "❌ Another HighTrade orchestrator instance is already running. "
@@ -192,6 +245,24 @@ class HighTradeOrchestrator:
 
         # Run startup health checks
         logger.info("🔍 Running startup health checks...")
+
+        # Database integrity check before anything else
+        from db_paths import verify_db_integrity
+        if not verify_db_integrity():
+            logger.error("❌ Database integrity check FAILED — attempting WAL recovery")
+            from trading_db import _try_wal_recovery
+            _try_wal_recovery(str(DB_PATH))
+            if not verify_db_integrity():
+                logger.critical("❌ Database STILL corrupt after recovery attempt!")
+            else:
+                logger.info("✅ Database recovered successfully")
+        else:
+            logger.info("✅ Database integrity OK")
+
+        # Periodic WAL checkpoint to prevent WAL bloat
+        from trading_db import checkpoint_wal
+        checkpoint_wal(str(DB_PATH))
+
         validator = ConfigValidator()
         if not validator.validate_all():
             logger.error("❌ Configuration validation failed - check errors above")
@@ -281,9 +352,9 @@ class HighTradeOrchestrator:
             self._fred_scan_cycle = 0
             self._fred_scan_interval = 4   # Every ~60 min (data updates slowly)
             if self.fred_enabled:
-                logger.info("📊 FRED Macro Tracker initialized (API key found)")
+                logger.info("📊 FRED Macro Tracker initialized (API key found via env/.env or config)")
             else:
-                logger.info("📊 FRED Macro Tracker initialized (no API key - add fred_api_key to config)")
+                logger.info("📊 FRED Macro Tracker initialized (no API key - add FRED_API_KEY to .env or fred_api_key to config)")
         except Exception as e:
             logger.warning(f"⚠️  FRED macro tracker init failed: {e}")
             self.fred = None
@@ -403,6 +474,8 @@ class HighTradeOrchestrator:
         logger.info("\n" + "="*60)
         logger.info("SYSTEM HEALTH CHECK")
         logger.info("="*60)
+
+        self.print_runtime_diagnostics()
 
         # Check database
         if not DB_PATH.exists():
@@ -574,15 +647,21 @@ class HighTradeOrchestrator:
 
                 # Fallback to yfinance if stream doesn't have it
                 if not current_price:
-                    import yfinance as yf
-                    ticker = yf.Ticker(sym)
-                    hist = ticker.history(period='1d', interval='1m')
-                    if not hist.empty:
-                        current_price = float(hist['Close'].iloc[-1])
-                    else:
-                        # Market closed - use last close
-                        hist = ticker.history(period='5d')
-                        current_price = float(hist['Close'].iloc[-1]) if not hist.empty else None
+                    try:
+                        import yfinance as yf
+                        ticker = yf.Ticker(sym)
+                        hist = ticker.history(period='1d', interval='1m')
+                        if not hist.empty:
+                            current_price = float(hist['Close'].iloc[-1])
+                        else:
+                            # Market closed - use last close
+                            hist = ticker.history(period='5d')
+                            current_price = float(hist['Close'].iloc[-1]) if not hist.empty else None
+                    finally:
+                        try:
+                            _yf_close_cache()
+                        except Exception:
+                            pass
 
                 if current_price:
                     cost_basis = entry_price * shares
@@ -598,7 +677,8 @@ class HighTradeOrchestrator:
 
                     # Persist to DB - also advance peak_price (high-watermark for trailing stop)
                     try:
-                        conn = _sqlite3.connect(str(self.paper_trading.db_path))
+                        from trading_db import get_sqlite_conn
+                        conn = get_sqlite_conn(str(self.paper_trading.db_path), timeout=15)
                         conn.execute("""
                             UPDATE trade_records
                             SET current_price = ?, unrealized_pnl_dollars = ?,
@@ -623,6 +703,11 @@ class HighTradeOrchestrator:
         """Execute one monitoring cycle with alerts"""
         self.monitoring_cycles += 1
 
+        # Periodic WAL checkpoint every 10 cycles to prevent WAL bloat
+        if self.monitoring_cycles % 10 == 0:
+            from trading_db import checkpoint_wal
+            checkpoint_wal(str(DB_PATH))
+
         logger.info(f"\n{'='*60}")
         logger.info(f"MONITORING CYCLE #{self.monitoring_cycles}")
         logger.info(f"{'='*60}")
@@ -634,10 +719,18 @@ class HighTradeOrchestrator:
         macro_result = None
 
         if self.sector_analyzer:
-            sector_result = self.sector_analyzer.get_rotation_data()
+            try:
+                sector_result = self.sector_analyzer.get_rotation_data()
+            except Exception as _sec_err:
+                logger.warning(f"⚠️ Sector rotation skipped: {_sec_err}")
+                sector_result = None
 
         if self.vix_analyzer:
-            vix_result = self.vix_analyzer.get_term_structure_data()
+            try:
+                vix_result = self.vix_analyzer.get_term_structure_data()
+            except Exception as _vix_err:
+                logger.warning(f"⚠️ VIX term structure skipped: {_vix_err}")
+                vix_result = None
 
         try:
             self.monitor.connect()
@@ -652,8 +745,10 @@ class HighTradeOrchestrator:
 
             # Use simulated data as fallback
             data_source = "REAL"
+            degraded_inputs = False
             if not yield_data or not vix_data or not market_data:
                 data_source = "SIMULATED (API Unavailable)"
+                degraded_inputs = True
                 sim_data = self.monitor.get_simulated_data()
                 if not yield_data:
                     yield_data = sim_data['yield_data']
@@ -1012,6 +1107,7 @@ class HighTradeOrchestrator:
                 macro_modifier=macro_result.get('defcon_modifier') if macro_result else None,
                 briefing_signal_quality=_briefing_sq,
                 deescalation_score=_deesc_score,
+                degraded_inputs=degraded_inputs,
             )
 
             # Read wind-down state from monitor (set by step-limiting logic)
@@ -1223,8 +1319,80 @@ Check dashboard for detailed analysis.
                 # Don't let logging errors break the cycle
                 pass
 
-        except Exception as e:
-            logger.error(f"Error in monitoring cycle: {e}", exc_info=True)
+            # ── Portfolio snapshot (every ~30 min via monitoring cycle) ─────────────────
+            # Writes one row to portfolio_snapshots so P&L history is
+            # reconstructable.  Runs every SNAPSHOT_EVERY_N_CYCLES cycles.
+            # Default monitoring cycle is ~15 min, so every 2 cycles = ~30 min.
+            _SNAPSHOT_EVERY_N_CYCLES = 2
+            if self.monitoring_cycles % _SNAPSHOT_EVERY_N_CYCLES == 0:
+                try:
+                    from pathlib import Path as _PPath
+                    import sqlite3 as _sq3_snap
+                    import json as _json_snap
+                    _snap_db = _PPath(__file__).parent / 'trading_data' / 'trading_history.db'
+                    _snap_conn = _sq3_snap.connect(str(_snap_db), timeout=10)
+                    _snap_now = datetime.now()
+                    _snap_date = _snap_now.strftime('%Y-%m-%d')
+                    _snap_time = _snap_now.isoformat()
+                    _snap_positions = []
+                    try:
+                        _snap_positions_raw = self.paper_trading.get_open_positions()
+                        _snap_positions = _snap_positions_raw or []
+                    except Exception:
+                        pass
+                    _snap_unrealized = sum(p.get('unrealized_pnl_dollars') or 0 for p in _snap_positions)
+                    _snap_deployed = sum(
+                        (p.get('current_price') or p.get('entry_price', 0)) * p.get('shares', 0)
+                        for p in _snap_positions
+                    )
+                    _snap_perf = {}
+                    try:
+                        _snap_perf = self.paper_trading.get_portfolio_performance() or {}
+                    except Exception:
+                        pass
+                    _snap_realized = _snap_perf.get('total_profit_loss_dollars', 0)
+                    _snap_alpaca = self.paper_trading._get_alpaca_account_snapshot()
+                    if _snap_alpaca and _snap_alpaca.get('equity', 0) > 0:
+                        _snap_total = _snap_alpaca['equity']
+                        _snap_cash  = _snap_alpaca['cash']
+                    else:
+                        _snap_total = self.paper_trading.total_capital + _snap_realized + _snap_unrealized
+                        _snap_cash  = self.paper_trading.total_capital + _snap_realized - _snap_deployed
+                    _snap_return_pct = _snap_perf.get('total_profit_loss_percent', 0)
+                    _snap_conn.execute(
+                        """INSERT INTO portfolio_snapshots
+                           (snapshot_time, snapshot_date, total_value, cash_balance,
+                            deployed_capital, unrealized_pnl, realized_pnl,
+                            total_return_pct, open_positions_json)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            _snap_time,
+                            _snap_date,
+                            round(_snap_total, 2),
+                            round(_snap_cash, 2),
+                            round(_snap_deployed, 2),
+                            round(_snap_unrealized, 2),
+                            round(_snap_realized, 2),
+                            round(_snap_return_pct, 4),
+                            _json_snap.dumps(
+                                [{'symbol': p.get('asset_symbol', ''),
+                                  'shares': p.get('shares', 0),
+                                  'entry_price': p.get('entry_price', 0),
+                                  'current_price': p.get('current_price', 0)}
+                                 for p in _snap_positions]
+                            ),
+                        )
+                    )
+                    _snap_conn.commit()
+                    _snap_conn.close()
+                    logger.debug(
+                        f"📸 Portfolio snapshot saved: total=${_snap_total:,.2f} "
+                        f"cash=${_snap_cash:,.2f} deployed=${_snap_deployed:,.2f} "
+                        f"unrealized={_snap_unrealized:+.2f} realized={_snap_realized:+.2f}"
+                    )
+                except Exception as _snap_err:
+                    logger.debug(f"Portfolio snapshot error (ignored): {_snap_err}")
+
         finally:
             self.monitor.disconnect()
 
@@ -1494,6 +1662,11 @@ Check dashboard for detailed analysis.
                             pass
                 except Exception:
                     pass
+                finally:
+                    try:
+                        _yf_close_cache()
+                    except Exception:
+                        pass
 
             def _live_price(sym):
                 # Prefer real-time WebSocket price, fall back to yfinance
@@ -1563,6 +1736,12 @@ Check dashboard for detailed analysis.
                     mkt_lines.append(_line)
                 except Exception:
                     mkt_lines.append(f"  {_lbl}: unavailable")
+
+            # Close yfinance cache after market snapshot to prevent FD leaks
+            try:
+                _yf_close_cache()
+            except Exception:
+                pass
 
             # Earnings within ±1 day for any held or watched ticker
             _watch_syms = set()
@@ -2061,6 +2240,11 @@ Respond in this EXACT JSON format - no prose, no markdown, no code fences:
 
             conn.commit()
             conn.close()
+            # Close yfinance cache after proximity checks
+            try:
+                _yf_close_cache()
+            except Exception:
+                pass
             if prox_bumped:
                 logger.info(f"  📍 Proximity bump (+15) applied to: {', '.join(prox_bumped)}")
         except Exception as e:
@@ -2362,6 +2546,86 @@ Respond in this EXACT JSON format - no prose, no markdown, no code fences:
         except Exception as e:
             logger.warning(f"Dashboard update failed: {e}")
 
+    def _collect_runtime_diagnostics(self) -> dict:
+        """Collect a compact health snapshot for debugging production issues."""
+        info = {
+            'db_path': str(DB_PATH),
+            'lock_path': str(ORCHESTRATOR_LOCK_PATH),
+            'lock_holder': '',
+            'lock_pid_alive': None,
+            'lock_is_stale': None,
+            'db_exists': DB_PATH.exists(),
+            'db_size_bytes': DB_PATH.stat().st_size if DB_PATH.exists() else 0,
+            'db_integrity_ok': None,
+            'wal_exists': Path(str(DB_PATH) + '-wal').exists(),
+            'shm_exists': Path(str(DB_PATH) + '-shm').exists(),
+            'last_defcon': getattr(self, 'previous_defcon', None),
+            'last_signal_score': None,
+        }
+
+        try:
+            info['lock_holder'] = _INSTANCE_LOCK.read_holder()
+            info['lock_is_stale'] = _INSTANCE_LOCK.is_stale(info['lock_holder'])
+            if info['lock_holder']:
+                try:
+                    holder_data = json.loads(info['lock_holder'])
+                    pid = int(holder_data.get('pid', 0) or 0)
+                    if pid > 0:
+                        os.kill(pid, 0)
+                        info['lock_pid_alive'] = True
+                    else:
+                        info['lock_pid_alive'] = False
+                except Exception:
+                    info['lock_pid_alive'] = False
+        except Exception:
+            pass
+
+        try:
+            from db_paths import verify_db_integrity
+            info['db_integrity_ok'] = verify_db_integrity(DB_PATH)
+        except Exception:
+            info['db_integrity_ok'] = None
+
+        try:
+            conn = None
+            try:
+                import sqlite3 as _sq
+                conn = _sq.connect(str(DB_PATH), timeout=5)
+                row = conn.execute(
+                    "SELECT defcon_level, signal_score, created_at FROM signal_monitoring ORDER BY monitor_id DESC LIMIT 1"
+                ).fetchone()
+                if row:
+                    info['last_defcon'] = row[0]
+                    info['last_signal_score'] = row[1]
+                    info['last_monitoring_at'] = row[2]
+            finally:
+                if conn is not None:
+                    conn.close()
+        except Exception:
+            pass
+
+        return info
+
+    def print_runtime_diagnostics(self):
+        """Print lock/DB diagnostics for production debugging."""
+        diag = self._collect_runtime_diagnostics()
+        logger.info("\n" + "="*60)
+        logger.info("RUNTIME DIAGNOSTICS")
+        logger.info("="*60)
+        logger.info(f"Lock File: {diag['lock_path']}")
+        logger.info(f"Lock Holder: {diag['lock_holder'] or '<none>'}")
+        logger.info(f"Lock PID Alive: {diag['lock_pid_alive']}")
+        logger.info(f"Lock Stale: {diag['lock_is_stale']}")
+        logger.info(f"DB Path: {diag['db_path']}")
+        logger.info(f"DB Exists: {diag['db_exists']} | Size: {diag['db_size_bytes']:,} bytes")
+        logger.info(f"DB Integrity: {diag['db_integrity_ok']}")
+        logger.info(f"WAL Sidecars: wal={diag['wal_exists']} shm={diag['shm_exists']}")
+        logger.info(f"Last DEFCON: {diag['last_defcon']}")
+        logger.info(f"Last Signal Score: {diag['last_signal_score']}")
+        if 'last_monitoring_at' in diag:
+            logger.info(f"Last Monitoring Row: {diag['last_monitoring_at']}")
+        logger.info("="*60)
+
     def print_status_summary(self):
         """Print current system status"""
         logger.info("\n" + "="*60)
@@ -2390,6 +2654,7 @@ Respond in this EXACT JSON format - no prose, no markdown, no code fences:
             pass
 
         logger.info("="*60)
+        self.print_runtime_diagnostics()
 
     def _wait_for_db(self, timeout_seconds: int = 120):
         """Ensure the SQLite DB is available before proceeding. Wait up to timeout_seconds."""
