@@ -46,11 +46,48 @@ CURRENT_MODELS = {
     'gemini-3-flash-preview',
     'gemini-3.1-pro-preview',
     'gemini-2.5-pro',
+    # Grok: default upgraded to grok-4-fast-reasoning (2026-04-06)
     'grok-4-1-fast-reasoning',
+    'grok-4-1-fast-non-reasoning',
+    'grok-4-fast-reasoning',
+    'grok-4-fast-non-reasoning',
+    'grok-4.20-0309-reasoning',
+    'grok-4.20-0309-non-reasoning',
+    'grok-4.20-multi-agent-0309',
+    'grok-4-0709',
+    'grok-3',
+    'grok-3-mini',
 }
 
 # Known model families to watch for upgrades
 TRACKED_MODEL_PREFIXES = ('gemini-2.5', 'gemini-3', 'gemini-3.1', 'gemini-2.0', 'grok-3', 'grok-4')
+
+# Gaps that are structurally unavailable (no free API / requires paid subscription)
+# and should NOT be flagged for coding — they're acknowledged data limitations.
+KNOWN_UNAVAILABLE_GAPS: set = {
+    # AIS/shipping trackers require paid maritime data subscriptions (Marine Traffic, etc.)
+    'real-time hormuz shipping tracker data',
+    'hormuz shipping tracker data',
+    'real-time ais vessel tracking',
+    'real-time ais tracking for hormuz shipping volumes',
+    'real-time strait of hormuz tanker throughput volumes',
+    'live hormuz tanker tracking',
+    'real-time ais data on hormuz tanker movements',
+    'real-time tanker tracking/satellite verification',
+    'real-time ais shipping data for strait of hormuz',
+    'live ais data on hormuz tanker movements',
+    'ais/satellite-confirmed hormuz vessel throughput',
+    # Options flow data requires paid subscriptions (Unusual Whales, etc.)
+    'real-time options flow data',
+    'intraday options flow data',
+    'live options flow data',
+    # Dark pool data requires institutional-grade data feeds
+    'real-time institutional dark pool flow data',
+    'dark pool transaction volume',
+    # Short interest intraday requires paid borrow data
+    'real-time short interest borrow fee rate',
+    'real-time short borrow fee rates',
+}
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -288,11 +325,18 @@ def _identify_recurring_gaps(gap_counter: Counter, state: Dict) -> Tuple[List[st
       - new_since_last_run: gaps not seen in previous health run (informational)
     Also deduplicate against previously flagged gaps so we don't re-alert
     the same codeable item every two weeks.
+
+    Gaps in KNOWN_UNAVAILABLE_GAPS are silently skipped — they require
+    paid data subscriptions and cannot be resolved by code changes.
     """
     previously_flagged = set(state.get('flagged_gaps', []))
     recurring, new_items = [], []
 
     for gap, count in gap_counter.most_common():
+        # Skip gaps that are structurally unavailable (no free API)
+        gap_lower = gap.lower().strip()
+        if any(known in gap_lower for known in KNOWN_UNAVAILABLE_GAPS):
+            continue
         if count >= GAP_RECURRENCE_THRESHOLD:
             # Only surface if not already flagged in a prior run
             if gap not in previously_flagged:
@@ -400,13 +444,27 @@ def run_health_check(force: bool = False) -> Dict:
 
     logger.info("🏥 Running bi-weekly system health check...")
 
-    # Load FRED key
+    # Load FRED key — try orchestrator_config.json first, then fred_config.json, then env
     fred_api_key = None
     try:
         cfg = json.loads(CONFIG_PATH.read_text())
-        fred_api_key = cfg.get('fred_api_key')
+        fred_api_key = cfg.get('fred_api_key') or cfg.get('FRED_API_KEY')
     except Exception:
         pass
+    if not fred_api_key:
+        try:
+            import os
+            fred_api_key = os.environ.get('FRED_API_KEY')
+        except Exception:
+            pass
+    if not fred_api_key:
+        try:
+            fred_cfg_path = CONFIG_PATH.parent / 'fred_config.json'
+            if fred_cfg_path.exists():
+                fred_cfg = json.loads(fred_cfg_path.read_text())
+                fred_api_key = fred_cfg.get('api_key') or fred_cfg.get('fred_api_key')
+        except Exception:
+            pass
 
     # ── Run all checks ────────────────────────────────────────────────────────
     apis_ok, apis_down = _check_apis(fred_api_key)

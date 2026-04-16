@@ -1,3 +1,4 @@
+from trading_db import get_sqlite_conn
 #!/usr/bin/env python3
 """
 FRED Macro Data Integration
@@ -35,6 +36,12 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import requests
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent / '.env', override=True)
+except ImportError:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -520,7 +527,7 @@ class FREDMacroTracker:
         if not macro_data.get('available'):
             return
 
-        conn = sqlite3.connect(self.db_path)
+        conn = get_sqlite_conn(str(self.db_path), timeout=15)
         try:
             # PRAGMA and cursor setup inside try so conn.close() in finally always fires
             conn.execute("PRAGMA journal_mode=WAL")
@@ -558,7 +565,7 @@ class FREDMacroTracker:
         """Get most recent macro data from DB for Gemini context"""
         conn = None
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = get_sqlite_conn(str(self.db_path), timeout=15)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute('''

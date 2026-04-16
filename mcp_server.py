@@ -43,7 +43,7 @@ class HighTradeMCPServer:
 
     def _init_command_db(self):
         """Initialize command database for IPC"""
-        conn = sqlite3.connect(str(COMMAND_DB))
+        conn = get_sqlite_conn(str(COMMAND_DB))
         cursor = conn.cursor()
 
         cursor.execute("""

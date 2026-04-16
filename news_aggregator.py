@@ -8,6 +8,7 @@ import json
 import logging
 import sqlite3
 import time
+from trading_db import get_sqlite_conn
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -74,7 +75,7 @@ class NewsCache:
 
     def _init_db(self):
         """Initialize cache database"""
-        conn = sqlite3.connect(self.db_path)
+        conn = get_sqlite_conn(str(self.db_path), timeout=15)
         try:
             cursor = conn.cursor()
             cursor.execute("""
@@ -90,7 +91,7 @@ class NewsCache:
 
     def get(self, article_hash: str) -> Optional[Dict]:
         """Retrieve cached article if not expired"""
-        conn = sqlite3.connect(self.db_path)
+        conn = get_sqlite_conn(str(self.db_path), timeout=15)
         try:
             cursor = conn.cursor()
             cutoff_time = datetime.now() - timedelta(minutes=self.ttl_minutes)
@@ -108,7 +109,7 @@ class NewsCache:
 
     def set(self, article_hash: str, article_data: Dict):
         """Cache article data"""
-        conn = sqlite3.connect(self.db_path)
+        conn = get_sqlite_conn(str(self.db_path), timeout=15)
         try:
             cursor = conn.cursor()
             cursor.execute("""
@@ -121,7 +122,7 @@ class NewsCache:
 
     def cleanup_expired(self):
         """Remove expired cache entries"""
-        conn = sqlite3.connect(self.db_path)
+        conn = get_sqlite_conn(str(self.db_path), timeout=15)
         try:
             cursor = conn.cursor()
             cutoff_time = datetime.now() - timedelta(minutes=self.ttl_minutes)

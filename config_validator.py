@@ -1,3 +1,4 @@
+from trading_db import get_sqlite_conn
 #!/usr/bin/env python3
 """
 Configuration Validator & Startup Health Check
@@ -87,7 +88,7 @@ class ConfigValidator:
                 self.errors.append(f"Database not found: {self.db_path}")
                 return
             
-            conn = sqlite3.connect(str(self.db_path))
+            conn = get_sqlite_conn(str(self.db_path), timeout=15)
             cursor = conn.cursor()
             
             # Check for required tables

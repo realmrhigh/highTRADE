@@ -412,7 +412,7 @@ def run_exit_analysis(
                 + (f"\n💡 {notes}" if notes else '')
             )
             try:
-                alerts.send_slack_alert(alert_text, channel='#hightrade')
+                alerts.send_slack(alert_text, defcon_level=4)
             except Exception as e:
                 logger.warning(f"  Slack alert failed for {ticker}: {e}")
 

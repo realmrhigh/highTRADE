@@ -6,9 +6,8 @@ Creates table to store Claude's enhanced news analysis for AI-augmented trading
 
 from trading_db import get_sqlite_conn
 import sys
-from pathlib import Path
 
-DB_PATH = Path.home() / "trading_data" / "trading_history.db"
+from db_paths import DB_PATH
 
 def add_claude_analysis_table():
     """Create claude_analysis table for storing Claude's enhanced analysis"""

@@ -14,6 +14,7 @@ from pathlib import Path
 import time
 
 from fred_macro import _load_fred_api_key
+from trading_db import db
 
 # Use SCRIPT_DIR to ensure we're in the correct project directory
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -40,15 +41,6 @@ class SignalMonitor:
         self.previous_defcon = 5
         self.defcon_hold_cycles = 0
         self.is_winding_down = False
-
-    def connect(self):
-        """Connect to database"""
-        self.conn = sqlite3.connect(str(self.db_path))
-        self.cursor = self.conn.cursor()
-
-    def disconnect(self):
-        """Disconnect from database"""
-        self.conn.close()
 
     def fetch_bond_yield(self):
         """Fetch 10-year bond yield from FRED API"""
@@ -181,8 +173,14 @@ class SignalMonitor:
     def calculate_defcon_level(self, signal_scores, market_data, news_signal=None,
                                flash_forecast=None, macro_modifier=None,
                                briefing_signal_quality=None,
-                               deescalation_score=None):
-        """Determine DEFCON level based on signal clustering, news override, and Claude analysis"""
+                               deescalation_score=None,
+                               degraded_inputs=False):
+        """Determine DEFCON level based on signal clustering, news override, and Claude analysis.
+
+        When core inputs are degraded (for example, weekend fallback or missing market feeds),
+        the monitor is allowed to become more defensive, but it must not become more aggressive
+        than the previous cycle based on synthetic data.
+        """
         composite_score = sum(signal_scores.values()) / len(signal_scores) if signal_scores else 0
 
         market_drop = market_data['change_pct'] if market_data else 0
@@ -315,6 +313,17 @@ class SignalMonitor:
                 self.is_winding_down = False
                 self.defcon_hold_cycles = 0
 
+        # If the cycle is running on fallback/simulated inputs, do not allow
+        # synthetic data to make the system *more aggressive* than the prior cycle.
+        # We can still de-risk, but we freeze bullish jumps until real inputs return.
+        if degraded_inputs and base_defcon < self.previous_defcon:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                f"  🧯 Degraded-input guard: blocking DEFCON {base_defcon} → {self.previous_defcon} "
+                f"on fallback/simulated data"
+            )
+            base_defcon = self.previous_defcon
+
         self.previous_defcon = base_defcon
         self.defcon_level = base_defcon
         return self.defcon_level, composite_score
@@ -323,23 +332,25 @@ class SignalMonitor:
         """Check if Claude has provided analysis for this news signal"""
         import logging
         logger = logging.getLogger(__name__)
-        
+
         if not news_signal_id:
             logger.debug("No news_signal_id provided to _check_claude_analysis")
             return None
 
         try:
             logger.info(f"  📊 Querying claude_analysis table for news_signal_id={news_signal_id}")
-            self.cursor.execute("""
-                SELECT enhanced_confidence, confidence_adjustment,
-                       recommended_action, reasoning, opportunity_score
-                FROM claude_analysis
-                WHERE news_signal_id = ?
-                ORDER BY created_at DESC
-                LIMIT 1
-            """, (news_signal_id,))
+            with db(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT enhanced_confidence, confidence_adjustment,
+                           recommended_action, reasoning, opportunity_score
+                    FROM claude_analysis
+                    WHERE news_signal_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                """, (news_signal_id,))
+                row = cursor.fetchone()
 
-            row = self.cursor.fetchone()
             if row:
                 logger.info(f"  ✅ Found Claude analysis: confidence={row[0]}, adjustment={row[1]:+.1f}")
                 return {
@@ -354,15 +365,13 @@ class SignalMonitor:
             return None
 
         except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
             logger.error(f"Error checking Claude analysis: {e}")
             return None
 
 
     def record_monitoring_point(self, yield_data, vix_data, market_data, defcon_level=None, news_signal=None, signal_score=None):
         """Record current monitoring state to database
-        
+
         Args:
             defcon_level: Pre-calculated DEFCON level (optional, will recalculate if None)
             news_signal: News signal dict (optional)
@@ -389,14 +398,13 @@ class SignalMonitor:
             vix_close = vix_data['vix'] if vix_data else None
             news_score = news_signal.get('news_score', 0) if news_signal else 0
 
-            self.cursor.execute('''
-            INSERT OR REPLACE INTO signal_monitoring
-            (monitoring_date, monitoring_time, bond_10yr_yield, vix_close,
-             defcon_level, signal_score, news_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (date_str, time_str, bond_yield, vix_close, defcon_level, composite_score, news_score))
-
-            self.conn.commit()
+            with db(self.db_path) as conn:
+                conn.execute('''
+                INSERT OR REPLACE INTO signal_monitoring
+                (monitoring_date, monitoring_time, bond_10yr_yield, vix_close,
+                 defcon_level, signal_score, news_score)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (date_str, time_str, bond_yield, vix_close, defcon_level, composite_score, news_score))
 
             return {
                 'timestamp': now.isoformat(),
@@ -459,7 +467,6 @@ class SignalMonitor:
         print(f"🚀 Starting continuous monitoring (interval: {interval_minutes}m)")
 
         try:
-            self.connect()
             cycle = 0
             while True:
                 cycle += 1
@@ -474,21 +481,19 @@ class SignalMonitor:
 
         except KeyboardInterrupt:
             print("\n\n✓ Monitoring stopped")
-        finally:
-            self.disconnect()
 
     def get_status(self):
         """Get current monitoring status"""
-        self.connect()
-        try:
-            self.cursor.execute('''
+        with db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
             SELECT monitoring_date, monitoring_time, bond_10yr_yield, vix_close,
                    defcon_level, signal_score
             FROM signal_monitoring
             ORDER BY monitoring_date DESC, monitoring_time DESC
             LIMIT 1
             ''')
-            result = self.cursor.fetchone()
+            result = cursor.fetchone()
             if result:
                 return {
                     'date': result[0],
@@ -498,9 +503,6 @@ class SignalMonitor:
                     'defcon_level': result[4],
                     'signal_score': result[5]
                 }
-        finally:
-            self.disconnect()
-
         return None
 
 if __name__ == '__main__':
@@ -511,9 +513,7 @@ if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == 'test':
         # Test mode - single cycle
         print("🧪 Test Mode - Single Monitoring Cycle\n")
-        monitor.connect()
         result = monitor.run_monitoring_cycle(verbose=True)
-        monitor.disconnect()
         if result:
             print(f"\n✓ Test successful: {json.dumps(result, indent=2)}")
     elif len(sys.argv) > 1 and sys.argv[1] == 'status':

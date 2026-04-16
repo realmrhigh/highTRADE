@@ -6,13 +6,12 @@ Provides commands to manage pending trades, execute exits, and view portfolio st
 
 import sys
 import logging
-from pathlib import Path
 from paper_trading import PaperTradingEngine
 from portfolio_dashboard import PortfolioDashboard
 from queries import TradeDataQuery
 from quick_money_research import QuickMoneyResearch
 
-DB_PATH = Path.home() / 'trading_data' / 'trading_history.db'
+from db_paths import DB_PATH
 
 logging.basicConfig(
     level=logging.INFO,

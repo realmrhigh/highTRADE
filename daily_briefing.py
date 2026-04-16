@@ -113,7 +113,7 @@ def _gather_daily_context(db_path: str, date_str: str = None) -> Dict:
     if not date_str:
         date_str = _et_now().strftime('%Y-%m-%d')   # ET — market date
 
-    conn = sqlite3.connect(db_path)
+    conn = get_sqlite_conn(str(db_path), timeout=15)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 

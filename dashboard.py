@@ -2905,7 +2905,9 @@ color:#000;font-weight:bold;border-radius:4px;cursor:pointer;font-size:15px}}</s
     @app.route('/header-image')
     def header_image():
         from flask import send_file as _send_file
-        img_path = SCRIPT_DIR / 'highTRADE.jpeg'
+        img_path = SCRIPT_DIR / 'highTRADEheader.jpg'
+        if not img_path.exists():
+            img_path = SCRIPT_DIR / 'highTRADE.jpeg'
         return _send_file(img_path, mimetype='image/jpeg', max_age=3600)
 
     @app.route('/')

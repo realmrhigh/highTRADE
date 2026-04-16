@@ -1,3 +1,4 @@
+from trading_db import get_sqlite_conn
 #!/usr/bin/env python3
 """
 acquisition_hound.py — Grok Hound module for HighTrade.
@@ -25,57 +26,60 @@ class GrokHound:
 
     def _ensure_table(self):
         """Add table creation safety."""
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS grok_hound_candidates (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ticker TEXT NOT NULL UNIQUE,
-                alpha_score INTEGER,
-                why_next TEXT,
-                signals TEXT,
-                risks TEXT,
-                action_suggestion TEXT,
-                status TEXT DEFAULT 'pending',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        conn.commit()
-        conn.close()
+        conn = get_sqlite_conn(str(self.db_path), timeout=15)
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS grok_hound_candidates (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticker TEXT NOT NULL UNIQUE,
+                    alpha_score INTEGER,
+                    why_next TEXT,
+                    signals TEXT,
+                    risks TEXT,
+                    action_suggestion TEXT,
+                    status TEXT DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
+        finally:
+            conn.close()
 
     def _get_exclude_list(self) -> Set[str]:
         """Fetch tickers that are already being watched, ignored, or analyzed."""
         exclude = set()
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # 1. Tickers already in the acquisition watchlist (excluding those that are pending research)
-            # We skip 'pending' so they don't get re-added, but they are technically 'being handled'
-            cursor.execute("SELECT ticker FROM acquisition_watchlist WHERE status != 'archived'")
-            exclude.update([row[0].upper() for row in cursor.fetchall() if row[0]])
-            
-            # 2. Tickers in active conditional tracking (being watched by broker)
-            cursor.execute("SELECT ticker FROM conditional_tracking WHERE status = 'active'")
-            exclude.update([row[0].upper() for row in cursor.fetchall() if row[0]])
-            
-            # 3. Tickers manually ignored in the Hound table
-            cursor.execute("SELECT ticker FROM grok_hound_candidates WHERE status = 'ignored'")
-            exclude.update([row[0].upper() for row in cursor.fetchall() if row[0]])
+            conn = get_sqlite_conn(str(self.db_path), timeout=15)
+            try:
+                cursor = conn.cursor()
+                
+                # 1. Tickers already in the acquisition watchlist (excluding those that are pending research)
+                # We skip 'pending' so they don't get re-added, but they are technically 'being handled'
+                cursor.execute("SELECT ticker FROM acquisition_watchlist WHERE status != 'archived'")
+                exclude.update([row[0].upper() for row in cursor.fetchall() if row[0]])
+                
+                # 2. Tickers in active conditional tracking (being watched by broker)
+                cursor.execute("SELECT ticker FROM conditional_tracking WHERE status = 'active'")
+                exclude.update([row[0].upper() for row in cursor.fetchall() if row[0]])
+                
+                # 3. Tickers manually ignored in the Hound table
+                cursor.execute("SELECT ticker FROM grok_hound_candidates WHERE status = 'ignored'")
+                exclude.update([row[0].upper() for row in cursor.fetchall() if row[0]])
 
-            # 4. CURRENT OPEN POSITIONS (Tracked independently, skip from acquisition)
-            cursor.execute("SELECT asset_symbol FROM trade_records WHERE status = 'open'")
-            exclude.update([row[0].upper() for row in cursor.fetchall() if row[0]])
+                # 4. CURRENT OPEN POSITIONS (Tracked independently, skip from acquisition)
+                cursor.execute("SELECT asset_symbol FROM trade_records WHERE status = 'open'")
+                exclude.update([row[0].upper() for row in cursor.fetchall() if row[0]])
 
-            # 5. 12-Hour HOLD for analyst_pass items
-            # Tickers that the analyst passed on within the last 12 hours
-            twelve_hours_ago = (datetime.now() - timedelta(hours=12)).strftime('%Y-%m-%d %H:%M:%S')
-            cursor.execute("""
-                SELECT ticker FROM acquisition_watchlist 
-                WHERE status = 'analyst_pass' AND created_at > ?
-            """, (twelve_hours_ago,))
-            exclude.update([row[0].upper() for row in cursor.fetchall() if row[0]])
-            
-            conn.close()
+                # 5. 12-Hour HOLD for analyst_pass items
+                # Tickers that the analyst passed on within the last 12 hours
+                twelve_hours_ago = (datetime.now() - timedelta(hours=12)).strftime('%Y-%m-%d %H:%M:%S')
+                cursor.execute("""
+                    SELECT ticker FROM acquisition_watchlist 
+                    WHERE status = 'analyst_pass' AND created_at > ?
+                """, (twelve_hours_ago,))
+                exclude.update([row[0].upper() for row in cursor.fetchall() if row[0]])
+            finally:
+                conn.close()
         except Exception as e:
             logger.warning(f"Could not fetch exclude list: {e}")
             
@@ -89,36 +93,38 @@ class GrokHound:
         """
         tickers = []
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cutoff = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d %H:%M:%S')
-            # Active conditional setups added in the last 14 days that came from a big-move catalyst
-            cursor.execute("""
-                SELECT ticker FROM conditional_tracking
-                WHERE status = 'active'
-                  AND created_at > ?
-                  AND (watch_tag LIKE '%momentum%' OR watch_tag LIKE '%breakout%'
-                       OR watch_tag LIKE '%squeeze%' OR watch_tag LIKE '%catalyst%')
-            """, (cutoff,))
-            tickers.extend([row[0].upper() for row in cursor.fetchall() if row[0]])
-            # Recent grok_hound_candidates that hit ≥70 alpha and are now watched/expired
-            cursor.execute("""
-                SELECT ticker FROM grok_hound_candidates
-                WHERE alpha_score >= 70
-                  AND created_at > ?
-                  AND status IN ('watched', 'expired')
-            """, (cutoff,))
-            tickers.extend([row[0].upper() for row in cursor.fetchall() if row[0]])
-            # Reverse-split names from acquisition_watchlist (last 14 days)
-            cursor.execute("""
-                SELECT ticker FROM acquisition_watchlist
-                WHERE created_at > ?
-                  AND (notes LIKE '%reverse split%' OR notes LIKE '%1-for-%'
-                       OR entry_conditions LIKE '%reverse split%')
-                  AND status != 'archived'
-            """, (cutoff,))
-            tickers.extend([row[0].upper() for row in cursor.fetchall() if row[0]])
-            conn.close()
+            conn = get_sqlite_conn(str(self.db_path), timeout=15)
+            try:
+                cursor = conn.cursor()
+                cutoff = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d %H:%M:%S')
+                # Active conditional setups added in the last 14 days that came from a big-move catalyst
+                cursor.execute("""
+                    SELECT ticker FROM conditional_tracking
+                    WHERE status = 'active'
+                      AND created_at > ?
+                      AND (watch_tag LIKE '%momentum%' OR watch_tag LIKE '%breakout%'
+                           OR watch_tag LIKE '%squeeze%' OR watch_tag LIKE '%catalyst%')
+                """, (cutoff,))
+                tickers.extend([row[0].upper() for row in cursor.fetchall() if row[0]])
+                # Recent grok_hound_candidates that hit ≥70 alpha and are now watched/expired
+                cursor.execute("""
+                    SELECT ticker FROM grok_hound_candidates
+                    WHERE alpha_score >= 70
+                      AND created_at > ?
+                      AND status IN ('watched', 'expired')
+                """, (cutoff,))
+                tickers.extend([row[0].upper() for row in cursor.fetchall() if row[0]])
+                # Reverse-split names from acquisition_watchlist (last 14 days)
+                cursor.execute("""
+                    SELECT ticker FROM acquisition_watchlist
+                    WHERE created_at > ?
+                      AND (notes LIKE '%reverse split%' OR notes LIKE '%1-for-%'
+                           OR entry_conditions LIKE '%reverse split%')
+                      AND status != 'archived'
+                """, (cutoff,))
+                tickers.extend([row[0].upper() for row in cursor.fetchall() if row[0]])
+            finally:
+                conn.close()
         except Exception as e:
             logger.warning(f"Could not build post-catalyst list: {e}")
         return list(dict.fromkeys(tickers))  # dedupe, preserve order
@@ -240,94 +246,96 @@ class GrokHound:
         if not candidates:
             return
 
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        conn = get_sqlite_conn(str(self.db_path), timeout=15)
+        try:
+            cursor = conn.cursor()
 
-        # ── Expire stale hound candidates (48h TTL) ───────────────────────
-        # Entries older than 48h are reset to 'expired' so the next Hound run
-        # starts fresh — prevents the list from accumulating indefinitely.
-        cutoff_48h = (datetime.now() - timedelta(hours=48)).strftime('%Y-%m-%d %H:%M:%S')
-        expired = cursor.execute("""
-            UPDATE grok_hound_candidates
-            SET status = 'expired'
-            WHERE created_at < ?
-              AND status NOT IN ('ignored', 'expired')
-        """, (cutoff_48h,)).rowcount
-        if expired:
-            logger.info(f"  🕰️  Hound: expired {expired} stale candidates (>48h)")
-        conn.commit()
+            # ── Expire stale hound candidates (48h TTL) ───────────────────────
+            # Entries older than 48h are reset to 'expired' so the next Hound run
+            # starts fresh — prevents the list from accumulating indefinitely.
+            cutoff_48h = (datetime.now() - timedelta(hours=48)).strftime('%Y-%m-%d %H:%M:%S')
+            expired = cursor.execute("""
+                UPDATE grok_hound_candidates
+                SET status = 'expired'
+                WHERE created_at < ?
+                  AND status NOT IN ('ignored', 'expired')
+            """, (cutoff_48h,)).rowcount
+            if expired:
+                logger.info(f"  🕰️  Hound: expired {expired} stale candidates (>48h)")
+            conn.commit()
 
-        date_str = datetime.now().strftime('%Y-%m-%d')
-        promoted_tickers = []
+            date_str = datetime.now().strftime('%Y-%m-%d')
+            promoted_tickers = []
 
-        for c in candidates:
-            ticker = c.get('ticker', '').upper().strip()
-            if not ticker: continue
+            for c in candidates:
+                ticker = c.get('ticker', '').upper().strip()
+                if not ticker: continue
+                
+                score = c.get('alpha_score', 0)
+                
+                # Use UPSERT (INSERT ... ON CONFLICT)
+                cursor.execute("""
+                    INSERT INTO grok_hound_candidates 
+                    (ticker, alpha_score, why_next, signals, risks, action_suggestion, status)
+                    VALUES (?, ?, ?, ?, ?, ?, 'pending')
+                    ON CONFLICT(ticker) DO UPDATE SET
+                        alpha_score = excluded.alpha_score,
+                        why_next = excluded.why_next,
+                        signals = excluded.signals,
+                        risks = excluded.risks,
+                        action_suggestion = excluded.action_suggestion,
+                        created_at = CURRENT_TIMESTAMP
+                    WHERE status != 'ignored' AND status != 'watched'
+                """, (
+                    ticker,
+                    score,
+                    c.get('why_next', ''),
+                    json.dumps(c.get('signals', [])),
+                    json.dumps(c.get('risks', [])),
+                    c.get('action_suggestion', 'monitor')
+                ))
+
+                # --- AUTO-PROMOTION LOGIC ---
+                # Tiered thresholds by action:
+                #   buy_small    → 60 (short-term speculative, fast lane)
+                #   add_to_watch → 65 (moderate conviction, full pipeline)
+                #   monitor/other → 72 (higher bar before spending analyst quota)
+                _action_lower = (c.get('action_suggestion') or '').lower()
+                if _action_lower == 'buy_small':
+                    _promo_threshold = 60
+                elif _action_lower == 'add_to_watch':
+                    _promo_threshold = 65
+                else:
+                    _promo_threshold = 72
+                if score >= _promo_threshold:
+                    # Check if already in watchlist
+                    cursor.execute("SELECT 1 FROM acquisition_watchlist WHERE ticker = ? AND status != 'archived'", (ticker,))
+                    if not cursor.fetchone():
+                        logger.info(f"  🚀 AUTO-PROMOTING {ticker} (Alpha: {score}) to Acquisition Watchlist")
+                        action = (c.get('action_suggestion') or '').upper().replace('_', ' ')
+                        cursor.execute("""
+                            INSERT OR REPLACE INTO acquisition_watchlist
+                            (date_added, ticker, source, model_confidence, biggest_risk,
+                             biggest_opportunity, entry_conditions, notes, status)
+                            VALUES (?, ?, 'grok_hound_auto', ?, ?, ?, ?, ?, 'pending')
+                        """, (
+                            date_str,
+                            ticker,
+                            float(score) / 100.0,
+                            json.dumps(c.get('risks', [])),
+                            c.get('why_next', ''),
+                            c.get('why_next', ''),          # thesis as entry_conditions
+                            f"[{action}] Auto-promoted (Alpha {score})",
+                        ))
+                        # Mark as watched in hound table
+                        cursor.execute("UPDATE grok_hound_candidates SET status = 'watched' WHERE ticker = ?", (ticker,))
+                        promoted_tickers.append(ticker)
             
-            score = c.get('alpha_score', 0)
-            
-            # Use UPSERT (INSERT ... ON CONFLICT)
-            cursor.execute("""
-                INSERT INTO grok_hound_candidates 
-                (ticker, alpha_score, why_next, signals, risks, action_suggestion, status)
-                VALUES (?, ?, ?, ?, ?, ?, 'pending')
-                ON CONFLICT(ticker) DO UPDATE SET
-                    alpha_score = excluded.alpha_score,
-                    why_next = excluded.why_next,
-                    signals = excluded.signals,
-                    risks = excluded.risks,
-                    action_suggestion = excluded.action_suggestion,
-                    created_at = CURRENT_TIMESTAMP
-                WHERE status != 'ignored' AND status != 'watched'
-            """, (
-                ticker,
-                score,
-                c.get('why_next', ''),
-                json.dumps(c.get('signals', [])),
-                json.dumps(c.get('risks', [])),
-                c.get('action_suggestion', 'monitor')
-            ))
-
-            # --- AUTO-PROMOTION LOGIC ---
-            # Tiered thresholds by action:
-            #   buy_small    → 60 (short-term speculative, fast lane)
-            #   add_to_watch → 65 (moderate conviction, full pipeline)
-            #   monitor/other → 72 (higher bar before spending analyst quota)
-            _action_lower = (c.get('action_suggestion') or '').lower()
-            if _action_lower == 'buy_small':
-                _promo_threshold = 60
-            elif _action_lower == 'add_to_watch':
-                _promo_threshold = 65
-            else:
-                _promo_threshold = 72
-            if score >= _promo_threshold:
-                # Check if already in watchlist
-                cursor.execute("SELECT 1 FROM acquisition_watchlist WHERE ticker = ? AND status != 'archived'", (ticker,))
-                if not cursor.fetchone():
-                    logger.info(f"  🚀 AUTO-PROMOTING {ticker} (Alpha: {score}) to Acquisition Watchlist")
-                    action = (c.get('action_suggestion') or '').upper().replace('_', ' ')
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO acquisition_watchlist
-                        (date_added, ticker, source, model_confidence, biggest_risk,
-                         biggest_opportunity, entry_conditions, notes, status)
-                        VALUES (?, ?, 'grok_hound_auto', ?, ?, ?, ?, ?, 'pending')
-                    """, (
-                        date_str,
-                        ticker,
-                        float(score) / 100.0,
-                        json.dumps(c.get('risks', [])),
-                        c.get('why_next', ''),
-                        c.get('why_next', ''),          # thesis as entry_conditions
-                        f"[{action}] Auto-promoted (Alpha {score})",
-                    ))
-                    # Mark as watched in hound table
-                    cursor.execute("UPDATE grok_hound_candidates SET status = 'watched' WHERE ticker = ?", (ticker,))
-                    promoted_tickers.append(ticker)
-        
-        conn.commit()
-        conn.close()
-        logger.info(f"  💾 Processed {len(candidates)} candidates. Auto-promoted: {promoted_tickers}")
-        return promoted_tickers
+            conn.commit()
+            logger.info(f"  💾 Processed {len(candidates)} candidates. Auto-promoted: {promoted_tickers}")
+            return promoted_tickers
+        finally:
+            conn.close()
 
 def run_hound_cycle(extra_context: Optional[Dict] = None) -> Dict:
     """Module-level entry point for triggering a Grok Hound scan.

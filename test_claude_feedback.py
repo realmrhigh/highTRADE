@@ -6,9 +6,8 @@ Verifies all components are properly installed
 
 from trading_db import get_sqlite_conn
 import sys
-from pathlib import Path
 
-DB_PATH = Path.home() / "trading_data" / "trading_history.db"
+from db_paths import DB_PATH
 
 def test_database_schema():
     """Test that claude_analysis table exists with correct schema"""

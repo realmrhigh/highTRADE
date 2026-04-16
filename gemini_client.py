@@ -37,6 +37,7 @@ import subprocess
 import threading
 import time
 import requests
+from trading_db import get_sqlite_conn
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Tuple
@@ -218,7 +219,7 @@ class QuotaTracker:
 
     @classmethod
     def _conn(cls) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(cls._DB_PATH), timeout=10)
+        conn = get_sqlite_conn(str(cls._DB_PATH), timeout=15)
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -258,15 +259,17 @@ class QuotaTracker:
         try:
             with cls._lock:
                 conn = cls._conn()
-                cls._ensure_schema(conn)
-                conn.execute(
-                    "INSERT INTO gemini_call_log "
-                    "(model_id, model_key, caller, auth_method, tokens_in, tokens_out, downgraded) "
-                    "VALUES (?,?,?,?,?,?,?)",
-                    (model_id, model_key, caller, auth_method, tokens_in, tokens_out, int(downgraded))
-                )
-                conn.commit()
-                conn.close()
+                try:
+                    cls._ensure_schema(conn)
+                    conn.execute(
+                        "INSERT INTO gemini_call_log "
+                        "(model_id, model_key, caller, auth_method, tokens_in, tokens_out, downgraded) "
+                        "VALUES (?,?,?,?,?,?,?)",
+                        (model_id, model_key, caller, auth_method, tokens_in, tokens_out, int(downgraded))
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
         except Exception:
             pass  # logging must never crash a caller
 
@@ -293,14 +296,16 @@ class QuotaTracker:
         try:
             with cls._lock:
                 conn = cls._conn()
-                cls._ensure_schema(conn)
-                row = conn.execute(
-                    "SELECT created_at FROM gemini_call_log "
-                    "WHERE model_id = ? AND tokens_in >= 0 "
-                    "ORDER BY created_at DESC LIMIT 1",
-                    (model_id,)
-                ).fetchone()
-                conn.close()
+                try:
+                    cls._ensure_schema(conn)
+                    row = conn.execute(
+                        "SELECT created_at FROM gemini_call_log "
+                        "WHERE model_id = ? AND tokens_in >= 0 "
+                        "ORDER BY created_at DESC LIMIT 1",
+                        (model_id,)
+                    ).fetchone()
+                finally:
+                    conn.close()
 
             if not row:
                 return
@@ -338,13 +343,15 @@ class QuotaTracker:
         try:
             since = cls._last_reset_utc(model_id).strftime('%Y-%m-%d %H:%M:%S')
             conn = cls._conn()
-            cls._ensure_schema(conn)
-            row = conn.execute(
-                "SELECT COUNT(*) AS calls FROM gemini_call_log "
-                "WHERE model_id = ? AND created_at >= ? AND tokens_in >= 0",
-                (model_id, since)
-            ).fetchone()
-            conn.close()
+            try:
+                cls._ensure_schema(conn)
+                row = conn.execute(
+                    "SELECT COUNT(*) AS calls FROM gemini_call_log "
+                    "WHERE model_id = ? AND created_at >= ? AND tokens_in >= 0",
+                    (model_id, since)
+                ).fetchone()
+            finally:
+                conn.close()
             calls = row['calls'] if row else 0
             ratio = calls / daily_limit
             if ratio >= QUOTA_BLOCK_PCT:
@@ -366,14 +373,16 @@ class QuotaTracker:
         rpm = model['rpm']
         try:
             conn = cls._conn()
-            cls._ensure_schema(conn)
-            row = conn.execute(
-                "SELECT COUNT(*) AS calls FROM gemini_call_log "
-                "WHERE model_id = ? AND created_at >= datetime('now', '-60 seconds') "
-                "AND tokens_in >= 0",
-                (model_id,)
-            ).fetchone()
-            conn.close()
+            try:
+                cls._ensure_schema(conn)
+                row = conn.execute(
+                    "SELECT COUNT(*) AS calls FROM gemini_call_log "
+                    "WHERE model_id = ? AND created_at >= datetime('now', '-60 seconds') "
+                    "AND tokens_in >= 0",
+                    (model_id,)
+                ).fetchone()
+            finally:
+                conn.close()
             return (row['calls'] if row else 0) >= rpm
         except Exception:
             return False
@@ -397,19 +406,21 @@ class QuotaTracker:
         """Call counts and token totals per model_id for the last N hours."""
         try:
             conn = cls._conn()
-            cls._ensure_schema(conn)
-            rows = conn.execute("""
-                SELECT model_id,
-                       COUNT(*)        AS calls,
-                       SUM(tokens_in)  AS tokens_in,
-                       SUM(tokens_out) AS tokens_out,
-                       MIN(created_at) AS oldest_call_at
-                FROM gemini_call_log
-                WHERE created_at >= datetime('now', ?)
-                  AND tokens_in >= 0
-                GROUP BY model_id
-            """, (f'-{hours} hours',)).fetchall()
-            conn.close()
+            try:
+                cls._ensure_schema(conn)
+                rows = conn.execute("""
+                    SELECT model_id,
+                           COUNT(*)        AS calls,
+                           SUM(tokens_in)  AS tokens_in,
+                           SUM(tokens_out) AS tokens_out,
+                           MIN(created_at) AS oldest_call_at
+                    FROM gemini_call_log
+                    WHERE created_at >= datetime('now', ?)
+                      AND tokens_in >= 0
+                    GROUP BY model_id
+                """, (f'-{hours} hours',)).fetchall()
+            finally:
+                conn.close()
             return {r['model_id']: dict(r) for r in rows}
         except Exception:
             return {}
@@ -419,15 +430,17 @@ class QuotaTracker:
         """Call counts per model_id for the last N seconds."""
         try:
             conn = cls._conn()
-            cls._ensure_schema(conn)
-            rows = conn.execute("""
-                SELECT model_id, COUNT(*) AS calls
-                FROM gemini_call_log
-                WHERE created_at >= datetime('now', ?)
-                  AND tokens_in >= 0
-                GROUP BY model_id
-            """, (f'-{seconds} seconds',)).fetchall()
-            conn.close()
+            try:
+                cls._ensure_schema(conn)
+                rows = conn.execute("""
+                    SELECT model_id, COUNT(*) AS calls
+                    FROM gemini_call_log
+                    WHERE created_at >= datetime('now', ?)
+                      AND tokens_in >= 0
+                    GROUP BY model_id
+                """, (f'-{seconds} seconds',)).fetchall()
+            finally:
+                conn.close()
             return {r['model_id']: {'calls': r['calls']} for r in rows}
         except Exception:
             return {}
@@ -441,8 +454,9 @@ class QuotaTracker:
         result = {}
         try:
             conn = cls._conn()
-            cls._ensure_schema(conn)
-            for model_id, model in MODELS.items():
+            try:
+              cls._ensure_schema(conn)
+              for model_id, model in MODELS.items():
                 daily_limit = model['rpd']
                 last_reset  = cls._last_reset_utc(model_id)
                 next_reset  = cls._next_reset_utc(model_id)
@@ -486,7 +500,8 @@ class QuotaTracker:
                     'role':        model['role'],
                     'auth_breakdown': auth_breakdown,
                 }
-            conn.close()
+            finally:
+                conn.close()
         except Exception:
             pass
         return result
@@ -496,15 +511,17 @@ class QuotaTracker:
         """Return {auth_method: call_count} for the last N hours."""
         try:
             conn = cls._conn()
-            cls._ensure_schema(conn)
-            rows = conn.execute("""
-                SELECT COALESCE(auth_method, 'unknown') AS auth, COUNT(*) AS cnt
-                FROM gemini_call_log
-                WHERE created_at >= datetime('now', ?)
-                  AND tokens_in >= 0
-                GROUP BY auth
-            """, (f'-{hours} hours',)).fetchall()
-            conn.close()
+            try:
+                cls._ensure_schema(conn)
+                rows = conn.execute("""
+                    SELECT COALESCE(auth_method, 'unknown') AS auth, COUNT(*) AS cnt
+                    FROM gemini_call_log
+                    WHERE created_at >= datetime('now', ?)
+                      AND tokens_in >= 0
+                    GROUP BY auth
+                """, (f'-{hours} hours',)).fetchall()
+            finally:
+                conn.close()
             return {r['auth']: r['cnt'] for r in rows}
         except Exception:
             return {}
@@ -668,7 +685,7 @@ def _call_via_cli(prompt: str, model_id: str, temperature: float,
         ]
         result = subprocess.run(
             cmd,
-            capture_output=True, text=True, timeout=180,
+            capture_output=True, text=True, timeout=90,
             stdin=subprocess.DEVNULL,
             env={**os.environ, 'GEMINI_API_KEY': ''},  # force OAuth
         )
@@ -728,7 +745,7 @@ def _call_via_cli(prompt: str, model_id: str, temperature: float,
         return text, in_tok, out_tok
 
     except subprocess.TimeoutExpired:
-        logger.error("CLI call timed out after 180s")
+        logger.error("CLI call timed out after 90s")
         return None, 0, 0
     except json.JSONDecodeError as e:
         logger.error(f"CLI JSON parse error: {e}")
@@ -942,7 +959,14 @@ try:
 except ImportError:
     _ET_ZONE = None
 
-def market_context_block(vix: Optional[float] = None) -> str:
+def market_context_block(vix: Optional[float] = None,
+                         after_hours_price: Optional[float] = None,
+                         after_hours_chg_pct: Optional[float] = None,
+                         after_hours_type: Optional[str] = None,
+                         gld_price: Optional[float] = None,
+                         gld_flow_trend_pct: Optional[float] = None,
+                         gold_spot_price: Optional[float] = None,
+                         gold_30d_chg_pct: Optional[float] = None) -> str:
     """
     Formatted string describing the current market session state.
     Inject into every AI prompt so models know whether markets are open.
@@ -982,6 +1006,19 @@ def market_context_block(vix: Optional[float] = None) -> str:
 
         vix_str = f"  VIX reference: {vix:.2f}\n" if vix is not None else ""
 
+        # After-hours / gold context lines
+        extra_lines = ""
+        if after_hours_price is not None:
+            ah_type = after_hours_type or 'extended'
+            ah_chg  = f" ({after_hours_chg_pct:+.2f}%)" if after_hours_chg_pct is not None else ""
+            extra_lines += f"  SPY {ah_type}: ${after_hours_price:.2f}{ah_chg}\n"
+        if gld_price is not None:
+            flow_str = f" | flow trend {gld_flow_trend_pct:+.1f}%" if gld_flow_trend_pct is not None else ""
+            extra_lines += f"  GLD (gold ETF): ${gld_price:.2f}{flow_str}\n"
+        if gold_spot_price is not None:
+            chg_str = f" | 30d chg {gold_30d_chg_pct:+.2f}%" if gold_30d_chg_pct is not None else ""
+            extra_lines += f"  Gold spot (GC=F): ${gold_spot_price:.2f}{chg_str}\n"
+
         if market_open:
             status_line  = 'OPEN -- regular US session (NYSE/NASDAQ 09:30-16:00 ET)'
             freshness    = 'Live -- prices and VIX are current'
@@ -1010,6 +1047,7 @@ def market_context_block(vix: Optional[float] = None) -> str:
             + (f'  Next open:      {next_open_str}\n' if not market_open else '')
             + f'  Data freshness: {freshness}\n'
             + vix_str
+            + extra_lines
             + warning_text
             + '===================================================================\n'
         )

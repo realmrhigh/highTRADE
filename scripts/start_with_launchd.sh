@@ -6,7 +6,7 @@
 # If services break again: increment to com.hightrade3.* and use new _v3 log names.
 # Do NOT reuse poisoned labels — bootout/kickstart won't clear the poisoned state.
 
-cd /Users/stantonhigh/Documents/hightrade
+cd /Users/traderbot/Documents/highTRADE
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -26,21 +26,21 @@ sleep 2
 
 # Bootout existing jobs (use bootout, not unload — unload doesn't clear throttle state)
 echo -e "\n${YELLOW}Stopping existing launchd jobs...${NC}"
-launchctl bootout gui/$(id -u)/com.hightrade2.dashboard 2>/dev/null || true
-launchctl bootout gui/$(id -u)/com.hightrade2.orchestrator 2>/dev/null || true
-launchctl bootout gui/$(id -u)/com.hightrade.slackbot 2>/dev/null || true
+launchctl bootout gui/$(id -u)/com.hightrade3.dashboard 2>/dev/null || true
+launchctl bootout gui/$(id -u)/com.hightrade3.orchestrator 2>/dev/null || true
+launchctl bootout gui/$(id -u)/com.hightrade3.slackbot 2>/dev/null || true
 sleep 1
 
 # Bootstrap all three services (use bootstrap, not load)
 echo -e "\n${GREEN}Loading launchd jobs...${NC}"
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hightrade.dashboard.plist
-echo "  ✅ Dashboard loaded  (label: com.hightrade2.dashboard)"
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hightrade3.dashboard.plist
+echo "  ✅ Dashboard loaded  (label: com.hightrade3.dashboard)"
 
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hightrade.orchestrator.plist
-echo "  ✅ Orchestrator loaded (label: com.hightrade2.orchestrator)"
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hightrade3.orchestrator.plist
+echo "  ✅ Orchestrator loaded (label: com.hightrade3.orchestrator)"
 
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hightrade.slackbot.plist
-echo "  ✅ Slack bot loaded  (label: com.hightrade.slackbot)"
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hightrade3.slackbot.plist
+echo "  ✅ Slack bot loaded  (label: com.hightrade3.slackbot)"
 
 sleep 8
 
@@ -49,9 +49,9 @@ echo -e "\n${GREEN}========================================${NC}"
 echo -e "${GREEN}  System Status${NC}"
 echo -e "${GREEN}========================================${NC}"
 
-ORCH_PID=$(launchctl list | awk '/com\.hightrade2\.orchestrator/ {print $1}')
-DASH_PID=$(launchctl list | awk '/com\.hightrade2\.dashboard/ {print $1}')
-BOT_PID=$(launchctl list  | awk '/com\.hightrade\.slackbot/ {print $1}')
+ORCH_PID=$(launchctl list | awk '/com\.hightrade3\.orchestrator/ {print $1}')
+DASH_PID=$(launchctl list | awk '/com\.hightrade3\.dashboard/ {print $1}')
+BOT_PID=$(launchctl list  | awk '/com\.hightrade3\.slackbot/ {print $1}')
 
 if [[ "$ORCH_PID" =~ ^[0-9]+$ ]]; then
     echo -e "  Orchestrator: ${GREEN}RUNNING${NC} (PID: $ORCH_PID)"

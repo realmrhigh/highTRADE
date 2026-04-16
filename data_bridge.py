@@ -15,6 +15,9 @@ Gap coverage (from weekly recurring-gaps analysis):
   │ Current VIX level                    │   ×2  │ yfinance ^VIX              │
   │ Analyst price targets / ratings      │   ×2  │ yfinance info dict         │
   │ News mention count (zero-coverage)   │   ×2  │ local DB                   │
+  │ After-hours price action             │   ×2  │ yfinance prepost=True      │
+  │ GLD fund flow proxy                  │   ×2  │ yfinance volume×price      │
+  │ Central bank gold purchasing data    │   ×2  │ yfinance GC=F + FRED       │
   └──────────────────────────────────────┴───────┴────────────────────────────┘
 
 Design principles:
@@ -273,7 +276,233 @@ def get_vix() -> Optional[float]:
         return None
 
 
-# ── 6. Analyst targets (fallback to info dict) ─────────────────────────────────
+def get_xle_spy_rs() -> Optional[dict]:
+    """
+    Fetch XLE vs SPY relative strength ratio (1-day and 5-day).
+    Returns dict with xle_spy_ratio_1d, xle_spy_ratio_5d, xle_pct_1d, spy_pct_1d, or None.
+    Added 2026-04-06 to resolve recurring 'energy sector relative strength' gap.
+    """
+    try:
+        import yfinance as yf
+        import pandas as pd
+        data = yf.download(['XLE', 'SPY'], period='10d', interval='1d', progress=False)['Close']
+        if data.empty or 'XLE' not in data or 'SPY' not in data:
+            return None
+        xle = data['XLE'].dropna()
+        spy = data['SPY'].dropna()
+        if len(xle) < 2 or len(spy) < 2:
+            return None
+        xle_1d = float((xle.iloc[-1] / xle.iloc[-2] - 1) * 100)
+        spy_1d = float((spy.iloc[-1] / spy.iloc[-2] - 1) * 100)
+        xle_5d = float((xle.iloc[-1] / xle.iloc[max(0, len(xle)-6)] - 1) * 100) if len(xle) >= 6 else None
+        spy_5d = float((spy.iloc[-1] / spy.iloc[max(0, len(spy)-6)] - 1) * 100) if len(spy) >= 6 else None
+        rs_1d = round(xle_1d - spy_1d, 3)
+        rs_5d = round(xle_5d - spy_5d, 3) if xle_5d is not None and spy_5d is not None else None
+        return {
+            'xle_pct_1d': round(xle_1d, 3),
+            'spy_pct_1d': round(spy_1d, 3),
+            'xle_spy_rs_1d': rs_1d,   # positive = XLE outperforming SPY
+            'xle_spy_rs_5d': rs_5d,
+        }
+    except Exception as e:
+        logger.debug(f"get_xle_spy_rs(): {e}")
+        return None
+
+
+# ── 6b. After-hours / extended price ─────────────────────────────────────────
+
+def get_after_hours_price(ticker: str = 'SPY') -> dict:
+    """
+    Fetch after-hours (post-market) or pre-market price via yfinance fast_info.
+    Falls back to 1-hour history with prepost=True when fast_info is unavailable.
+    Added to resolve recurring 'live after-hours price action' gap.
+    """
+    empty = {'after_hours_price': None, 'after_hours_chg_pct': None,
+             'after_hours_type': None, 'after_hours_timestamp': None}
+    try:
+        import yfinance as yf
+        from datetime import datetime as _dt
+        t = yf.Ticker(ticker)
+        fi = t.fast_info
+        prev_close = fi.get('regularMarketPreviousClose') or fi.get('previousClose')
+        reg_price  = fi.get('regularMarketPrice')
+
+        # Check post-market first
+        post = fi.get('postMarketPrice')
+        if post:
+            chg_pct = round((post - reg_price) / reg_price * 100, 3) if reg_price else None
+            return {
+                'after_hours_price':     round(float(post), 4),
+                'after_hours_chg_pct':  chg_pct,
+                'after_hours_type':     'post-market',
+                'after_hours_timestamp': _dt.now().isoformat(),
+            }
+
+        # Check pre-market
+        pre = fi.get('preMarketPrice')
+        if pre and prev_close:
+            chg_pct = round((pre - prev_close) / prev_close * 100, 3)
+            return {
+                'after_hours_price':     round(float(pre), 4),
+                'after_hours_chg_pct':  chg_pct,
+                'after_hours_type':     'pre-market',
+                'after_hours_timestamp': _dt.now().isoformat(),
+            }
+
+        # Market closed fallback: use prepost=True history to get latest tick
+        hist = t.history(period='1d', interval='5m', prepost=True)
+        if hist is not None and not hist.empty:
+            last = hist.iloc[-1]
+            last_price = float(last['Close'])
+            last_ts    = str(hist.index[-1])
+            chg_pct = round((last_price - prev_close) / prev_close * 100, 3) if prev_close else None
+            return {
+                'after_hours_price':     round(last_price, 4),
+                'after_hours_chg_pct':  chg_pct,
+                'after_hours_type':     'last-tick',
+                'after_hours_timestamp': last_ts,
+            }
+
+        return empty
+    except Exception as e:
+        logger.debug(f"get_after_hours_price({ticker}): {e}")
+        return empty
+
+
+# ── 6c. GLD / Gold fund-flow proxy ────────────────────────────────────────────
+
+def get_gold_fund_flow() -> dict:
+    """
+    Approximate GLD ETF fund flows using daily volume × price as a proxy for
+    daily dollar flow, and compute 5-day trend vs the prior 5-day average.
+    Also pulls GLD AUM and shares outstanding for context.
+    Added to resolve recurring 'gld fund flow data (etf inflows/outflows)' gap.
+    """
+    empty = {'gld_price': None, 'gld_volume': None, 'gld_dollar_flow_5d_avg': None,
+             'gld_flow_trend': None, 'gld_aum_billions': None, 'gld_flow_note': None}
+    try:
+        import yfinance as yf
+        import numpy as np
+        t = yf.Ticker('GLD')
+        hist = t.history(period='14d', interval='1d')
+        if hist is None or hist.empty:
+            return empty
+
+        hist = hist.dropna(subset=['Close', 'Volume'])
+        if len(hist) < 2:
+            return empty
+
+        # Dollar flow proxy = close × volume
+        dollar_flow = hist['Close'] * hist['Volume']
+
+        recent_5d = dollar_flow.iloc[-5:].mean()  if len(dollar_flow) >= 5 else dollar_flow.mean()
+        prior_5d  = dollar_flow.iloc[-10:-5].mean() if len(dollar_flow) >= 10 else dollar_flow.iloc[:-5].mean() if len(dollar_flow) > 5 else None
+
+        flow_trend = None
+        if prior_5d and prior_5d > 0:
+            flow_trend = round(float((recent_5d / prior_5d - 1) * 100), 2)  # % change vs prior window
+
+        info = t.info
+        total_assets = info.get('totalAssets')
+        aum_billions = round(total_assets / 1e9, 2) if total_assets else None
+
+        last_row = hist.iloc[-1]
+        return {
+            'gld_price':              round(float(last_row['Close']), 4),
+            'gld_volume':             int(last_row['Volume']),
+            'gld_dollar_flow_5d_avg': round(float(recent_5d) / 1e6, 2),  # in $M
+            'gld_flow_trend_pct':     flow_trend,       # +% = accelerating inflows
+            'gld_aum_billions':       aum_billions,
+            'gld_flow_note':          'proxy: volume×price; positive trend = inflows accelerating',
+        }
+    except Exception as e:
+        logger.debug(f"get_gold_fund_flow(): {e}")
+        return empty
+
+
+# ── 6d. Central bank gold purchasing data (FRED + news proxy) ─────────────────
+
+def get_central_bank_gold_data() -> dict:
+    """
+    Fetch gold-related FRED macro indicators and GLD/XAUUSD context as a proxy
+    for central bank gold purchasing activity.
+    FRED series:
+      - GOLDAMGBD228NLBM: Gold Fixing Price (London AM, USD/troy oz)
+    Also returns GLD AUM trend as a crude demand proxy.
+    Added to resolve recurring 'recent central bank gold purchasing data' gap.
+    """
+    empty = {'gold_spot_price': None, 'gold_spot_date': None,
+             'gold_30d_chg_pct': None, 'gold_cb_note': None}
+    try:
+        import yfinance as yf
+        import requests as _req
+        from pathlib import Path as _Path
+        import json as _json
+
+        # -- Gold spot price from yfinance (GC=F front-month futures or GLD proxy) --
+        try:
+            gc = yf.Ticker('GC=F')
+            hist_gc = gc.history(period='35d', interval='1d').dropna(subset=['Close'])
+            if not hist_gc.empty:
+                latest_price  = float(hist_gc['Close'].iloc[-1])
+                oldest_price  = float(hist_gc['Close'].iloc[0])
+                chg_30d = round((latest_price / oldest_price - 1) * 100, 2)
+                latest_date   = str(hist_gc.index[-1])[:10]
+            else:
+                raise ValueError('empty GC=F history')
+        except Exception:
+            # Fallback to GLD
+            gld = yf.Ticker('GLD')
+            hist_gld = gld.history(period='35d', interval='1d').dropna(subset=['Close'])
+            latest_price  = float(hist_gld['Close'].iloc[-1]) if not hist_gld.empty else None
+            oldest_price  = float(hist_gld['Close'].iloc[0]) if len(hist_gld) > 1 else None
+            chg_30d = round((latest_price / oldest_price - 1) * 100, 2) if latest_price and oldest_price else None
+            latest_date   = str(hist_gld.index[-1])[:10] if not hist_gld.empty else None
+
+        # -- FRED: Gold Fixing Price (AM) as benchmark context --
+        fred_gold_price = None
+        fred_gold_date  = None
+        try:
+            cfg_path = _Path(__file__).parent / 'trading_data' / 'orchestrator_config.json'
+            fred_key = None
+            if cfg_path.exists():
+                cfg = _json.loads(cfg_path.read_text())
+                fred_key = cfg.get('fred_api_key') or cfg.get('FRED_API_KEY')
+            if not fred_key:
+                import os as _os
+                fred_key = _os.environ.get('FRED_API_KEY')
+            if fred_key:
+                r = _req.get(
+                    'https://api.stlouisfed.org/fred/series/observations',
+                    params={'series_id': 'GOLDAMGBD228NLBM', 'api_key': fred_key,
+                            'limit': 5, 'sort_order': 'desc', 'file_type': 'json'},
+                    timeout=10
+                )
+                if r.status_code == 200:
+                    obs = r.json().get('observations', [])
+                    for o in obs:
+                        if o.get('value') not in ('.', '', None):
+                            fred_gold_price = round(float(o['value']), 2)
+                            fred_gold_date  = o.get('date', '')
+                            break
+        except Exception:
+            pass
+
+        return {
+            'gold_spot_price':      round(latest_price, 2) if latest_price else None,
+            'gold_spot_date':       latest_date,
+            'gold_30d_chg_pct':     chg_30d,
+            'gold_fred_am_fix':     fred_gold_price,
+            'gold_fred_date':       fred_gold_date,
+            'gold_cb_note':         (
+                'Spot via GC=F/GLD. Central bank flows not directly available via free APIs; '
+                'use WGC reports or Bloomberg for precise CB purchasing data.'
+            ),
+        }
+    except Exception as e:
+        logger.debug(f"get_central_bank_gold_data(): {e}")
+        return empty
+
 
 def get_analyst_info(info: dict) -> dict:
     """
@@ -479,8 +708,50 @@ def enrich(ticker: str, existing: dict) -> dict:
     pm = get_premarket(ticker)
     result.update(pm)
 
-    # ── 5. VIX ───────────────────────────────────────────────────────────
+    # ── 5. VIX + VIX term structure ──────────────────────────────────────
     result['vix_level'] = get_vix()
+    try:
+        from vix_term_structure import VIXTermStructure as _VTS
+        _vts = _VTS().get_term_structure_data()
+        if _vts and 'vix_spot' in _vts:
+            result['vix_spot']       = _vts.get('vix_spot')
+            result['vix_3m']         = _vts.get('vix_3m')
+            result['vix_6m']         = _vts.get('vix_6m')
+            result['vix_vxv_ratio']  = _vts.get('vix_vxv_ratio')
+            result['vix_regime']     = _vts.get('regime')
+            # Override vix_level with the live spot value if we got it
+            if _vts.get('vix_spot'):
+                result['vix_level'] = _vts['vix_spot']
+    except Exception as _vte:
+        logger.debug(f"vix_term_structure enrich: {_vte}")
+
+    # ── 5b. XLE/SPY relative strength (energy sector vs broad market) ────
+    # Resolves recurring 'energy sector relative strength (XLE vs SPY)' gap
+    xle_rs = get_xle_spy_rs()
+    if xle_rs:
+        result.update(xle_rs)
+        logger.debug(f"  📊 XLE/SPY RS: 1d={xle_rs.get('xle_spy_rs_1d'):+.2f}%, XLE={xle_rs.get('xle_pct_1d'):+.2f}%")
+
+    # ── 5c. After-hours / extended price for SPY (macro context) ───────────
+    # Resolves recurring 'live after-hours price action' gap
+    ah = get_after_hours_price('SPY')
+    result.update(ah)
+    if ah.get('after_hours_price'):
+        logger.debug(f"  🌙 SPY after-hours: ${ah['after_hours_price']} ({ah.get('after_hours_chg_pct',0):+.2f}%) [{ah.get('after_hours_type')}]")
+
+    # ── 5d. GLD fund flow proxy ───────────────────────────────────────────
+    # Resolves recurring 'gld fund flow data (etf inflows/outflows) unavailable' gap
+    gld_flow = get_gold_fund_flow()
+    result.update(gld_flow)
+    if gld_flow.get('gld_price'):
+        logger.debug(f"  💰 GLD: ${gld_flow['gld_price']} | flow trend: {gld_flow.get('gld_flow_trend_pct',0):+.1f}% | AUM: ${gld_flow.get('gld_aum_billions')}B")
+
+    # ── 5e. Central bank gold data proxy ─────────────────────────────────
+    # Resolves recurring 'recent central bank gold purchasing data' gap
+    gold_cb = get_central_bank_gold_data()
+    result.update(gold_cb)
+    if gold_cb.get('gold_spot_price'):
+        logger.debug(f"  🟡 Gold spot: ${gold_cb['gold_spot_price']} | 30d chg: {gold_cb.get('gold_30d_chg_pct',0):+.2f}%")
 
     # ── 6. Analyst consensus (from info dict) ────────────────────────────
     ai = get_analyst_info(info)

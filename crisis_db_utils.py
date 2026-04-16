@@ -4,72 +4,86 @@ Crisis Pattern Storage Utilities
 Manage market crisis data compilation and queries
 """
 
-import sqlite3
 import json
-import os
-from datetime import datetime
+from pathlib import Path
 from typing import List, Dict, Any
 
+from db_paths import DB_PATH
+from trading_db import db
+
+
 class CrisisDatabase:
-    def __init__(self, db_path: str = "~/trading_data/trading_history.db"):
-        self.db_path = os.path.expanduser(db_path)
-        self.conn = sqlite3.connect(self.db_path)
-        self.cur = self.conn.cursor()
+    def __init__(self, db_path: str = DB_PATH):
+        self.db_path = str(db_path)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False
 
     def add_crisis(self, crisis_data: Dict[str, Any]) -> int:
         """Add a new market crisis to the database"""
-        self.cur.execute("""
-            INSERT INTO market_crises
-            (date, event_type, trigger_description, drawdown_percent,
-             recovery_days, signals, resolution_catalyst)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
-            crisis_data.get("date"),
-            crisis_data.get("event_type"),
-            crisis_data.get("trigger_description"),
-            crisis_data.get("drawdown_percent"),
-            crisis_data.get("recovery_days"),
-            json.dumps(crisis_data.get("signals", {})),
-            crisis_data.get("resolution_catalyst")
-        ))
-        self.conn.commit()
-        return self.cur.lastrowid
+        with db(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO market_crises
+                (date, event_type, trigger_description, drawdown_percent,
+                 recovery_days, signals, resolution_catalyst)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                crisis_data.get("date"),
+                crisis_data.get("event_type"),
+                crisis_data.get("trigger_description"),
+                crisis_data.get("drawdown_percent"),
+                crisis_data.get("recovery_days"),
+                json.dumps(crisis_data.get("signals", {})),
+                crisis_data.get("resolution_catalyst")
+            ))
+            return cur.lastrowid
 
     def add_signal(self, signal_data: Dict[str, Any]) -> int:
         """Add a real-time market signal"""
-        self.cur.execute("""
-            INSERT INTO market_signals
-            (signal_type, confidence, context, defcon_level)
-            VALUES (?, ?, ?, ?)
-        """, (
-            signal_data.get("signal_type"),
-            signal_data.get("confidence"),
-            json.dumps(signal_data.get("context", {})),
-            signal_data.get("defcon_level")
-        ))
-        self.conn.commit()
-        return self.cur.lastrowid
+        with db(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO market_signals
+                (signal_type, confidence, context, defcon_level)
+                VALUES (?, ?, ?, ?)
+            """, (
+                signal_data.get("signal_type"),
+                signal_data.get("confidence"),
+                json.dumps(signal_data.get("context", {})),
+                signal_data.get("defcon_level")
+            ))
+            return cur.lastrowid
 
     def get_all_crises(self) -> List[Dict[str, Any]]:
         """Retrieve all crises"""
-        self.cur.execute("SELECT * FROM market_crises ORDER BY date DESC;")
-        return self._format_crises(self.cur.fetchall())
+        with db(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM market_crises ORDER BY date DESC;")
+            return self._format_crises(cur.fetchall())
 
     def get_crisis_by_type(self, event_type: str) -> List[Dict[str, Any]]:
         """Get crises by event type"""
-        self.cur.execute(
-            "SELECT * FROM market_crises WHERE event_type = ? ORDER BY date DESC;",
-            (event_type,)
-        )
-        return self._format_crises(self.cur.fetchall())
+        with db(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT * FROM market_crises WHERE event_type = ? ORDER BY date DESC;",
+                (event_type,)
+            )
+            return self._format_crises(cur.fetchall())
 
     def get_recent_signals(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Get recent market signals"""
-        self.cur.execute(
-            "SELECT * FROM market_signals ORDER BY timestamp DESC LIMIT ?;",
-            (limit,)
-        )
-        rows = self.cur.fetchall()
+        with db(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT * FROM market_signals ORDER BY timestamp DESC LIMIT ?;",
+                (limit,)
+            )
+            rows = cur.fetchall()
         return [
             {
                 "id": r[0],
@@ -84,8 +98,10 @@ class CrisisDatabase:
 
     def get_crisis_count(self) -> int:
         """Total number of crises stored"""
-        self.cur.execute("SELECT COUNT(*) FROM market_crises;")
-        return self.cur.fetchone()[0]
+        with db(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM market_crises;")
+            return cur.fetchone()[0]
 
     def _format_crises(self, rows) -> List[Dict[str, Any]]:
         """Format crisis rows into dicts"""
@@ -104,23 +120,13 @@ class CrisisDatabase:
             for r in rows
         ]
 
-    def close(self):
-        """Close database connection"""
-        self.conn.close()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
-
 
 # Example usage
 if __name__ == "__main__":
-    with CrisisDatabase() as db:
-        print(f"Total crises in database: {db.get_crisis_count()}")
+    with CrisisDatabase() as crisis_db:
+        print(f"Total crises in database: {crisis_db.get_crisis_count()}")
 
-        crises = db.get_all_crises()
+        crises = crisis_db.get_all_crises()
         for crisis in crises:
             print(f"\n{crisis['date']} - {crisis['event_type']}")
             print(f"  Drawdown: {crisis['drawdown_percent']}%")

@@ -171,6 +171,18 @@ def _fetch_recent_news_for_ticker(ticker: str, conn: sqlite3.Connection) -> List
         return []
 
 
+def _close_yf_cache():
+    """Close the yfinance peewee cache DBs to prevent FD leaks."""
+    try:
+        from yfinance.cache import _TzDBManager, _CookieDBManager, _ISINDBManager
+        for manager in [_TzDBManager, _CookieDBManager, _ISINDBManager]:
+            db = manager.get_database()
+            if db and not db.is_closed():
+                db.close()
+    except Exception:
+        pass
+
+
 def _get_current_price(ticker: str) -> Optional[float]:
     """Fetch current price via yfinance."""
     try:
@@ -179,6 +191,8 @@ def _get_current_price(ticker: str) -> Optional[float]:
         return float(hist['Close'].iloc[-1]) if len(hist) > 0 else None
     except Exception:
         return None
+    finally:
+        _close_yf_cache()
 
 
 def _get_latest_macro(conn: sqlite3.Connection) -> Dict:

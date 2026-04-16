@@ -25,12 +25,42 @@ Staleness policy:
 import json
 import logging
 import sqlite3
+import subprocess
+import sys
 from trading_db import get_sqlite_conn
 import time
 import requests
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
+
+
+def _research_ticker_with_timeout(ticker: str, date_str: str, conn, timeout_secs: int = 45) -> bool:
+    """
+    Run research_ticker in a subprocess so that any blocking C-level yfinance/network
+    call can be hard-killed after timeout_secs. Results are written to the shared DB
+    by the subprocess directly (same DB path).
+    """
+    script = Path(__file__).resolve()
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script), '--ticker', ticker, '--date', date_str],
+            timeout=timeout_secs,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            logger.info(f"  ✅ subprocess research OK for {ticker}")
+            return True
+        else:
+            logger.warning(f"  ⚠️  subprocess research failed for {ticker} (rc={result.returncode}): {result.stderr[-300:]}")
+            return False
+    except subprocess.TimeoutExpired:
+        logger.warning(f"  ⏱️  {ticker} research hard-killed after {timeout_secs}s (yfinance hung)")
+        return False
+    except Exception as e:
+        logger.warning(f"  ⚠️  subprocess research error for {ticker}: {e}")
+        return False
 
 logger = logging.getLogger(__name__)
 
@@ -643,7 +673,7 @@ def run_research_cycle() -> List[str]:
     researched = []
     for row in pending:
         ticker = row['ticker']
-        success = research_ticker(ticker, date_str, conn)
+        success = _research_ticker_with_timeout(ticker, date_str, conn, timeout_secs=45)
 
         if success:
             # Mark as researched in watchlist — prepend status prefix but preserve any
@@ -690,12 +720,39 @@ if __name__ == '__main__':
     if '--ticker' in sys.argv:
         idx = sys.argv.index('--ticker')
         ticker = sys.argv[idx + 1].upper()
-        print(f"\n🔍 Single-ticker research: {ticker}")
+        date_str = datetime.now().strftime('%Y-%m-%d')
+        if '--date' in sys.argv:
+            didx = sys.argv.index('--date')
+            date_str = sys.argv[didx + 1]
+        print(f"\n🔍 Single-ticker research: {ticker} ({date_str})")
         conn = _get_conn()
         _ensure_library_table(conn)
-        success = research_ticker(ticker, datetime.now().strftime('%Y-%m-%d'), conn)
+        success = research_ticker(ticker, date_str, conn)
+        # Also update watchlist status when run as subprocess
+        if success:
+            conn.execute("""
+                UPDATE acquisition_watchlist
+                SET status = 'researched',
+                    notes = CASE
+                        WHEN notes IS NULL OR notes = '' THEN ?
+                        ELSE ? || ' | ' || notes
+                    END
+                WHERE ticker = ? AND status = 'pending'
+            """, (f"Researched {date_str}", f"Researched {date_str}", ticker))
+        else:
+            conn.execute("""
+                UPDATE acquisition_watchlist
+                SET status = 'research_error',
+                    notes = CASE
+                        WHEN notes IS NULL OR notes = '' THEN ?
+                        ELSE ? || ' | ' || notes
+                    END
+                WHERE ticker = ? AND status = 'pending'
+            """, (f"Research failed {date_str}", f"Research failed {date_str}", ticker))
+        conn.commit()
         conn.close()
         print(f"{'✅ Done' if success else '❌ Failed'}")
+        sys.exit(0 if success else 1)
     else:
         print(f"\n🔬 Acquisition Researcher — full cycle")
         tickers = run_research_cycle()

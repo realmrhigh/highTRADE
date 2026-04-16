@@ -33,7 +33,8 @@ class ExitStrategyManager:
                  stop_loss: float = -0.03,
                  trailing_stop_pct: float = 0.02,
                  max_hold_hours: int = 72,
-                 min_hold_hours: int = 1):
+                 min_hold_hours: int = 1,
+                 pdt_protection: bool = False):
         """
         Args:
             profit_target: Fixed profit target (0.05 = 5%)
@@ -41,12 +42,14 @@ class ExitStrategyManager:
             trailing_stop_pct: Trailing stop distance (0.02 = 2%)
             max_hold_hours: Exit position after this many hours
             min_hold_hours: Minimum hold time before allowing exits
+            pdt_protection: If True, stop-losses are gated by min_hold_hours to avoid PDT violations
         """
         self.profit_target = profit_target
         self.stop_loss = stop_loss
         self.trailing_stop_pct = trailing_stop_pct
         self.max_hold_hours = max_hold_hours
         self.min_hold_hours = min_hold_hours
+        self.pdt_protection = pdt_protection
 
         # Track highest price seen for each trade (for trailing stop)
         self.highest_prices: Dict[int, float] = {}
@@ -107,8 +110,13 @@ class ExitStrategyManager:
 
     def check_stop_loss(self, entry_price: float, current_price: float,
                        min_hold_met: bool) -> Optional[float]:
-        """Check if stop loss is hit — ALWAYS fires regardless of min_hold_hours.
-        Stop-loss is a safety mechanism that must never be gated by hold time."""
+        """Check if stop loss is hit.
+        
+        If pdt_protection is active, stop-loss is gated by min_hold_hours.
+        Otherwise, it's a safety mechanism that fires regardless of hold time."""
+        if self.pdt_protection and not min_hold_met:
+            return None
+
         loss_pct = (current_price - entry_price) / entry_price
         if loss_pct <= self.stop_loss:
             return loss_pct
@@ -184,7 +192,8 @@ class ExitStrategyManager:
             trade: Dict with keys: trade_id, asset_symbol, entry_price, entry_date, 
                    entry_time, defcon_at_entry.
                    Optional: stop_loss, take_profit_1 (absolute price levels from
-                   exit_analyst / acquisition pipeline — override class defaults).
+                   exit_analyst / acquisition pipeline — override class defaults),
+                   last_exit_attempt (ISO timestamp string).
             current_price: Current market price
             current_defcon: Current DEFCON level
             
@@ -194,6 +203,23 @@ class ExitStrategyManager:
         entry_price = trade['entry_price']
         trade_id = trade['trade_id']
         asset_symbol = trade['asset_symbol']
+
+        # ── Sell Cooldown ────────────────────────────────────────────────────
+        # If we recently tried to sell and failed, don't trigger again for 15m.
+        last_attempt_str = trade.get('last_exit_attempt')
+        if last_attempt_str:
+            try:
+                # Handle potential formats from SQLite (might be YYYY-MM-DD HH:MM:SS or ISO)
+                if 'T' in last_attempt_str:
+                    last_attempt = datetime.fromisoformat(last_attempt_str)
+                else:
+                    last_attempt = datetime.strptime(last_attempt_str, '%Y-%m-%d %H:%M:%S')
+                
+                if datetime.now() - last_attempt < timedelta(minutes=15):
+                    logger.debug(f"  ⏳ {asset_symbol} sell cooldown active (last attempt {last_attempt_str})")
+                    return None
+            except Exception as e:
+                logger.debug(f"  ⚠️ Error parsing last_exit_attempt for {asset_symbol}: {e}")
 
         # Per-trade stop/TP from DB (set by exit_analyst or acquisition pipeline).
         # Fall back to class-level defaults if not set.
@@ -210,7 +236,12 @@ class ExitStrategyManager:
         #    Use per-trade absolute stop price if available, else fall back to % rule.
         if trade_stop and trade_stop > 0:
             # Per-trade absolute stop from exit_analyst — compare directly
+            # Still gated by PDT if enabled
             if current_price <= trade_stop:
+                if self.pdt_protection and not min_hold_met:
+                    logger.debug(f"  🛡️ PDT Protection: {asset_symbol} stop-loss hit (${current_price:.2f} <= ${trade_stop:.2f}) but holding due to min_hold_hours")
+                    return None
+
                 loss_pct = (current_price - entry_price) / entry_price
                 return ExitSignal(
                     trade_id=trade_id,

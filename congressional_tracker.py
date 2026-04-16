@@ -1,3 +1,4 @@
+from trading_db import get_sqlite_conn
 #!/usr/bin/env python3
 """
 Congressional Trading Tracker
@@ -472,7 +473,7 @@ class CongressionalTracker:
         if not trades:
             return 0
 
-        conn = sqlite3.connect(self.db_path)
+        conn = get_sqlite_conn(str(self.db_path), timeout=15)
         conn.execute("PRAGMA journal_mode=WAL")
         cursor = conn.cursor()
 
@@ -513,7 +514,7 @@ class CongressionalTracker:
         if not clusters:
             return
 
-        conn = sqlite3.connect(self.db_path)
+        conn = get_sqlite_conn(str(self.db_path), timeout=15)
         conn.execute("PRAGMA journal_mode=WAL")
         cursor = conn.cursor()
 

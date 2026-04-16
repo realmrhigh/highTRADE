@@ -6,11 +6,11 @@ Generates dashboard sections for portfolio metrics and trading performance
 
 import sqlite3
 import json
-from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Any
 
-DB_PATH = Path.home() / 'trading_data' / 'trading_history.db'
+from db_paths import DB_PATH
+from trading_db import db
 
 
 class PortfolioDashboard:
@@ -19,19 +19,18 @@ class PortfolioDashboard:
     def __init__(self, db_path=DB_PATH):
         self.db_path = db_path
 
-    def connect(self):
-        self.conn = sqlite3.connect(str(self.db_path))
-        self.cursor = self.conn.cursor()
-        self.cursor.row_factory = sqlite3.Row
+    def __enter__(self):
+        return self
 
-    def disconnect(self):
-        self.conn.close()
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False
 
     def get_portfolio_summary(self) -> Dict[str, Any]:
         """Get overall portfolio metrics"""
-        self.connect()
-        try:
-            self.cursor.execute('''
+        with db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.row_factory = sqlite3.Row
+            cursor.execute('''
             SELECT
                 COUNT(*) as total_trades,
                 SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) as open_trades,
@@ -43,7 +42,7 @@ class PortfolioDashboard:
                 SUM(CASE WHEN status = 'open' THEN position_size_dollars ELSE 0 END) as open_value
             FROM trade_records
             ''')
-            row = self.cursor.fetchone()
+            row = cursor.fetchone()
             if row:
                 row = dict(row)
                 win_rate = 0
@@ -62,14 +61,13 @@ class PortfolioDashboard:
                     'open_value': row['open_value'] or 0.0
                 }
             return {}
-        finally:
-            self.disconnect()
 
     def get_open_positions_summary(self) -> List[Dict[str, Any]]:
         """Get summary of all open positions"""
-        self.connect()
-        try:
-            self.cursor.execute('''
+        with db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.row_factory = sqlite3.Row
+            cursor.execute('''
             SELECT
                 trade_id,
                 asset_symbol,
@@ -82,15 +80,14 @@ class PortfolioDashboard:
             WHERE status = 'open'
             ORDER BY entry_date DESC
             ''')
-            return [dict(row) for row in self.cursor.fetchall()]
-        finally:
-            self.disconnect()
+            return [dict(row) for row in cursor.fetchall()]
 
     def get_performance_by_asset(self) -> Dict[str, Dict[str, Any]]:
         """Get performance metrics grouped by asset"""
-        self.connect()
-        try:
-            self.cursor.execute('''
+        with db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.row_factory = sqlite3.Row
+            cursor.execute('''
             SELECT
                 asset_symbol,
                 COUNT(*) as total_trades,
@@ -104,7 +101,7 @@ class PortfolioDashboard:
             ''')
 
             result = {}
-            for row in self.cursor.fetchall():
+            for row in cursor.fetchall():
                 row = dict(row)
                 win_rate = 0
                 if row['closed_trades'] and row['closed_trades'] > 0:
@@ -120,14 +117,13 @@ class PortfolioDashboard:
                 }
 
             return result
-        finally:
-            self.disconnect()
 
     def get_performance_by_crisis_type(self) -> Dict[str, Dict[str, Any]]:
         """Get performance metrics grouped by crisis type"""
-        self.connect()
-        try:
-            self.cursor.execute('''
+        with db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.row_factory = sqlite3.Row
+            cursor.execute('''
             SELECT
                 COALESCE(c.category, 'signal') as crisis_type,
                 COUNT(t.trade_id) as total_trades,
@@ -142,7 +138,7 @@ class PortfolioDashboard:
             ''')
 
             result = {}
-            for row in self.cursor.fetchall():
+            for row in cursor.fetchall():
                 row = dict(row)
                 win_rate = 0
                 if row['closed_trades'] and row['closed_trades'] > 0:
@@ -158,14 +154,13 @@ class PortfolioDashboard:
                 }
 
             return result
-        finally:
-            self.disconnect()
 
     def get_recent_trades(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Get recent closed trades with results"""
-        self.connect()
-        try:
-            self.cursor.execute('''
+        with db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.row_factory = sqlite3.Row
+            cursor.execute('''
             SELECT
                 trade_id,
                 asset_symbol,
@@ -182,15 +177,14 @@ class PortfolioDashboard:
             ORDER BY exit_date DESC, exit_date DESC
             LIMIT ?
             ''', (limit,))
-            return [dict(row) for row in self.cursor.fetchall()]
-        finally:
-            self.disconnect()
+            return [dict(row) for row in cursor.fetchall()]
 
     def get_asset_allocation(self) -> Dict[str, Any]:
         """Get current portfolio asset allocation (open positions)"""
-        self.connect()
-        try:
-            self.cursor.execute('''
+        with db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.row_factory = sqlite3.Row
+            cursor.execute('''
             SELECT
                 asset_symbol,
                 COUNT(*) as position_count,
@@ -204,27 +198,26 @@ class PortfolioDashboard:
             allocations = {}
             total_value = 0
 
-            rows = [dict(row) for row in self.cursor.fetchall()]
-            for row in rows:
-                total_value += row['total_value'] or 0
+            rows = [dict(row) for row in cursor.fetchall()]
 
-            for row in rows:
-                pct = 0
-                if total_value > 0:
-                    pct = (row['total_value'] / total_value) * 100
+        for row in rows:
+            total_value += row['total_value'] or 0
 
-                allocations[row['asset_symbol']] = {
-                    'position_count': row['position_count'],
-                    'total_value': round(row['total_value'], 2),
-                    'allocation_pct': round(pct, 1)
-                }
+        for row in rows:
+            pct = 0
+            if total_value > 0:
+                pct = (row['total_value'] / total_value) * 100
 
-            return {
-                'allocations': allocations,
-                'total_value': round(total_value, 2)
+            allocations[row['asset_symbol']] = {
+                'position_count': row['position_count'],
+                'total_value': round(row['total_value'], 2),
+                'allocation_pct': round(pct, 1)
             }
-        finally:
-            self.disconnect()
+
+        return {
+            'allocations': allocations,
+            'total_value': round(total_value, 2)
+        }
 
     def generate_portfolio_html_section(self) -> str:
         """Generate HTML section for portfolio dashboard"""

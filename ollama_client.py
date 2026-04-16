@@ -67,15 +67,14 @@ logger = logging.getLogger(__name__)
 # 1. CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-OLLAMA_BASE_URL  = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_BASE_URL  = os.environ.get("OLLAMA_BASE_URL", "http://192.168.0.233:11434")
 OLLAMA_TIMEOUT   = int(os.environ.get("OLLAMA_TIMEOUT", "180"))
 
 # Model aliases — override via env or pass model= to OllamaClient()
-# llama3.2:3b: 2GB, proper tool_calls, ~8 tok/s on Intel CPU — best for this hardware
-# llama3.1:8b: 5GB, also has tool_calls but too slow on Intel i3 (no Metal/GPU)
-# qwen2.5-coder: coding fallback only (embeds tool JSON in content field)
-_PREFERRED_ORCHESTRATOR = "llama3.2:3b"
-_FALLBACK_MODEL         = "qwen2.5-coder:7b-instruct-q8_0"
+# gemma4-cc: primary local model for tool use / coding fallback
+# llama3.2:3b: legacy lightweight fallback
+_PREFERRED_ORCHESTRATOR = "gemma4-cc:latest"
+_FALLBACK_MODEL         = "gemma4-cc:latest"
 
 OLLAMA_ORCHESTRATOR_MODEL = os.environ.get(
     "OLLAMA_ORCHESTRATOR_MODEL", _PREFERRED_ORCHESTRATOR
@@ -104,7 +103,7 @@ def _extract_tool_calls(message: Dict) -> List[Dict]:
          → llama3.1, mistral, phi4, etc. (proper Ollama tool_calls format)
 
       B) message.content = '{"name": "...", "arguments": {...}}'
-         → qwen2.5-coder and other models that embed tool JSON in content
+         → gemma4-cc and other models that embed tool JSON in content
 
       C) message.content = 'Some text without any tool call'
          → plain text response, returns []
@@ -175,7 +174,7 @@ class OllamaClient:
     Thin wrapper around Ollama's /api/chat endpoint.
 
     Automatically:
-      - Falls back to qwen2.5-coder if preferred model isn't loaded
+      - Falls back to gemma4-cc if preferred model isn't loaded
       - Parses tool calls from both tool_calls field and JSON-in-content
       - Retries on transient errors with exponential backoff
     """

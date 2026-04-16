@@ -21,6 +21,7 @@ import json
 import logging
 import sqlite3
 from trading_db import get_sqlite_conn
+from confidence_utils import calibrate_unit_confidence
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -341,12 +342,39 @@ def _build_analyst_prompt(ticker: str, research: Dict,
     # Pre-market (data_bridge)
     pre_price = research.get('pre_market_price')
     pre_chg   = research.get('pre_market_chg_pct')
-    vix_lvl   = research.get('vix_level')
+    vix_lvl   = research.get('vix_level') or research.get('vix_spot')
+
+    # VIX term structure (data_bridge enriched)
+    vix_regime    = research.get('vix_regime')
+    vix_vxv_ratio = research.get('vix_vxv_ratio')
+    vix_3m        = research.get('vix_3m')
+    _vix_ts_line  = ""
+    if vix_regime and vix_vxv_ratio:
+        _vix_ts_line = f"  VIX regime:       {vix_regime} (VIX/VXV={vix_vxv_ratio:.2f})\n"
+    elif vix_3m:
+        _vix_ts_line = f"  VIX 3M:           {vix_3m:.2f}\n"
+
+    # XLE/SPY relative strength (data_bridge enriched)
+    xle_rs_1d = research.get('xle_spy_rs_1d')
+    xle_pct   = research.get('xle_pct_1d')
+    spy_pct   = research.get('spy_pct_1d')
+    xle_rs_5d = research.get('xle_spy_rs_5d')
+    _xle_rs_line = ""
+    if xle_rs_1d is not None:
+        _dir = "outperforming" if xle_rs_1d > 0 else "underperforming"
+        _xle_rs_line = (
+            f"  XLE vs SPY (1d):  XLE {xle_pct:+.2f}% / SPY {spy_pct:+.2f}% → "
+            f"energy {_dir} by {abs(xle_rs_1d):.2f}%\n"
+        )
+        if xle_rs_5d is not None:
+            _xle_rs_line += f"  XLE vs SPY (5d):  {xle_rs_5d:+.2f}% relative\n"
 
     premarket_block = (
         f"  Pre-market price: {'${:.2f}'.format(pre_price) if pre_price else 'N/A'}"
         + (f" ({pre_chg:+.2f}%)" if isinstance(pre_chg, float) else "") + "\n"
         f"  VIX (latest):     {f'{vix_lvl:.2f}' if isinstance(vix_lvl, float) else 'N/A'}\n"
+        + _vix_ts_line
+        + _xle_rs_line
     )
 
     # Insider activity (data_bridge)
@@ -419,7 +447,7 @@ def _build_analyst_prompt(ticker: str, research: Dict,
         )
 
     import gemini_client as _gc
-    _session_block = _gc.market_context_block()
+    _session_block = _gc.market_context_block(vix=vix_lvl if isinstance(vix_lvl, float) else None)
 
     # Build Hound intelligence block if this ticker came from Grok Hound
     _hound_block = ""
@@ -742,11 +770,23 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection,
                 + (result.get('stop_loss_rationale') or '')
             )
 
-    confidence   = float(result.get('research_confidence', 0.0))
+    raw_confidence = float(result.get('research_confidence', 0.0))
     should_enter = result.get('should_enter', False)
+    evidence_count = len(result.get('data_gaps', []) or [])
+    gap_count = len(result.get('data_gaps', []) or [])
+    support_strength = float(result.get('position_size_pct', 0.0) or 0.0)
+    confidence = calibrate_unit_confidence(
+        raw_confidence,
+        evidence_count=evidence_count,
+        gap_count=gap_count,
+        support_strength=support_strength,
+        summary_text=str(result.get('thesis_summary', '') or ''),
+    )
+    result['_raw_research_confidence'] = raw_confidence
+    result['_calibrated_research_confidence'] = confidence
 
     logger.info(
-        f"  📊 {ticker}: should_enter={should_enter}, confidence={confidence:.2f} "
+        f"  📊 {ticker}: should_enter={should_enter}, raw_conf={raw_confidence:.2f}, calibrated={confidence:.2f} "
         f"({in_tok}→{out_tok} tok)"
     )
 
@@ -847,7 +887,7 @@ def analyze_ticker(ticker: str, research: Dict, conn: sqlite3.Connection,
 
     else:
         reason = (
-            f"confidence {confidence:.2f} < threshold {_effective_threshold}"
+            f"raw_conf {raw_confidence:.2f} → calibrated {confidence:.2f} < threshold {_effective_threshold}"
             if not should_enter or confidence < _effective_threshold
             else "analyst_pass"
         )

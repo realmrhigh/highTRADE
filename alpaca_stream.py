@@ -636,10 +636,11 @@ class RealtimeMonitor:
             finally:
                 lock.release()
                 try:
-                    from yfinance.cache import _TzDBManager
-                    db = _TzDBManager.get_database()
-                    if db and not db.is_closed():
-                        db.close()
+                    from yfinance.cache import _TzDBManager, _CookieDBManager, _ISINDBManager
+                    for manager in [_TzDBManager, _CookieDBManager, _ISINDBManager]:
+                        db = manager.get_database()
+                        if db and not db.is_closed():
+                            db.close()
                 except Exception:
                     pass
 
@@ -773,10 +774,11 @@ class RealtimeMonitor:
                 self._stats['errors'] += 1
             finally:
                 try:
-                    from yfinance.cache import _TzDBManager
-                    db = _TzDBManager.get_database()
-                    if db and not db.is_closed():
-                        db.close()
+                    from yfinance.cache import _TzDBManager, _CookieDBManager, _ISINDBManager
+                    for manager in [_TzDBManager, _CookieDBManager, _ISINDBManager]:
+                        db = manager.get_database()
+                        if db and not db.is_closed():
+                            db.close()
                 except Exception:
                     pass
 

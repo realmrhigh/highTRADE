@@ -1,3 +1,4 @@
+from trading_db import get_sqlite_conn
 #!/usr/bin/env python3
 """
 Quick Money Market Research - Find Short-Term Trading Opportunities
@@ -11,6 +12,8 @@ from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 import json
 import sqlite3
+
+from confidence_utils import calibrate_percent_confidence
 
 logger = logging.getLogger(__name__)
 
@@ -327,7 +330,12 @@ class QuickMoneyResearch:
             scores.append(5)
         
         # Calculate confidence
-        confidence = sum(scores)
+        raw_confidence = sum(scores)
+        confidence = calibrate_percent_confidence(
+            raw_confidence,
+            source_count=1,
+            summary_text=" | ".join(reasons),
+        )
         
         # Determine if it's an opportunity
         is_opportunity = confidence >= 50
@@ -345,6 +353,7 @@ class QuickMoneyResearch:
             'type': signal_type,
             'strength': strength,
             'confidence': confidence,
+            'raw_confidence': raw_confidence,
             'rationale': " | ".join(reasons)
         }
 
@@ -381,7 +390,8 @@ class QuickMoneyResearch:
         for i, opp in enumerate(self.opportunities[:10], 1):
             print(f"\n#{i}. {opp['symbol']} - {opp['signal_type']}")
             print(f"   Pool: {opp['pool']}")
-            print(f"   Confidence: {opp['confidence']}% ({opp['signal_strength']})")
+            raw_conf = opp.get('raw_confidence', opp['confidence'])
+            print(f"   Confidence: {opp['confidence']}% (raw {raw_conf}%) ({opp['signal_strength']})")
             print(f"   Current Price: ${opp['current_price']:.2f}")
             print(f"   Target Price: ${opp['target_price']:.2f} (+{opp['expected_gain_pct']:.1f}%)")
             print(f"   Stop Loss: ${opp['stop_loss']:.2f} (-1.0%)")
@@ -428,47 +438,48 @@ class QuickMoneyResearch:
     def record_trade_to_db(self, opportunity: Dict, action: str = 'planned'):
         """Record quick flip trade to database for tracking"""
         try:
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            
-            # Create quick_flips table if doesn't exist
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS quick_flips (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol TEXT NOT NULL,
-                entry_price REAL,
-                target_price REAL,
-                stop_loss REAL,
-                confidence INTEGER,
-                signal_type TEXT,
-                action TEXT,
-                status TEXT DEFAULT 'planned',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            ''')
-            
-            cursor.execute('''
-            INSERT INTO quick_flips (
-                symbol, entry_price, target_price, stop_loss,
-                confidence, signal_type, action, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                opportunity['symbol'],
-                opportunity['entry_price'],
-                opportunity['target_price'],
-                opportunity['stop_loss'],
-                opportunity['confidence'],
-                opportunity['signal_type'],
-                action,
-                'planned'
-            ))
-            
-            conn.commit()
-            conn.close()
-            
-            logger.info(f"✅ Recorded {opportunity['symbol']} quick flip to database")
-            
+            conn = get_sqlite_conn(str(DB_PATH), timeout=15)
+            try:
+                cursor = conn.cursor()
+                
+                # Create quick_flips table if doesn't exist
+                cursor.execute('''
+                CREATE TABLE IF NOT EXISTS quick_flips (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    entry_price REAL,
+                    target_price REAL,
+                    stop_loss REAL,
+                    confidence INTEGER,
+                    signal_type TEXT,
+                    action TEXT,
+                    status TEXT DEFAULT 'planned',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                ''')
+                
+                cursor.execute('''
+                INSERT INTO quick_flips (
+                    symbol, entry_price, target_price, stop_loss,
+                    confidence, signal_type, action, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    opportunity['symbol'],
+                    opportunity['entry_price'],
+                    opportunity['target_price'],
+                    opportunity['stop_loss'],
+                    opportunity['confidence'],
+                    opportunity['signal_type'],
+                    action,
+                    'planned'
+                ))
+                
+                conn.commit()
+                logger.info(f"✅ Recorded {opportunity['symbol']} quick flip to database")
+            finally:
+                conn.close()
         except Exception as e:
+            logger.error(f"Error recording to database: {e}")
             logger.error(f"Error recording to database: {e}")
 
 

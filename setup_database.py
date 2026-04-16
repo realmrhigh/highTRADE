@@ -9,11 +9,16 @@ import sqlite3
 import os
 from datetime import datetime
 
-def setup_database(db_path: str = "~/trading_data/trading_history.db"):
+from db_paths import DB_PATH
+
+
+def setup_database(db_path: str = None):
     """Initialize the TradingBot database"""
 
+    if db_path is None:
+        db_path = str(DB_PATH)
+
     # Expand home directory
-    db_path = os.path.expanduser(db_path)
 
     # Create directory if it doesn't exist
     db_dir = os.path.dirname(db_path)
@@ -25,7 +30,9 @@ def setup_database(db_path: str = "~/trading_data/trading_history.db"):
     db_exists = os.path.exists(db_path)
 
     # Connect to database
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=15)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=15000")
     cur = conn.cursor()
 
     # ===== TABLE 1: market_crises =====

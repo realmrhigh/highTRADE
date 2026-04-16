@@ -1,3 +1,4 @@
+from trading_db import get_sqlite_conn
 #!/usr/bin/env python3
 """
 Gemini AI Analyzer for HighTrade
@@ -182,9 +183,22 @@ class GeminiAnalyzer:
         
         import gemini_client as _gc
         _vix_val = None
+        _ah_price = _ah_chg = _ah_type = _gld_price = _gld_trend = _gold_spot = _gold_30d = None
         if vix_term_structure:
-            _vix_val = vix_term_structure.get('vix_level') or vix_term_structure.get('vix_spot')
-        _session_block = _gc.market_context_block(vix=_vix_val)
+            _vix_val   = vix_term_structure.get('vix_level') or vix_term_structure.get('vix_spot')
+            _ah_price  = vix_term_structure.get('after_hours_price')
+            _ah_chg    = vix_term_structure.get('after_hours_chg_pct')
+            _ah_type   = vix_term_structure.get('after_hours_type')
+            _gld_price = vix_term_structure.get('gld_price')
+            _gld_trend = vix_term_structure.get('gld_flow_trend_pct')
+            _gold_spot = vix_term_structure.get('gold_spot_price')
+            _gold_30d  = vix_term_structure.get('gold_30d_chg_pct')
+        _session_block = _gc.market_context_block(
+            vix=_vix_val,
+            after_hours_price=_ah_price, after_hours_chg_pct=_ah_chg, after_hours_type=_ah_type,
+            gld_price=_gld_price, gld_flow_trend_pct=_gld_trend,
+            gold_spot_price=_gold_spot, gold_30d_chg_pct=_gold_30d,
+        )
 
         return f"""You are a quantitative financial analyst AI. Analyze these {len(articles)} market news articles and provide a JSON response.
 
@@ -264,9 +278,22 @@ Respond with ONLY valid JSON in this exact structure:
         
         import gemini_client as _gc
         _vix_val = None
+        _ah_price = _ah_chg = _ah_type = _gld_price = _gld_trend = _gold_spot = _gold_30d = None
         if vix_term_structure:
-            _vix_val = vix_term_structure.get('vix_level') or vix_term_structure.get('vix_spot')
-        _session_block = _gc.market_context_block(vix=_vix_val)
+            _vix_val   = vix_term_structure.get('vix_level') or vix_term_structure.get('vix_spot')
+            _ah_price  = vix_term_structure.get('after_hours_price')
+            _ah_chg    = vix_term_structure.get('after_hours_chg_pct')
+            _ah_type   = vix_term_structure.get('after_hours_type')
+            _gld_price = vix_term_structure.get('gld_price')
+            _gld_trend = vix_term_structure.get('gld_flow_trend_pct')
+            _gold_spot = vix_term_structure.get('gold_spot_price')
+            _gold_30d  = vix_term_structure.get('gold_30d_chg_pct')
+        _session_block = _gc.market_context_block(
+            vix=_vix_val,
+            after_hours_price=_ah_price, after_hours_chg_pct=_ah_chg, after_hours_type=_ah_type,
+            gld_price=_gld_price, gld_flow_trend_pct=_gld_trend,
+            gold_spot_price=_gold_spot, gold_30d_chg_pct=_gold_30d,
+        )
 
         return f"""You are a senior quantitative trading analyst with expertise in crisis detection and risk management.
 This is a DEEP ANALYSIS triggered because the news signal score ({news_score:.1f}/100) exceeded the alert threshold.
@@ -364,9 +391,22 @@ Provide a comprehensive trading risk analysis. Respond with ONLY valid JSON:
 
         import gemini_client as _gc
         _vix_val = None
+        _ah_price = _ah_chg = _ah_type = _gld_price = _gld_trend = _gold_spot = _gold_30d = None
         if vix_term_structure:
-            _vix_val = vix_term_structure.get('vix_level') or vix_term_structure.get('vix_spot')
-        _session_block = _gc.market_context_block(vix=_vix_val)
+            _vix_val   = vix_term_structure.get('vix_level') or vix_term_structure.get('vix_spot')
+            _ah_price  = vix_term_structure.get('after_hours_price')
+            _ah_chg    = vix_term_structure.get('after_hours_chg_pct')
+            _ah_type   = vix_term_structure.get('after_hours_type')
+            _gld_price = vix_term_structure.get('gld_price')
+            _gld_trend = vix_term_structure.get('gld_flow_trend_pct')
+            _gold_spot = vix_term_structure.get('gold_spot_price')
+            _gold_30d  = vix_term_structure.get('gold_30d_chg_pct')
+        _session_block = _gc.market_context_block(
+            vix=_vix_val,
+            after_hours_price=_ah_price, after_hours_chg_pct=_ah_chg, after_hours_type=_ah_type,
+            gld_price=_gld_price, gld_flow_trend_pct=_gld_trend,
+            gold_spot_price=_gold_spot, gold_30d_chg_pct=_gold_30d,
+        )
 
         return f"""You are analyzing whether the current market-news signal represents a real tradeable risk regime shift.
 This deep dive was triggered because the composite news score reached {news_score:.1f}/100.
@@ -519,7 +559,7 @@ Return ONLY valid JSON with exactly these keys:
         import sqlite3
         conn = None
         try:
-            conn = sqlite3.connect(db_path)
+            conn = get_sqlite_conn(str(db_path), timeout=15)
             cursor = conn.cursor()
 
             # Idempotent migration: add data_gaps_json column if absent

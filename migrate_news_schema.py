@@ -143,8 +143,9 @@ def run_migration() -> None:
         print(f"\n[FATAL] Database not found at {DB_PATH}")
         raise SystemExit(1)
 
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL")   # safe for concurrent readers
+    conn = sqlite3.connect(str(DB_PATH), timeout=15)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=15000")
     cursor = conn.cursor()
 
     # ------------------------------------------------------------------
@@ -195,7 +196,8 @@ def run_migration() -> None:
     conn.close()
 
     # Re-open for verification (proves commit landed)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(str(DB_PATH), timeout=15)
+    conn.execute("PRAGMA busy_timeout=15000")
     cursor = conn.cursor()
 
     print("\n--- Verification ---\n")

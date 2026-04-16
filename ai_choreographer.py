@@ -1,3 +1,4 @@
+from trading_db import get_sqlite_conn
 #!/usr/bin/env python3
 """
 ai_choreographer.py — Cross-process AI API rate limiter for highTRADE / highCRYPTO
@@ -98,7 +99,7 @@ class AIChoreographer:
                 _HOME.mkdir(parents=True, exist_ok=True)
                 _LOCK_DIR.mkdir(parents=True, exist_ok=True)
 
-                conn = sqlite3.connect(str(_SHARED_DB), timeout=10)
+                conn = get_sqlite_conn(str(_SHARED_DB), timeout=10)
                 conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute("PRAGMA synchronous=NORMAL")
                 conn.execute("""
@@ -161,14 +162,15 @@ class AIChoreographer:
 
         with thread_lock:
             try:
-                lf = open(str(lock_path), "w")
-                try:
+                # Open the lock file — using 'with' ensures it is closed after the block
+                with open(str(lock_path), "w") as lf:
                     fcntl.flock(lf, fcntl.LOCK_EX)   # blocks until we own the lock
 
                     # ── Critical section ──────────────────────────────────────
-                    conn = sqlite3.connect(str(_SHARED_DB), timeout=10)
+                    conn = get_sqlite_conn(str(_SHARED_DB), timeout=10)
                     try:
                         conn.execute("PRAGMA journal_mode=WAL")
+                        # (rest of the critical section remains the same)
 
                         row     = conn.execute(
                             "SELECT MAX(ts) FROM api_calls WHERE model_id = ?",
@@ -193,10 +195,6 @@ class AIChoreographer:
                     finally:
                         conn.close()
                     # ── End critical section ──────────────────────────────────
-
-                finally:
-                    fcntl.flock(lf, fcntl.LOCK_UN)
-                    lf.close()
 
             except Exception as exc:
                 logger.warning(
@@ -226,7 +224,7 @@ class AIChoreographer:
         midnight_ts  = midnight_utc.timestamp()
 
         try:
-            conn  = sqlite3.connect(str(_SHARED_DB), timeout=10)
+            conn  = get_sqlite_conn(str(_SHARED_DB), timeout=10)
             row   = conn.execute(
                 "SELECT COUNT(*) FROM api_calls WHERE model_id = ? AND ts >= ?",
                 (model_id, midnight_ts),
@@ -266,7 +264,7 @@ class AIChoreographer:
 
         since_ts = time.time() - (hours * 3600)
         try:
-            conn = sqlite3.connect(str(_SHARED_DB), timeout=10)
+            conn = get_sqlite_conn(str(_SHARED_DB), timeout=10)
             rows = conn.execute(
                 """SELECT model_id, system, COUNT(*) AS cnt
                    FROM api_calls

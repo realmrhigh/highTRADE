@@ -5,12 +5,19 @@ Fetches major sector ETFs and calculates relative strength.
 """
 
 import logging
+import signal
 import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+class _YFTimeoutError(Exception):
+    pass
+
+def _yf_alarm_handler(signum, frame):
+    raise _YFTimeoutError("yfinance download timed out")
 
 SECTOR_ETFS = {
     'XLK': 'Technology',
@@ -74,25 +81,58 @@ class SectorRotationAnalyzer:
     def get_rotation_data(self) -> Dict:
         """Fetch latest performance data for all sectors."""
         logger.info("📊 Fetching sector rotation data...")
-        
+
         symbols = list(self.sectors.keys()) + [self.benchmark]
+        _old_handler = signal.signal(signal.SIGALRM, _yf_alarm_handler)
+        signal.alarm(60)  # 60-second hard timeout for yfinance
         try:
             # Fetch last 3 months to get enough context for 1w/1m/3m changes
-            data = yf.download(symbols, period='3mo', interval='1d', progress=False)['Close']
-            
-            if data.empty:
-                logger.error("  ❌ Failed to fetch sector data from yfinance")
+            raw = yf.download(symbols, period='3mo', interval='1d', progress=False, auto_adjust=True, timeout=20)
+
+            # yfinance 1.2+ returns MultiIndex columns for multi-ticker downloads.
+            # Extract 'Close' safely; fall back to per-ticker download for any missing/None columns.
+            if raw.empty:
+                logger.error("  ❌ Failed to fetch sector data from yfinance (empty response)")
                 return {}
 
+            if isinstance(raw.columns, pd.MultiIndex):
+                # Standard multi-ticker result: columns are (field, ticker)
+                if 'Close' in raw.columns.get_level_values(0):
+                    data = raw['Close']
+                else:
+                    logger.error("  ❌ 'Close' level missing from MultiIndex columns")
+                    return {}
+            else:
+                # Single-ticker fallback (shouldn't happen with multiple symbols)
+                data = raw[['Close']] if 'Close' in raw.columns else raw
+
+            # For any symbols that are all-NaN or missing, attempt individual download fallback
+            missing_syms = [s for s in symbols if s not in data.columns or data[s].dropna().empty]
+            if missing_syms:
+                logger.warning(f"  ⚠️ Falling back to per-ticker download for: {missing_syms}")
+                for sym in missing_syms:
+                    try:
+                        sym_raw = yf.download(sym, period='3mo', interval='1d', progress=False, auto_adjust=True)
+                        if not sym_raw.empty and 'Close' in sym_raw.columns:
+                            data[sym] = sym_raw['Close']
+                    except Exception as sym_e:
+                        logger.warning(f"  ⚠️ Per-ticker fallback failed for {sym}: {sym_e}")
+
             results = {}
+            if self.benchmark not in data.columns or data[self.benchmark].dropna().empty:
+                logger.error(f"  ❌ Benchmark {self.benchmark} data unavailable")
+                return {}
+
             bench_perf = self._calculate_perf(data[self.benchmark])
             
             sector_results = []
             for sym, name in self.sectors.items():
-                if sym not in data:
+                if sym not in data.columns or data[sym].dropna().empty:
+                    logger.warning(f"  ⚠️ Skipping {sym} — no valid data")
                     continue
                 
                 perf = self._calculate_perf(data[sym])
+                last_valid = data[sym].dropna().iloc[-1]
                 rel_strength = {
                     'symbol': sym,
                     'name': name,
@@ -100,7 +140,7 @@ class SectorRotationAnalyzer:
                     'perf_1m': perf['1m'],
                     'rel_1w': perf['1w'] - bench_perf['1w'],
                     'rel_1m': perf['1m'] - bench_perf['1m'],
-                    'current_price': float(data[sym].iloc[-1])
+                    'current_price': float(last_valid)
                 }
                 sector_results.append(rel_strength)
 
@@ -115,9 +155,15 @@ class SectorRotationAnalyzer:
                 'bottom_sector_1w': sector_results[-1]['name'] if sector_results else None
             }
 
+        except _YFTimeoutError:
+            logger.error("  ❌ Sector rotation fetch timed out after 60s — skipping")
+            return {}
         except Exception as e:
             logger.error(f"  ❌ Sector rotation analysis failed: {e}")
             return {}
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, _old_handler)
 
     def get_sector_context(self, crisis_type: str, defcon_level: int,
                            is_winding_down: bool = False,

@@ -283,6 +283,114 @@ def test_exit_position_returns_false_when_broker_rejects(tmp_path):
     assert row['exit_price'] is None
 
 
+def test_day_trader_reconciles_stale_closed_session(tmp_path):
+    db_path = tmp_path / 'daytrade_reconcile.db'
+    _create_test_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute('''
+        CREATE TABLE day_trade_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL UNIQUE,
+            ticker TEXT,
+            scan_time TEXT,
+            scan_research TEXT,
+            scan_confidence INTEGER,
+            scan_sources INTEGER,
+            gap_pct REAL,
+            relative_volume REAL,
+            stop_loss_pct REAL,
+            take_profit_pct REAL,
+            stretch_target_pct REAL,
+            portfolio_risk_pct REAL,
+            suggested_position_dollars REAL,
+            stop_below REAL,
+            first_target REAL,
+            trailing_plan TEXT,
+            edge_summary TEXT,
+            alternatives_json TEXT,
+            tp1_hit_time TEXT,
+            high_water_price REAL,
+            position_size_dollars REAL,
+            cash_available_at_scan REAL,
+            entry_trade_id INTEGER,
+            entry_price REAL,
+            entry_time TEXT,
+            shares INTEGER,
+            exit_price REAL,
+            exit_time TEXT,
+            exit_reason TEXT,
+            pnl_dollars REAL,
+            pnl_percent REAL,
+            status TEXT DEFAULT 'pending',
+            error_message TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cur.execute('''
+        INSERT INTO day_trade_sessions (
+            date, ticker, entry_trade_id, entry_price, entry_time, shares,
+            position_size_dollars, status, high_water_price
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', ('2026-04-06', 'AAPL', 77, 200.0, '09:35:00', 5, 1000.0, 'bought', 200.0))
+    conn.commit()
+    conn.close()
+
+    class FakePT:
+        def get_open_positions(self):
+            return []
+
+    from day_trader import DayTrader
+    trader = DayTrader(db_path=db_path, paper_trading=FakePT(), alerts=None, realtime_monitor=None)
+    reconciled = trader._reconcile_session_with_position_state('2026-04-06')
+    assert reconciled is True
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT status, exit_reason, exit_price FROM day_trade_sessions WHERE date = ?",
+        ('2026-04-06',)
+    ).fetchone()
+    conn.close()
+
+    assert row['status'] == 'closed'
+    assert row['exit_reason'] == 'manual'
+    assert row['exit_price'] == 200.0
+
+
+def test_sync_skips_fresh_trade_in_grace_window(tmp_path):
+    db_path = tmp_path / 'sync_grace.db'
+    _create_test_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute('''
+        INSERT INTO trade_records (
+            crisis_id, asset_symbol, entry_date, entry_time, entry_price,
+            entry_signal_score, defcon_at_entry, shares, position_size_dollars,
+            exit_reason, status, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (0, 'SLNO', '2026-04-06', '09:39:58', 52.275001525878906, 0, 5, 12, 627.3, None, 'open', '[DAYTRADE] Grok pick'))
+    conn.commit()
+    conn.close()
+
+    engine = PaperTradingEngine(db_path=db_path)
+    engine.alpaca = FakeAlpaca(positions=[], account=None)
+
+    positions = engine.get_open_positions()
+    assert positions == []
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT status, exit_reason FROM trade_records WHERE asset_symbol='SLNO'").fetchone()
+    conn.close()
+
+    # Fresh trade should remain open because of the grace window; no ghost close.
+    assert row['status'] == 'open'
+    assert row['exit_reason'] is None
+
+
 def test_defcon_crisis_basket_disabled():
     """DEFCON-triggered basket buys should be disabled in favor of dynamic acquisition flow."""
     broker = BrokerDecisionEngine()

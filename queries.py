@@ -7,10 +7,11 @@ Provides easy-to-use query functions for Cowork integration
 import sqlite3
 import json
 from datetime import datetime
-from pathlib import Path
 from typing import List, Dict, Any
 
-DB_PATH = Path.home() / 'trading_data' / 'trading_history.db'
+from db_paths import DB_PATH
+from trading_db import db
+
 
 class TradeDataQuery:
     """Query interface for HighTrade database"""
@@ -18,67 +19,63 @@ class TradeDataQuery:
     def __init__(self, db_path=DB_PATH):
         self.db_path = db_path
 
-    def connect(self):
-        self.conn = sqlite3.connect(str(self.db_path))
-        self.cursor = self.conn.cursor()
-        self.cursor.row_factory = sqlite3.Row
+    def __enter__(self):
+        return self
 
-    def disconnect(self):
-        self.conn.close()
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False
 
     def query_crisis_by_name(self, name: str) -> Dict[str, Any]:
         """Retrieve crisis event by name"""
-        self.connect()
-        try:
-            self.cursor.execute('''
+        with db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.row_factory = sqlite3.Row
+            cursor.execute('''
             SELECT * FROM crisis_events WHERE name = ?
             ''', (name,))
-            row = self.cursor.fetchone()
+            row = cursor.fetchone()
             return dict(row) if row else None
-        finally:
-            self.disconnect()
 
     def query_all_crises(self) -> List[Dict[str, Any]]:
         """Get all historical crises"""
-        self.connect()
-        try:
-            self.cursor.execute('''
+        with db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.row_factory = sqlite3.Row
+            cursor.execute('''
             SELECT crisis_id, name, category, severity, start_date, crisis_bottom_date,
                    market_drop_percent, recovery_percent, recovery_days
             FROM crisis_events
             ORDER BY start_date DESC
             ''')
-            return [dict(row) for row in self.cursor.fetchall()]
-        finally:
-            self.disconnect()
+            return [dict(row) for row in cursor.fetchall()]
 
     def query_crisis_signals(self, crisis_id: int) -> List[Dict[str, Any]]:
         """Get all signals for a specific crisis"""
-        self.connect()
-        try:
-            self.cursor.execute('''
+        with db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.row_factory = sqlite3.Row
+            cursor.execute('''
             SELECT signal_id, signal_type, signal_weight, detected_date,
                    detected_time, value, description
             FROM signals
             WHERE crisis_id = ?
             ORDER BY detected_date ASC, detected_time ASC
             ''', (crisis_id,))
-            return [dict(row) for row in self.cursor.fetchall()]
-        finally:
-            self.disconnect()
+            return [dict(row) for row in cursor.fetchall()]
 
     def query_defcon_status(self) -> Dict[str, Any]:
         """Get current DEFCON status"""
-        self.connect()
-        try:
-            self.cursor.execute('''
+        with db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.row_factory = sqlite3.Row
+            cursor.execute('''
             SELECT monitoring_date, monitoring_time, bond_10yr_yield,
                    vix_close, defcon_level, signal_score
             FROM signal_monitoring
             ORDER BY monitoring_date DESC, monitoring_time DESC
             LIMIT 1
             ''')
-            row = self.cursor.fetchone()
+            row = cursor.fetchone()
             if row:
                 return {
                     'date': row['monitoring_date'],
@@ -90,44 +87,41 @@ class TradeDataQuery:
                     'defcon_status': self._defcon_description(row['defcon_level'])
                 }
             return None
-        finally:
-            self.disconnect()
 
     def query_monitoring_history(self, days: int = 7) -> List[Dict[str, Any]]:
         """Get monitoring history for the past N days"""
-        self.connect()
-        try:
-            self.cursor.execute('''
+        with db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.row_factory = sqlite3.Row
+            cursor.execute('''
             SELECT monitoring_date, monitoring_time, bond_10yr_yield,
                    vix_close, defcon_level, signal_score
             FROM signal_monitoring
             WHERE monitoring_date >= date('now', ?)
             ORDER BY monitoring_date DESC, monitoring_time DESC
             ''', (f'-{days} days',))
-            return [dict(row) for row in self.cursor.fetchall()]
-        finally:
-            self.disconnect()
+            return [dict(row) for row in cursor.fetchall()]
 
     def query_defcon_escalations(self, days: int = 7) -> List[Dict[str, Any]]:
         """Get DEFCON level changes in the past N days"""
-        self.connect()
-        try:
-            self.cursor.execute('''
+        with db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.row_factory = sqlite3.Row
+            cursor.execute('''
             SELECT event_date, event_time, defcon_level, reason,
                    contributing_signals, signal_score
             FROM defcon_history
             WHERE event_date >= date('now', ?)
             ORDER BY event_date DESC, event_time DESC
             ''', (f'-{days} days',))
-            return [dict(row) for row in self.cursor.fetchall()]
-        finally:
-            self.disconnect()
+            return [dict(row) for row in cursor.fetchall()]
 
     def query_trades_history(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Get recent trade history"""
-        self.connect()
-        try:
-            self.cursor.execute('''
+        with db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.row_factory = sqlite3.Row
+            cursor.execute('''
             SELECT t.trade_id, t.asset_symbol, t.entry_date, t.entry_price, t.exit_date,
                    t.exit_price, t.profit_loss_percent, t.holding_hours, t.status,
                    c.name as crisis_name
@@ -136,30 +130,28 @@ class TradeDataQuery:
             ORDER BY t.entry_date DESC
             LIMIT ?
             ''', (limit,))
-            return [dict(row) for row in self.cursor.fetchall()]
-        finally:
-            self.disconnect()
+            return [dict(row) for row in cursor.fetchall()]
 
     def query_open_positions(self) -> List[Dict[str, Any]]:
         """Get all currently open trades"""
-        self.connect()
-        try:
-            self.cursor.execute('''
+        with db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.row_factory = sqlite3.Row
+            cursor.execute('''
             SELECT trade_id, asset_symbol, entry_date, entry_price, shares,
                    position_size_dollars, defcon_at_entry
             FROM trade_records
             WHERE status = 'open'
             ORDER BY entry_date DESC
             ''')
-            return [dict(row) for row in self.cursor.fetchall()]
-        finally:
-            self.disconnect()
+            return [dict(row) for row in cursor.fetchall()]
 
     def query_portfolio_pnl(self) -> Dict[str, Any]:
         """Get total portfolio P&L"""
-        self.connect()
-        try:
-            self.cursor.execute('''
+        with db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.row_factory = sqlite3.Row
+            cursor.execute('''
             SELECT
                 COUNT(*) as total_trades,
                 SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) as open_trades,
@@ -170,7 +162,7 @@ class TradeDataQuery:
                 AVG(CASE WHEN status = 'closed' THEN profit_loss_percent ELSE NULL END) as avg_return_pct
             FROM trade_records
             ''')
-            row = self.cursor.fetchone()
+            row = cursor.fetchone()
             if row:
                 return {
                     'total_trades': row['total_trades'],
@@ -183,14 +175,13 @@ class TradeDataQuery:
                     'win_rate': round((row['winning_trades'] / row['closed_trades'] * 100), 1) if row['closed_trades'] > 0 else 0
                 }
             return {}
-        finally:
-            self.disconnect()
 
     def query_performance_by_asset(self) -> Dict[str, Any]:
         """Get performance metrics by asset"""
-        self.connect()
-        try:
-            self.cursor.execute('''
+        with db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.row_factory = sqlite3.Row
+            cursor.execute('''
             SELECT
                 asset_symbol,
                 COUNT(*) as total_trades,
@@ -203,7 +194,7 @@ class TradeDataQuery:
             ORDER BY total_pnl DESC
             ''')
             result = {}
-            for row in self.cursor.fetchall():
+            for row in cursor.fetchall():
                 row = dict(row)
                 win_rate = (row['winners'] / row['closed_trades'] * 100) if row['closed_trades'] > 0 else 0
                 result[row['asset_symbol']] = {
@@ -215,14 +206,13 @@ class TradeDataQuery:
                     'win_rate': round(win_rate, 1)
                 }
             return result
-        finally:
-            self.disconnect()
 
     def query_performance_by_crisis_type(self) -> Dict[str, Any]:
         """Get performance metrics by crisis type"""
-        self.connect()
-        try:
-            self.cursor.execute('''
+        with db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.row_factory = sqlite3.Row
+            cursor.execute('''
             SELECT
                 c.category,
                 COUNT(t.trade_id) as total_trades,
@@ -236,7 +226,7 @@ class TradeDataQuery:
             ORDER BY total_pnl DESC
             ''')
             result = {}
-            for row in self.cursor.fetchall():
+            for row in cursor.fetchall():
                 row = dict(row)
                 category = row['category'] or 'unknown'
                 win_rate = (row['winners'] / row['closed_trades'] * 100) if row['closed_trades'] > 0 else 0
@@ -249,14 +239,13 @@ class TradeDataQuery:
                     'win_rate': round(win_rate, 1)
                 }
             return result
-        finally:
-            self.disconnect()
 
     def query_asset_allocation(self) -> Dict[str, Any]:
         """Get current portfolio asset allocation (open positions only)"""
-        self.connect()
-        try:
-            self.cursor.execute('''
+        with db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.row_factory = sqlite3.Row
+            cursor.execute('''
             SELECT
                 asset_symbol,
                 COUNT(*) as position_count,
@@ -269,32 +258,30 @@ class TradeDataQuery:
             ''')
             result = {}
             total_value = 0
-            rows = [dict(row) for row in self.cursor.fetchall()]
+            rows = [dict(row) for row in cursor.fetchall()]
 
-            for row in rows:
-                total_value += row['total_value'] if row['total_value'] else 0
+        for row in rows:
+            total_value += row['total_value'] if row['total_value'] else 0
 
-            for row in rows:
-                allocation_pct = (row['total_value'] / total_value * 100) if total_value > 0 else 0
-                result[row['asset_symbol']] = {
-                    'position_count': row['position_count'],
-                    'total_value': round(row['total_value'], 2) if row['total_value'] else 0,
-                    'allocation_percent': round(allocation_pct, 1),
-                    'avg_entry_price': round(row['avg_entry_price'], 2) if row['avg_entry_price'] else 0
-                }
-
-            return {
-                'allocations': result,
-                'total_portfolio_value': round(total_value, 2)
+        for row in rows:
+            allocation_pct = (row['total_value'] / total_value * 100) if total_value > 0 else 0
+            result[row['asset_symbol']] = {
+                'position_count': row['position_count'],
+                'total_value': round(row['total_value'], 2) if row['total_value'] else 0,
+                'allocation_percent': round(allocation_pct, 1),
+                'avg_entry_price': round(row['avg_entry_price'], 2) if row['avg_entry_price'] else 0
             }
-        finally:
-            self.disconnect()
+
+        return {
+            'allocations': result,
+            'total_portfolio_value': round(total_value, 2)
+        }
 
     def query_crisis_statistics(self) -> Dict[str, Any]:
         """Get aggregate statistics about historical crises"""
-        self.connect()
-        try:
-            self.cursor.execute('''
+        with db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
             SELECT
                 COUNT(*) as total_crises,
                 AVG(market_drop_percent) as avg_drop_percent,
@@ -303,7 +290,7 @@ class TradeDataQuery:
                 AVG(recovery_days) as avg_recovery_days
             FROM crisis_events
             ''')
-            row = self.cursor.fetchone()
+            row = cursor.fetchone()
             if row:
                 return {
                     'total_crises': row[0],
@@ -313,29 +300,27 @@ class TradeDataQuery:
                     'avg_recovery_days': round(row[4], 1) if row[4] else None
                 }
             return None
-        finally:
-            self.disconnect()
 
     def query_similar_crises(self, market_drop_threshold: float = 5.0) -> List[Dict[str, Any]]:
         """Find crises with similar market impact"""
-        self.connect()
-        try:
-            self.cursor.execute('''
+        with db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.row_factory = sqlite3.Row
+            cursor.execute('''
             SELECT crisis_id, name, category, market_drop_percent,
                    recovery_percent, recovery_days, crisis_bottom_date
             FROM crisis_events
             WHERE ABS(market_drop_percent) >= ?
             ORDER BY market_drop_percent DESC
             ''', (market_drop_threshold,))
-            return [dict(row) for row in self.cursor.fetchall()]
-        finally:
-            self.disconnect()
+            return [dict(row) for row in cursor.fetchall()]
 
     def get_signal_weights(self) -> Dict[str, float]:
         """Get current signal weighting rules"""
-        self.connect()
-        try:
-            self.cursor.execute('''
+        with db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.row_factory = sqlite3.Row
+            cursor.execute('''
             SELECT signal_type, base_weight, description
             FROM signal_rules
             ORDER BY base_weight DESC
@@ -343,9 +328,7 @@ class TradeDataQuery:
             return {row['signal_type']: {
                 'weight': row['base_weight'],
                 'description': row['description']
-            } for row in self.cursor.fetchall()}
-        finally:
-            self.disconnect()
+            } for row in cursor.fetchall()}
 
     @staticmethod
     def _defcon_description(level: int) -> str:

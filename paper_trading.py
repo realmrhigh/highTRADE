@@ -4,13 +4,23 @@ HighTrade Paper Trading Engine
 Handles paper/live position bookkeeping, manual trades, acquisition entries, and exits.
 """
 
+from trading_db import get_sqlite_conn
 import sqlite3
 import json
 import logging
+try:
+    from trade_thesis import save_entry_thesis, record_thesis_invalidation, check_reentry_allowed
+    _THESIS_MODULE_OK = True
+except ImportError:
+    _THESIS_MODULE_OK = False
+    def save_entry_thesis(*a, **kw): return False
+    def record_thesis_invalidation(*a, **kw): pass
+    def check_reentry_allowed(*a, **kw): return True, 'thesis module unavailable'
 import os
 import requests as _requests
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 import sys
 # estop helper path
 sys.path.insert(0, '/Users/traderbot/.openclaw/lib')
@@ -39,6 +49,35 @@ _BROKER_SESSION = _requests.Session()
 _account_snapshot_cache: dict = {}
 _account_snapshot_cache_ts: float = 0.0
 _ACCOUNT_CACHE_TTL = 300  # seconds — serve stale data for up to 5 min on API failure
+_SYNC_STALE_CLOSE_GRACE_SEC = 180  # seconds — don't auto-close freshly opened trades on laggy broker sync
+_EASTERN = ZoneInfo('America/New_York')
+
+
+def _et_now() -> datetime:
+    return datetime.now(_EASTERN)
+
+
+def _is_crypto_symbol(symbol: str) -> bool:
+    s = (symbol or '').strip().upper()
+    return s.endswith('/USD') or s.endswith('-USD')
+
+
+def _market_is_open_now(symbol: str = '') -> bool:
+    """Return True for regular-session US equity market hours.
+
+    Crypto and other 24/7 symbols bypass this gate.
+    """
+    if _is_crypto_symbol(symbol):
+        return True
+
+    now = _et_now()
+    if now.weekday() >= 5:
+        return False
+    if now.hour < 9 or (now.hour == 9 and now.minute < 30):
+        return False
+    if now.hour >= 16:
+        return False
+    return True
 
 
 def _canonical_symbol(symbol: str) -> str:
@@ -110,10 +149,13 @@ class AlpacaBroker:
         if qty <= 0:
             return {'ok': False, 'error': f'Invalid qty {qty}'}
 
+        broker_symbol = _broker_symbol(symbol)
+        is_crypto = _is_crypto_symbol(broker_symbol)
+        if side == 'sell' and not is_crypto and not _market_is_open_now(symbol):
+            return {'ok': False, 'error': 'Market is closed; refusing equity sell outside regular hours'}
+
         r = None
         try:
-            broker_symbol = _broker_symbol(symbol)
-            is_crypto = broker_symbol.endswith('/USD')
             payload = {
                 'symbol':        broker_symbol,
                 'qty':           str(qty),
@@ -231,7 +273,24 @@ class PaperTradingEngine:
         self.last_vix = 20.0
         self.pending_trade_alerts = []
         self.pending_trade_exits = []
+        self.conn = None
+        self.cursor = None
         self.alpaca = AlpacaBroker()
+
+        # Check for PDT restriction (equity < $25k on a margin account)
+        # For paper accounts, they are often margin-enabled by default.
+        pdt_protected = False
+        min_hold = 1
+        account = self.alpaca.get_account()
+        if account:
+            equity = self._safe_float(account.get('equity'))
+            # If equity < 25k and it's a margin account, enforce PDT protection (24h hold)
+            # account_type might be 'margin' or 'cash'. Cash accounts also have T+2/T+1 settlement
+            # but usually 'day trading' is a margin-specific rule.
+            if equity < 25000:
+                pdt_protected = True
+                min_hold = 24  # Force 24h hold to clear the daytrade window
+                logger.info(f"🛡️ PDT Protection active (equity ${equity:,.2f} < $25k) — enforcing {min_hold}h min hold")
 
         # Initialize enhanced exit strategy manager
         if EXIT_STRATEGIES_AVAILABLE:
@@ -240,29 +299,67 @@ class PaperTradingEngine:
                 stop_loss=self.STOP_LOSS,
                 trailing_stop_pct=0.02,  # 2% trailing stop
                 max_hold_hours=72,  # 3 days max
-                min_hold_hours=1  # At least 1 hour before allowing exits
+                min_hold_hours=min_hold,
+                pdt_protection=pdt_protected
             )
-            logger.info("Enhanced exit strategies enabled")
+            logger.info(f"Enhanced exit strategies enabled (pdt_protection={pdt_protected})")
         else:
             self.exit_manager = None
             logger.warning("Using basic exit strategies (profit target + stop loss only)")
 
+    # TODO: migrate to with db(): — PaperTradingEngine has 60+ self.cursor/self.conn
+    # references across a 1400-line file, including long multi-step transactions
+    # (e.g. _sync_open_positions_from_alpaca) and schema migrations in connect().
+    # Requires careful per-method refactor; skipped in Phase 3 to preserve correctness.
     def connect(self):
         """Connect to database"""
-        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-        self.cursor = self.conn.cursor()
-        self.cursor.row_factory = sqlite3.Row
-        # Idempotent migration: add per-position exit level columns if they don't exist yet
-        for col_def in ('stop_loss REAL', 'take_profit_1 REAL', 'take_profit_2 REAL'):
+        if self.conn is not None:
             try:
-                self.cursor.execute(f"ALTER TABLE trade_records ADD COLUMN {col_def}")
-                self.conn.commit()
+                self.conn.close()
             except Exception:
-                pass  # Column already exists — SQLite raises OperationalError on duplicate ADD COLUMN
+                pass
+            finally:
+                self.conn = None
+                self.cursor = None
+
+        conn = None
+        try:
+            conn = get_sqlite_conn(str(self.db_path), timeout=15)
+            conn.row_factory = sqlite3.Row
+            self.conn = conn
+            self.cursor = conn.cursor()
+
+            # Idempotent migration: add per-position exit level columns if they don't exist yet
+            for col_def in ('stop_loss REAL', 'take_profit_1 REAL', 'take_profit_2 REAL'):
+                try:
+                    self.cursor.execute(f"ALTER TABLE trade_records ADD COLUMN {col_def}")
+                    self.conn.commit()
+                except Exception:
+                    pass  # Column already exists — SQLite raises OperationalError on duplicate ADD COLUMN
+        except Exception:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            self.conn = None
+            self.cursor = None
+            raise
 
     def disconnect(self):
         """Disconnect from database"""
-        self.conn.close()
+        if self.conn is not None:
+            try:
+                self.conn.close()
+            finally:
+                self.conn = None
+                self.cursor = None
+
+    def __del__(self):
+        try:
+            self.disconnect()
+        except Exception:
+            pass
 
     @staticmethod
     def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -411,10 +508,38 @@ class PaperTradingEngine:
                 row_ids = [r['trade_id'] for r in local_by_symbol[symbol]]
                 if not row_ids:
                     continue
-                placeholders = ','.join('?' for _ in row_ids)
+
+                # Fresh trades can momentarily disappear from broker snapshots while
+                # orders settle. Give them a short grace window before auto-closing
+                # them as "manual" so a laggy sync doesn't invent ghost sells.
+                grace_cutoff = now.timestamp() - _SYNC_STALE_CLOSE_GRACE_SEC
+                closable_ids = []
+                skipped_fresh_ids = []
+                for r in local_by_symbol[symbol]:
+                    entry_ts = None
+                    try:
+                        entry_dt = datetime.strptime(f"{r.get('entry_date')} {r.get('entry_time')}", '%Y-%m-%d %H:%M:%S')
+                        entry_ts = entry_dt.timestamp()
+                    except Exception:
+                        entry_ts = None
+                    if entry_ts is not None and entry_ts >= grace_cutoff:
+                        skipped_fresh_ids.append(r['trade_id'])
+                    else:
+                        closable_ids.append(r['trade_id'])
+
+                if skipped_fresh_ids:
+                    logger.info(
+                        f"Skipping Alpaca stale-close for freshly opened {symbol} trade(s) {skipped_fresh_ids} "
+                        f"during {_SYNC_STALE_CLOSE_GRACE_SEC}s grace window"
+                    )
+
+                if not closable_ids:
+                    continue
+
+                placeholders = ','.join('?' for _ in closable_ids)
                 self.cursor.execute(
                     f"UPDATE trade_records SET status='closed', exit_reason='manual', exit_date=?, exit_time=?, exit_price=COALESCE(current_price, entry_price, 0), profit_loss_dollars=COALESCE((COALESCE(current_price, entry_price, 0) - entry_price) * shares, 0), profit_loss_percent=CASE WHEN entry_price > 0 THEN ((COALESCE(current_price, entry_price, 0) - entry_price) / entry_price) * 100 ELSE 0 END, holding_hours=COALESCE(holding_hours, 0), notes=COALESCE(notes,'') || ' | Closed by Alpaca sync (position no longer open at broker)' WHERE trade_id IN ({placeholders}) AND status='open'",
-                    (now_date, now_time, *row_ids)
+                    (now_date, now_time, *closable_ids)
                 )
                 changed = True
 
@@ -596,7 +721,8 @@ class PaperTradingEngine:
             # Get trade info
             self.cursor.execute('''
             SELECT trade_id, asset_symbol, entry_price, entry_date, entry_time,
-                   shares, position_size_dollars, defcon_at_entry
+                   shares, position_size_dollars, defcon_at_entry,
+                   last_exit_attempt, exit_attempt_count
             FROM trade_records
             WHERE trade_id = ? AND status = 'open'
             ''', (trade_id,))
@@ -607,30 +733,43 @@ class PaperTradingEngine:
                 return False
 
             trade = dict(trade)
+            symbol = trade['asset_symbol']
+            shares = trade['shares']
+
+            # --- SELL COOLDOWN GUARD ---
+            last_attempt_str = trade.get('last_exit_attempt')
+            if last_attempt_str:
+                try:
+                    # ISO format from datetime.now().isoformat()
+                    last_attempt = datetime.fromisoformat(last_attempt_str)
+                    if datetime.now() - last_attempt < timedelta(minutes=15):
+                        logger.debug(f"  ⏳ {symbol} exit blocked: cooldown active until {(last_attempt + timedelta(minutes=15)).strftime('%H:%M:%S')}")
+                        return False
+                except Exception:
+                    pass
 
             # Get current price if not provided
             if not exit_price:
-                exit_price = self._get_current_price(trade['asset_symbol'])
+                exit_price = self._get_current_price(symbol)
 
             if not exit_price or exit_price <= 0:
-                logger.error(f"Could not determine exit price for {trade['asset_symbol']}")
+                logger.error(f"Could not determine exit price for {symbol}")
                 return False
 
-            # Calculate P&L
-            profit_loss_dollars = (exit_price - trade['entry_price']) * trade['shares']
-            profit_loss_percent = ((exit_price - trade['entry_price']) / trade['entry_price']) * 100
-
-            # Calculate holding time
-            entry_dt = datetime.strptime(f"{trade['entry_date']} {trade['entry_time']}", '%Y-%m-%d %H:%M:%S')
-            exit_dt = datetime.now()
-            holding_hours = (exit_dt - entry_dt).total_seconds() / 3600
-
-            exit_date = exit_dt.strftime('%Y-%m-%d')
-            exit_time = exit_dt.strftime('%H:%M:%S')
+            # Hard gate: never send equity sell orders outside regular market hours.
+            if not _market_is_open_now(symbol):
+                logger.warning(f"⛔ Refusing equity sell for {symbol}: market is closed")
+                self.cursor.execute('''
+                    UPDATE trade_records 
+                    SET last_exit_attempt = ?, 
+                        exit_attempt_count = COALESCE(exit_attempt_count, 0) + 1,
+                        exit_attempt_error = ?
+                    WHERE trade_id = ?
+                ''', (datetime.now().isoformat(), 'market closed; sell blocked', trade_id))
+                self.conn.commit()
+                return False
 
             # Mirror to Alpaca FIRST — only commit DB if broker confirms
-            symbol = trade['asset_symbol']
-            shares = trade['shares']
             alpaca_result = self.alpaca.place_order(symbol, shares, 'sell')
 
             if self.alpaca.is_configured and not self._broker_order_accepted(alpaca_result):
@@ -646,21 +785,43 @@ class PaperTradingEngine:
                     )
                     import time; time.sleep(0.5)
                     alpaca_result = self.alpaca.place_order(symbol, shares, 'sell')
-                    if not self._broker_order_accepted(alpaca_result):
-                        logger.error(f"🚫 Alpaca sell retry also failed for {symbol}: {alpaca_result.get('error')}")
                 except Exception as _re:
                     logger.error(f"🚫 Alpaca cancel+retry failed for {symbol}: {_re}")
 
             if self.alpaca.is_configured and not self._broker_order_accepted(alpaca_result):
-                logger.error(f"❌ Refusing to close local position for {symbol}: broker sell not accepted")
+                err_msg = alpaca_result.get('error', 'unknown error')
+                logger.error(f"❌ Refusing to close local position for {symbol}: broker sell not accepted: {err_msg}")
+                
+                # UPDATE ATTEMPT TRACKING IN DB
+                self.cursor.execute('''
+                    UPDATE trade_records 
+                    SET last_exit_attempt = ?, 
+                        exit_attempt_count = COALESCE(exit_attempt_count, 0) + 1,
+                        exit_attempt_error = ?
+                    WHERE trade_id = ?
+                ''', (datetime.now().isoformat(), err_msg, trade_id))
+                self.conn.commit()
                 return False
 
-            # Update trade record in DB
+            # Calculate P&L
+            profit_loss_dollars = (exit_price - trade['entry_price']) * shares
+            profit_loss_percent = ((exit_price - trade['entry_price']) / trade['entry_price']) * 100
+
+            # Calculate holding time
+            entry_dt = datetime.strptime(f"{trade['entry_date']} {trade['entry_time']}", '%Y-%m-%d %H:%M:%S')
+            exit_dt = datetime.now()
+            holding_hours = (exit_dt - entry_dt).total_seconds() / 3600
+
+            exit_date = exit_dt.strftime('%Y-%m-%d')
+            exit_time = exit_dt.strftime('%H:%M:%S')
+
+            # Update trade record in DB (including clearing attempt tracking)
             self.cursor.execute('''
             UPDATE trade_records
             SET exit_date = ?, exit_time = ?, exit_price = ?, exit_reason = ?,
                 profit_loss_dollars = ?, profit_loss_percent = ?, holding_hours = ?,
-                status = 'closed'
+                status = 'closed',
+                last_exit_attempt = NULL, exit_attempt_count = 0, exit_attempt_error = NULL
             WHERE trade_id = ?
             ''', (
                 exit_date, exit_time, exit_price, exit_reason,
@@ -671,6 +832,33 @@ class PaperTradingEngine:
 
             logger.info(f"✅ Position closed: {symbol} "
                        f"{profit_loss_percent:+.2f}% (${profit_loss_dollars:+,.0f})")
+
+            # ── Thesis invalidation gate: record stop-loss / invalidation exits ──
+            if _THESIS_MODULE_OK and exit_reason in ('stop_loss', 'invalidation'):
+                try:
+                    # Fetch catalyst_event from the trade record for context
+                    _cat_row = self.conn.execute(
+                        "SELECT catalyst_event, entry_catalyst_text, entry_thesis_text FROM trade_records WHERE trade_id = ?",
+                        (trade_id,)
+                    ).fetchone()
+                    _catalyst = ''
+                    _thesis   = ''
+                    if _cat_row:
+                        _catalyst = _cat_row[0] or _cat_row[1] or ''
+                        _thesis   = _cat_row[2] or ''
+                    record_thesis_invalidation(
+                        self.conn,
+                        ticker=symbol,
+                        trade_id=trade_id,
+                        exit_reason=exit_reason,
+                        exit_price=exit_price,
+                        entry_price=trade['entry_price'],
+                        catalyst_event=_catalyst,
+                        thesis_summary=_thesis,
+                    )
+                except Exception as _te:
+                    logger.debug(f"thesis invalidation log skipped: {_te}")
+
 
             # Reset trailing stop for this trade
             if self.exit_manager:
@@ -790,10 +978,11 @@ class PaperTradingEngine:
             self._sync_open_positions_from_alpaca()
 
             self.cursor.execute('''
-            SELECT trade_id, asset_symbol, entry_date, entry_price, shares,
+            SELECT trade_id, asset_symbol, entry_date, entry_time, entry_price, shares,
                    position_size_dollars, defcon_at_entry,
                    current_price, stop_loss, take_profit_1, take_profit_2,
-                   unrealized_pnl_dollars, unrealized_pnl_percent
+                   unrealized_pnl_dollars, unrealized_pnl_percent,
+                   last_exit_attempt, exit_attempt_count
             FROM trade_records
             WHERE status = 'open'
             ORDER BY entry_date DESC
@@ -954,6 +1143,26 @@ class PaperTradingEngine:
         if not entry_price or entry_price <= 0:
             return {'ok': False, 'message': f'Could not fetch price for {ticker}.'}
 
+        # ── Anti-reentry gate (soft warning on manual buys) ─────────────────────
+        # For manual /buy we warn but do NOT hard-block (human intent overrides).
+        # Hard blocks are enforced in the acquisition conditional path.
+        if _THESIS_MODULE_OK:
+            try:
+                _reentry_conn = get_sqlite_conn(str(DB_PATH), retries=2, timeout=5)
+                _catalyst_hint = notes or ''
+                _gate_ok, _gate_reason = check_reentry_allowed(_reentry_conn, ticker, new_catalyst=_catalyst_hint)
+                _reentry_conn.close()
+                if not _gate_ok:
+                    logger.warning(
+                        f"⚠️  Anti-reentry gate WARN for manual buy {ticker}: {_gate_reason}"
+                    )
+                    # Return a warning but allow the trade (manual override is always permitted)
+                    # The warning is surfaced in the return message so the user sees it.
+                    notes = (notes or '') + f' | ⚠️ Anti-reentry: {_gate_reason}'
+            except Exception as _ge:
+                logger.debug(f"Anti-reentry gate check error (ignored): {_ge}")
+
+
         position_size = round(entry_price * shares, 2)
         entry_time = datetime.now()
         entry_date = entry_time.strftime('%Y-%m-%d')
@@ -986,7 +1195,18 @@ class PaperTradingEngine:
             self.conn.commit()
             trade_id = self.cursor.lastrowid
 
-            # --- NEW: Pipeline Cleanup ---
+            # ── Thesis metadata snapshot (best-effort) ───────────────────────
+            if _THESIS_MODULE_OK and trade_id:
+                try:
+                    save_entry_thesis(
+                        self.conn,
+                        trade_id,
+                        catalyst_text=notes or '',
+                        thesis_text=notes or f'Manual buy via /buy command ({price_source} price)',
+                    )
+                except Exception as _te:
+                    logger.debug(f"thesis save skipped: {_te}")
+
             try:
                 self.cursor.execute("UPDATE acquisition_watchlist SET status = 'archived' WHERE ticker = ?", (ticker,))
                 self.cursor.execute("UPDATE conditional_tracking SET status = 'triggered' WHERE ticker = ?", (ticker,))
@@ -1080,6 +1300,21 @@ class PaperTradingEngine:
 
             if not exit_price or exit_price <= 0:
                 return {'ok': False, 'message': f'Could not fetch exit price for {ticker}.'}
+
+            if not _market_is_open_now(ticker):
+                logger.warning(f"⛔ Refusing equity sell for {ticker}: market is closed")
+                self.cursor.execute('''
+                    UPDATE trade_records
+                    SET last_exit_attempt = ?,
+                        exit_attempt_count = COALESCE(exit_attempt_count, 0) + 1,
+                        exit_attempt_error = ?
+                    WHERE trade_id = ?
+                ''', (datetime.now().isoformat(), 'market closed; sell blocked', actual_trade_id))
+                self.conn.commit()
+                return {
+                    'ok': False,
+                    'message': f'Market is closed; refusing to sell {ticker} outside regular hours.'
+                }
 
             pnl_dollars = round((exit_price - entry_price) * shares, 2)
             pnl_pct = round(((exit_price - entry_price) / entry_price) * 100, 4)

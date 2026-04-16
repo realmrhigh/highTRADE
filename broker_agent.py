@@ -213,7 +213,7 @@ def get_latest_briefing_context(db_path: str = None, scope: str = 'all') -> Tupl
     yesterday = (_et_now() - timedelta(days=1)).strftime('%Y-%m-%d')
 
     try:
-        conn = sqlite3.connect(_db, timeout=5)
+        conn = get_sqlite_conn(str(_db), timeout=15)
         conn.row_factory = sqlite3.Row
 
         # Most recent briefing (any type) from today or yesterday
@@ -578,7 +578,7 @@ class BrokerDecisionEngine:
             from trading_db import get_sqlite_conn
             from pathlib import Path
             db_path = Path(__file__).parent / 'trading_data' / 'trading_history.db'
-            conn = sqlite3.connect(str(db_path))
+            conn = get_sqlite_conn(str(db_path), timeout=15)
             conn.row_factory = sqlite3.Row
             row = conn.execute("""
                 SELECT summary, key_risks, sector, market_cap, thesis
@@ -1284,25 +1284,7 @@ class BrokerDecisionEngine:
 
         gate_attempts = []
 
-        # Primary: SONNET 4.6 via REST (preferred for stability/cost). Try sonnet-4.6 first, then gemini-2.5-pro, then gemini-3.1-pro-preview as grounded fallback.
-        try:
-            text, in_tok, out_tok = gemini_client.call(
-                prompt=prompt,
-                model_id='sonnet-4.6',
-                caller='broker_gate',
-            )
-            if text:
-                result = _parse_gate_json(text)
-                result['_gate_model'] = 'sonnet-4.6'
-                result['_gate_provider'] = 'sonnet'
-                result['_gate_tokens'] = {'input': in_tok, 'output': out_tok}
-                return result
-            gate_attempts.append('sonnet-4.6: empty response')
-        except json.JSONDecodeError as e:
-            gate_attempts.append(f'sonnet-4.6: json parse failed ({e})')
-        except Exception as e:
-            gate_attempts.append(f'sonnet-4.6: {e}')
-
+        # Primary: Gemini 2.5 Pro via CLI. (sonnet-4.6 removed — not registered in gemini_client MODELS dict, caused exhaustion on every gate call.)
         # Fallback: Gemini 2.5 Pro.
         try:
             text, in_tok, out_tok = gemini_client.call(
@@ -1394,7 +1376,7 @@ class BrokerDecisionEngine:
             live_state.setdefault('vix', 'N/A')
 
         try:
-            conn = sqlite3.connect(str(db_path))
+            conn = get_sqlite_conn(str(db_path), timeout=15)
             conn.row_factory = sqlite3.Row
             # Ensure gate_vetoed_until column exists (added to prevent re-running gate
             # every cycle for perpetually-triggered but vetoed conditionals)
@@ -2078,6 +2060,28 @@ class AutonomousBroker:
             # FULL_AUTO: Execute immediately
             logger.info(f"  🤖 Executing acquisition entry: {ticker} @ ${entry_price:.2f} — ${position_size:,.0f}")
 
+            # ── Anti-reentry hard gate for automated entries ─────────────────
+            # Hard blocks are enforced here (unlike manual /buy which only warns).
+            try:
+                from trade_thesis import check_reentry_allowed as _check_reentry
+                from pathlib import Path as _Path2
+                import sqlite3 as _sq3_r
+                _db_r = _Path2(__file__).parent / 'trading_data' / 'trading_history.db'
+                _rc = _sq3_r.connect(str(_db_r))
+                _r_ok, _r_reason = _check_reentry(_rc, ticker, new_catalyst=decision.get('thesis', ''))
+                _rc.close()
+                if not _r_ok:
+                    logger.warning(
+                        f"  ⛔ Anti-reentry HARD BLOCK: {ticker} skipped\n  Reason: {_r_reason}"
+                    )
+                    self.decision_engine.record_decision(decision, executed=False, result="BLOCKED_REENTRY")
+                    continue
+            except ImportError:
+                pass  # trade_thesis not available — skip gate
+            except Exception as _re_err:
+                logger.debug(f"  Anti-reentry gate error (ignored): {_re_err}")
+
+
             # Execute as a single-name acquisition entry
             trade_alert = {
                 'defcon_level':    3,  # Acquisition entries are pre-researched, lower urgency
@@ -2125,14 +2129,30 @@ class AutonomousBroker:
                     self._notify_acquisition_triggered(decision, executed=True)
                     trade_ids = [buy_result.get('trade_id')]
                     logger.info(f"  ✅ {ticker} acquisition entry executed (trade_id={buy_result.get('trade_id')})")
-                    # Write analyst-derived exit levels to the new trade record
+                    # ── Save entry thesis metadata ─────────────────────────────
+                    try:
+                        from trade_thesis import save_entry_thesis as _save_thesis
+                        import sqlite3 as _sq3_t
+                        _db_t = Path(__file__).parent / 'trading_data' / 'trading_history.db'
+                        _ct = _sq3_t.connect(str(_db_t))
+                        _save_thesis(
+                            _ct,
+                            buy_result['trade_id'],
+                            thesis_text=decision.get('thesis', ''),
+                            catalyst_text=decision.get('catalyst_event', '') or decision.get('thesis', ''),
+                            signal_score=decision.get('confidence', 0) * 100,
+                            conviction=decision.get('confidence', 0) * 100,
+                        )
+                        _ct.commit(); _ct.close()
+                    except Exception as _te:
+                        logger.debug(f"  thesis save error (ignored): {_te}")
                     stop = decision.get('stop_loss')
                     tp1  = decision.get('take_profit_1')
                     tp2  = decision.get('take_profit_2')
                     if stop or tp1:
                         try:
                             _db = Path(__file__).parent / 'trading_data' / 'trading_history.db'
-                            _conn = sqlite3.connect(str(_db))
+                            _conn = get_sqlite_conn(str(_db), timeout=15)
                             for tid in trade_ids:
                                 _conn.execute(
                                     "UPDATE trade_records SET stop_loss=?, take_profit_1=?, take_profit_2=? WHERE trade_id=?",

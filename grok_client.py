@@ -11,6 +11,7 @@ import requests
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
 import time
+import random
 
 try:
     from dotenv import load_dotenv
@@ -40,11 +41,12 @@ class GrokClient:
     def __init__(self):
         self.api_key = os.environ.get("XAI_API_KEY", "")
         self.base_url = "https://api.x.ai/v1"
-        self.default_model = "grok-4-1-fast-reasoning"  # As suggested by Grok
+        self.default_model = "grok-4-1-fast-reasoning"  # Preferred 4.1 reasoning model for analysis
 
-    def _post_json_with_backoff(self, url: str, json_payload: dict, timeout: int = 180, max_retries: int = 3):
+    def _post_json_with_backoff(self, url: str, json_payload: dict, timeout: int = 180, max_retries: int = 5):
         """POST helper that reuses the module Session, closes responses, and backs off on 429s.
         Fails immediately on 400/401/403 (auth/key errors) — no point retrying those.
+        Uses exponential backoff with jitter: 1s, 2s, 4s, 8s, 16s + random 0-2s jitter.
         """
         backoff = 1.0
         for attempt in range(1, max_retries + 1):
@@ -53,13 +55,15 @@ class GrokClient:
                 resp = _SESSION.post(url, headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}, json=json_payload, timeout=timeout)
                 if resp.status_code == 429:
                     # Rate limited — close socket before sleeping to prevent FD leak
-                    logger.warning(f"Grok 429 on attempt {attempt}. Backing off {backoff}s")
+                    jitter = random.uniform(0.0, 2.0)
+                    sleep_for = backoff + jitter
+                    logger.warning(f"Grok 429 on attempt {attempt}/{max_retries}. Backing off {sleep_for:.1f}s")
                     try:
                         resp.close()
                     except Exception:
                         pass
                     resp = None
-                    time.sleep(backoff)
+                    time.sleep(sleep_for)
                     backoff *= 2
                     continue
                 if resp.status_code in (400, 401, 403):
@@ -150,7 +154,7 @@ class GrokClient:
             logger.warning("Grok API skipped — no XAI_API_KEY set")
             return None, 0, 0
 
-        model = model_id or "grok-4-1-fast"
+        model = model_id or "grok-4-1-fast-non-reasoning"
 
         tools = []
         if use_web_search:

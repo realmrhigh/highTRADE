@@ -1,18 +1,9 @@
 #!/usr/bin/env python3
 """
 day_trader.py — Grok-powered intraday trader for HighTrade.
-
-Picks one stock per morning via Grok (with real-time web + X search),
-buys at open with confidence-scaled sizing, and exits strategically
-by close. Grok owns 100% of decisions.
-
-Schedule (Eastern Time):
-  6:00 AM   — Pre-market scan (Grok Responses API w/ web_search + x_search)
-  9:35 AM   — Auto-buy (confidence-scaled from available cash)
-  Every 15m — Check stop-loss / take-profit / stretch target
-  3:50 PM   — Hard EOD exit backstop
 """
 
+from trading_db import get_sqlite_conn
 import json
 import logging
 import math
@@ -38,9 +29,10 @@ def _et_now():
 _STOP_MIN, _STOP_MAX = 0.005, 0.02       # 0.5% – 2%
 _TP_MIN, _TP_MAX     = 0.015, 0.06       # 1.5% – 6%
 _STRETCH_MIN, _STRETCH_MAX = 0.04, 0.10  # 4% – 10%
-_MIN_CONFIDENCE = 45                       # Below this → skip trade
+_MIN_CONFIDENCE = 85                       # Below this → daily skip / no trade
 _MIN_POSITION = 500                        # Don't trade if sized below $500
-_MAX_RISK_PER_TRADE_PCT = 0.02             # Risk max 2% of capital per day trade
+_MAX_RISK_PER_TRADE_PCT = 0.02             # Max 2% risk on the very best setups
+_MIN_RISK_PER_TRADE_PCT = 0.005            # Bare minimum risk on marginal-but-allowed setups
 _SOFT_MAX_GAP_PCT = 12.0                   # Above this → log warning but still allow if thesis is strong
 _MAX_PICKS_PER_DAY = 3                     # Try up to this many picks before giving up for the day
 _RETRY_CUTOFF_HOUR = 14                    # Don't start a new pick after 2 PM ET
@@ -70,13 +62,14 @@ class DayTrader:
         # Retry-scan state: rescan every 30 min for first 3 hours if no pick found yet
         self._first_scan_time: Optional[datetime] = None  # when today's first scan fired
         self._last_scan_time: Optional[datetime] = None   # when last scan attempt ran
+        self._scan_outcome: Optional[str] = None          # picked | skipped | error
 
         self._ensure_table()
 
     # ── DB setup ──────────────────────────────────────────────────────────────
 
     def _ensure_table(self):
-        conn = sqlite3.connect(self.db_path)
+        conn = get_sqlite_conn(str(self.db_path), timeout=15)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS day_trade_sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -162,57 +155,66 @@ class DayTrader:
             logger.warning(f"Could not fetch available cash: {e}")
             return 0.0
 
+    def _confidence_risk_pct(self, confidence: int) -> float:
+        """Map confidence to risk budget.
+
+        75% confidence -> 0.5% of capital at risk
+        99% confidence -> 2.0% of capital at risk
+        Anything below the floor gets no trade.
+        """
+        if confidence < _MIN_CONFIDENCE:
+            return 0.0
+        conf = max(_MIN_CONFIDENCE, min(99, int(confidence)))
+        span = 99 - _MIN_CONFIDENCE
+        if span <= 0:
+            return _MAX_RISK_PER_TRADE_PCT
+        t = (conf - _MIN_CONFIDENCE) / span
+        return _MIN_RISK_PER_TRADE_PCT + t * (_MAX_RISK_PER_TRADE_PCT - _MIN_RISK_PER_TRADE_PCT)
+
     def _calculate_position_size(self, confidence: int, available_cash: float,
                                  stop_pct: float, suggested_position: Optional[float] = None,
                                  portfolio_risk_pct: Optional[float] = None) -> float:
-        """Size from risk, not conviction.
+        """Scale position size from confidence, then clamp by risk.
 
-        Preferred path:
-        - honor model-provided risk budget if present
-        - cap risk to 1% of available cash
-        - derive notional from stop distance
-
-        Fallback path:
-        - if stop_pct is missing/invalid, use a conservative capped notional
+        75% confidence = small probe
+        99% confidence = full suggested allocation
+        Nothing below the floor gets deployed.
         """
         if confidence < _MIN_CONFIDENCE or available_cash <= 0:
             return 0.0
-
-        risk_budget_pct = portfolio_risk_pct if portfolio_risk_pct is not None else _MAX_RISK_PER_TRADE_PCT
-        try:
-            risk_budget_pct = float(risk_budget_pct)
-        except Exception:
-            risk_budget_pct = _MAX_RISK_PER_TRADE_PCT
-        risk_budget_pct = max(0.0, min(_MAX_RISK_PER_TRADE_PCT, risk_budget_pct))
 
         try:
             stop_pct = float(stop_pct or 0)
         except Exception:
             stop_pct = 0.0
+        if stop_pct <= 0:
+            return 0.0
 
-        risk_budget_dollars = available_cash * risk_budget_pct
-
-        risk_based_size = 0.0
-        if stop_pct > 0:
-            risk_based_size = risk_budget_dollars / stop_pct
-
-        if suggested_position is not None:
-            try:
-                suggested_position = float(suggested_position)
-            except Exception:
-                suggested_position = 0.0
-        else:
+        try:
+            suggested_position = float(suggested_position) if suggested_position is not None else 0.0
+        except Exception:
             suggested_position = 0.0
 
-        if risk_based_size <= 0:
-            conservative_fallback = min(available_cash * 0.10, available_cash)
-            base_size = conservative_fallback
-        elif suggested_position > 0:
+        try:
+            portfolio_risk_pct = float(portfolio_risk_pct) if portfolio_risk_pct is not None else _MAX_RISK_PER_TRADE_PCT
+        except Exception:
+            portfolio_risk_pct = _MAX_RISK_PER_TRADE_PCT
+        portfolio_risk_pct = max(_MIN_RISK_PER_TRADE_PCT, min(_MAX_RISK_PER_TRADE_PCT, portfolio_risk_pct))
+
+        # Confidence scaling: 75 -> 25% of size, 99 -> 100% of size.
+        conf = max(_MIN_CONFIDENCE, min(99, int(confidence)))
+        span = 99 - _MIN_CONFIDENCE
+        confidence_scale = 0.25 + ((conf - _MIN_CONFIDENCE) / span) * 0.75 if span > 0 else 1.0
+
+        risk_based_size = (available_cash * portfolio_risk_pct) / stop_pct
+        if suggested_position > 0:
             base_size = min(risk_based_size, suggested_position)
         else:
             base_size = risk_based_size
 
-        return max(0.0, min(available_cash, base_size))
+        scaled_size = base_size * confidence_scale
+        hard_notional_cap = available_cash * 0.25
+        return max(0.0, min(available_cash, hard_notional_cap, scaled_size))
 
     # ── Live price helper ─────────────────────────────────────────────────────
 
@@ -237,6 +239,58 @@ class DayTrader:
             pass
         return None
 
+    def _calibrate_confidence(self, raw_confidence: int, gap_pct: float = 0.0,
+                              relative_volume: float = 0.0, source_count: int = 0,
+                              edge_summary: str = "") -> int:
+        """Convert model-reported confidence into a more conservative execution score.
+
+        Grok tends to report overly crisp numbers when the prompt is well-formed.
+        We discount that optimism using a few simple evidence checks so the day
+        trader doesn't treat 92% like divine truth.
+        """
+        try:
+            raw = int(raw_confidence)
+        except Exception:
+            raw = 0
+        raw = max(0, min(100, raw))
+
+        # Base optimism haircut: high raw scores get progressively trimmed.
+        penalty = 0
+        if raw >= 90:
+            penalty += 8
+        elif raw >= 80:
+            penalty += 5
+        elif raw >= 70:
+            penalty += 3
+
+        # Thin evidence = more haircut.
+        if source_count <= 1:
+            penalty += 7
+        elif source_count == 2:
+            penalty += 4
+        elif source_count == 3:
+            penalty += 2
+
+        # Weak participation or large gap = less trustworthy.
+        if relative_volume and relative_volume < 1.5:
+            penalty += 4
+        elif relative_volume and relative_volume < 2.0:
+            penalty += 2
+
+        if gap_pct >= 12:
+            penalty += 5
+        elif gap_pct >= 8:
+            penalty += 3
+        elif gap_pct >= 5:
+            penalty += 1
+
+        # If the summary is vague, don't let it swagger around with max confidence.
+        if len(edge_summary.strip()) < 40:
+            penalty += 2
+
+        calibrated = max(0, min(100, raw - penalty))
+        return calibrated
+
     # ══════════════════════════════════════════════════════════════════════════
     # CHECKPOINT 1: Pre-market Scan (7:00 AM ET)
     # ══════════════════════════════════════════════════════════════════════════
@@ -260,7 +314,7 @@ class DayTrader:
 
         # DB guard (survive restarts) — only lock out on terminal states, not 'skipped'
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = get_sqlite_conn(str(self.db_path), timeout=15)
             row = conn.execute(
                 "SELECT status FROM day_trade_sessions WHERE date = ?", (today,)
             ).fetchone()
@@ -303,10 +357,14 @@ class DayTrader:
         logger.info(f"🌅 Day Trader: pre-market scan firing (attempt #{attempt_num})...")
 
         try:
+            self._scan_outcome = None
             result = self._run_premarket_scan(today, now)
             if result:
                 logger.info(f"  ✅ Pick: {result.get('ticker')} (confidence: {result.get('confidence')}%)")
                 self._scan_date = today  # Found a pick — stop retrying
+            elif self._scan_outcome == 'skipped':
+                logger.info("  ⏭️  No high-alpha setup today — skipping the day instead of forcing trades")
+                self._scan_date = today
             else:
                 window_remaining = _SCAN_RETRY_WINDOW_HOURS - (now - self._first_scan_time).total_seconds() / 3600
                 if window_remaining > 0:
@@ -322,7 +380,7 @@ class DayTrader:
         """Delete today's session so a same-day validation scan can rerun cleanly."""
         today = _et_now().strftime('%Y-%m-%d')
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = get_sqlite_conn(str(self.db_path), timeout=15)
             cur = conn.execute("DELETE FROM day_trade_sessions WHERE date = ?", (today,))
             conn.commit()
             conn.close()
@@ -349,6 +407,7 @@ class DayTrader:
 
         logger.info("🚀 Day Trader: force pre-market scan firing...")
         self._scan_date = today
+        self._scan_outcome = None
 
         try:
             result = self._run_premarket_scan(today, now)
@@ -505,7 +564,7 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
         primary = picks_list[0]
         alternatives = picks_list[1:]  # full pick dicts, not text strings
 
-        confidence = int(primary.get('confidence', 0))
+        raw_confidence = int(primary.get('confidence', 0))
         ticker = (primary.get('ticker') or '').upper().strip()
         if not ticker or ticker == 'NO TRADE':
             self._save_session_error(today, "No qualified primary pick in Grok response")
@@ -521,6 +580,16 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
             relative_volume = 0.0
 
         edge_summary = str(primary.get('edge_summary', '') or '')
+        source_count = len(primary.get('sources', []) or [])
+        confidence = self._calibrate_confidence(
+            raw_confidence,
+            gap_pct=gap_pct,
+            relative_volume=relative_volume,
+            source_count=source_count,
+            edge_summary=edge_summary,
+        )
+        primary['_raw_confidence'] = raw_confidence
+        primary['_calibrated_confidence'] = confidence
         tech = primary.get('key_technical_levels') or {}
         try:
             stop_below = float(tech.get('stop_below')) if tech.get('stop_below') is not None else None
@@ -567,7 +636,7 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
             status = 'skipped'
 
         # Save session — alternatives stored as full pick dicts for use if primary stops out
-        conn = sqlite3.connect(self.db_path)
+        conn = get_sqlite_conn(str(self.db_path), timeout=15)
         conn.execute("""
             INSERT OR REPLACE INTO day_trade_sessions
             (date, ticker, scan_time, scan_research, scan_confidence, scan_sources,
@@ -599,6 +668,7 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
                 self.alerts.send_silent_log('daytrade_scan', {
                     'ticker': ticker,
                     'confidence': confidence,
+                    'raw_confidence': raw_confidence,
                     'thesis': primary.get('thesis', ''),
                     'catalyst': primary.get('catalyst', ''),
                     'sources': len(primary.get('sources', [])),
@@ -613,12 +683,17 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
                 logger.warning(f"  Alert failed: {e}")
 
         if status == 'skipped':
+            self._scan_outcome = 'skipped'
             logger.info(
-                f"  ⏭️  Skipping day trade: confidence={confidence}% size=${position_size:,.0f} gap={gap_pct:.1f}%"
+                f"  ⏭️  Daily skip: raw_conf={raw_confidence}% calibrated={confidence}% size=${position_size:,.0f} gap={gap_pct:.1f}% "
+                f"(floor={_MIN_CONFIDENCE}%, risk={self._confidence_risk_pct(confidence)*100:.2f}%)"
             )
             return None
 
-        logger.info(f"  📋 {len(alternatives)} backup pick(s) queued if primary stops out")
+        logger.info(
+            f"  📋 {len(alternatives)} backup pick(s) queued if primary stops out "
+            f"(raw_conf={raw_confidence}% → calibrated={confidence}%)"
+        )
         return primary
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -639,7 +714,7 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
 
         # DB guard
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = get_sqlite_conn(str(self.db_path), timeout=15)
             row = conn.execute(
                 "SELECT status, ticker, scan_confidence, position_size_dollars, "
                 "stop_loss_pct, take_profit_pct, stretch_target_pct "
@@ -690,7 +765,7 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
 
         # Load session for thesis
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = get_sqlite_conn(str(self.db_path), timeout=15)
             research_row = conn.execute(
                 "SELECT scan_research FROM day_trade_sessions WHERE date = ?", (today,)
             ).fetchone()
@@ -716,7 +791,7 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
         entry_price = result.get('entry_price', price)
         now_str = _et_now().strftime('%H:%M:%S')
 
-        conn = sqlite3.connect(self.db_path)
+        conn = get_sqlite_conn(str(self.db_path), timeout=15)
         conn.execute("""
             UPDATE day_trade_sessions SET
                 status = 'bought',
@@ -754,9 +829,12 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
         if now.hour >= 16:
             return
 
+        # Reconcile stale session state before evaluating exits.
+        self._reconcile_session_with_position_state(today)
+
         # Load active session
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = get_sqlite_conn(str(self.db_path), timeout=15)
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT * FROM day_trade_sessions WHERE date = ?", (today,)
@@ -785,7 +863,7 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
         high_water = max(price, session.get('high_water_price') or entry_price)
         if high_water > (session.get('high_water_price') or 0):
             try:
-                conn = sqlite3.connect(self.db_path)
+                conn = get_sqlite_conn(str(self.db_path), timeout=15)
                 conn.execute(
                     "UPDATE day_trade_sessions SET high_water_price = ? WHERE date = ?",
                     (high_water, today)
@@ -839,7 +917,7 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
                     f"{ticker} ${price:.2f} >= ${tp1_price:.2f} — upgrading to STRETCH mode"
                 )
                 try:
-                    conn = sqlite3.connect(self.db_path)
+                    conn = get_sqlite_conn(str(self.db_path), timeout=15)
                     conn.execute("""
                         UPDATE day_trade_sessions SET
                             status = 'stretching',
@@ -884,9 +962,12 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
         if self._eod_exit_date == today:
             return
 
+        # Reconcile stale session state before evaluating the forced exit.
+        self._reconcile_session_with_position_state(today)
+
         # DB check
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = get_sqlite_conn(str(self.db_path), timeout=15)
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT * FROM day_trade_sessions WHERE date = ?", (today,)
@@ -941,15 +1022,43 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
         )
 
         exit_price = price or 0
+        exit_trade_id = trade_id
         if result.get('ok'):
             exit_price = result.get('exit_price', price) or price or 0
+            exit_trade_id = result.get('trade_id') or trade_id
+        else:
+            # If the broker-side/manual exit was already processed elsewhere,
+            # reconcile the session with the real position state instead of
+            # pretending we still own a ghost bag.
+            still_open = False
+            try:
+                if self.paper_trading:
+                    open_positions = self.paper_trading.get_open_positions() or []
+                    still_open = any(
+                        (p.get('trade_id') == trade_id) or
+                        (str(p.get('asset_symbol') or '').upper().strip() == str(ticker or '').upper().strip())
+                        for p in open_positions
+                    )
+            except Exception:
+                still_open = True
+
+            if not still_open:
+                logger.warning(
+                    f"  🧹 Day Trade reconcile: {ticker} was already closed outside day_trader; "
+                    f"marking session closed without re-selling"
+                )
+                exit_trade_id = trade_id
+                exit_price = price or session.get('exit_price') or entry_price or 0
+            else:
+                self._update_session(today, status='error', error_message=result.get('message', 'manual_sell failed'))
+                return
 
         pnl_dollars = (exit_price - entry_price) * shares if entry_price and shares else 0
         pnl_percent = ((exit_price / entry_price) - 1) * 100 if entry_price else 0
 
         now_str = _et_now().strftime('%H:%M:%S')
 
-        conn = sqlite3.connect(self.db_path)
+        conn = get_sqlite_conn(str(self.db_path), timeout=15)
         conn.execute("""
             UPDATE day_trade_sessions SET
                 status = 'closed',
@@ -957,9 +1066,10 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
                 exit_time = ?,
                 exit_reason = ?,
                 pnl_dollars = ?,
-                pnl_percent = ?
+                pnl_percent = ?,
+                entry_trade_id = COALESCE(entry_trade_id, ?)
             WHERE date = ?
-        """, (exit_price, now_str, reason, round(pnl_dollars, 2), round(pnl_percent, 2), today))
+        """, (exit_price, now_str, reason, round(pnl_dollars, 2), round(pnl_percent, 2), exit_trade_id, today))
         conn.commit()
         conn.close()
 
@@ -998,7 +1108,7 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
     def _try_next_pick(self, today: str, now) -> bool:
         """After a stop-loss, load and execute the next ranked alternative pick."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = get_sqlite_conn(str(self.db_path), timeout=15)
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT alternatives_json, current_pick_index FROM day_trade_sessions WHERE date = ?",
@@ -1033,14 +1143,27 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
         if not ticker or ticker == 'NO TRADE':
             return False
 
-        confidence = int(alt_pick.get('confidence', 0))
-        if confidence < _MIN_CONFIDENCE:
-            logger.info(f"  ⏭️  Day Trader: pick #{next_index + 1} ({ticker}) confidence {confidence}% too low")
-            return False
+        raw_confidence = int(alt_pick.get('confidence', 0))
 
         stop = max(_STOP_MIN, min(_STOP_MAX, (alt_pick.get('stop_loss_pct', 1.0) or 1.0) / 100))
         tp = max(_TP_MIN, min(_TP_MAX, (alt_pick.get('take_profit_pct', 3.0) or 3.0) / 100))
         stretch = max(_STRETCH_MIN, min(_STRETCH_MAX, (alt_pick.get('stretch_target_pct', 6.0) or 6.0) / 100))
+        gap_pct = float(alt_pick.get('gap_pct', 0) or 0)
+        relative_volume = float(alt_pick.get('relative_volume', 0) or 0)
+        source_count = len(alt_pick.get('sources', []) or [])
+        confidence = self._calibrate_confidence(
+            raw_confidence,
+            gap_pct=gap_pct,
+            relative_volume=relative_volume,
+            source_count=source_count,
+            edge_summary=str(alt_pick.get('edge_summary', '') or ''),
+        )
+        alt_pick['_raw_confidence'] = raw_confidence
+        alt_pick['_calibrated_confidence'] = confidence
+        if confidence < _MIN_CONFIDENCE:
+            logger.info(f"  ⏭️  Day Trader: pick #{next_index + 1} ({ticker}) raw_conf={raw_confidence}% calibrated={confidence}% too low")
+            return False
+
 
         available_cash = self._get_available_cash()
         position_size = self._calculate_position_size(
@@ -1065,7 +1188,7 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
 
         logger.info(
             f"  🔄 Day Trader: stop hit — trying pick #{next_index + 1}: {ticker} "
-            f"(confidence {confidence}%, ${position_size:,.0f})"
+            f"(raw_conf={raw_confidence}% → calibrated={confidence}%, ${position_size:,.0f})"
         )
 
         # Update session to reflect new active pick — reset trade fields
@@ -1107,17 +1230,92 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
         cols = ', '.join(f"{k} = ?" for k in kwargs)
         vals = list(kwargs.values()) + [today]
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = get_sqlite_conn(str(self.db_path), timeout=15)
             conn.execute(f"UPDATE day_trade_sessions SET {cols} WHERE date = ?", vals)
             conn.commit()
             conn.close()
         except Exception as e:
             logger.warning(f"Session update failed: {e}")
 
+    def _reconcile_session_with_position_state(self, today: str) -> bool:
+        """Force day-trade session state to match the actual open-position source of truth.
+
+        If a day trade was closed manually or by another subsystem, the session row
+        can drift and keep advertising an open hold. This method collapses that
+        drift by checking the broker-backed open positions and closing the session
+        when the position is no longer present.
+        """
+        if not self.paper_trading:
+            return False
+
+        try:
+            conn = get_sqlite_conn(str(self.db_path), timeout=15)
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM day_trade_sessions WHERE date = ?", (today,)
+            ).fetchone()
+            conn.close()
+        except Exception:
+            return False
+
+        if not row:
+            return False
+
+        session = dict(row)
+        if session.get('status') not in ('bought', 'stretching'):
+            return False
+
+        ticker = (session.get('ticker') or '').upper().strip()
+        trade_id = session.get('entry_trade_id')
+        if not ticker:
+            return False
+
+        try:
+            open_positions = self.paper_trading.get_open_positions() or []
+        except Exception:
+            return False
+
+        still_open = any(
+            (trade_id is not None and p.get('trade_id') == trade_id) or
+            ((p.get('asset_symbol') or '').upper().strip() == ticker)
+            for p in open_positions
+        )
+        if still_open:
+            return False
+
+        exit_price = session.get('exit_price') or session.get('entry_price') or 0
+        entry_price = session.get('entry_price') or 0
+        shares = session.get('shares') or 0
+        pnl_dollars = (exit_price - entry_price) * shares if entry_price and shares else 0
+        pnl_percent = ((exit_price / entry_price) - 1) * 100 if entry_price else 0
+        now_str = _et_now().strftime('%H:%M:%S')
+
+        try:
+            conn = get_sqlite_conn(str(self.db_path), timeout=15)
+            conn.execute("""
+                UPDATE day_trade_sessions SET
+                    status = 'closed',
+                    exit_price = COALESCE(exit_price, ?),
+                    exit_time = COALESCE(exit_time, ?),
+                    exit_reason = COALESCE(exit_reason, 'manual'),
+                    pnl_dollars = COALESCE(pnl_dollars, ?),
+                    pnl_percent = COALESCE(pnl_percent, ?)
+                WHERE date = ?
+            """, (exit_price, now_str, round(pnl_dollars, 2), round(pnl_percent, 2), today))
+            conn.commit()
+            conn.close()
+            logger.warning(
+                f"  🧹 Day Trade reconcile: closed stale session for {ticker} (trade #{trade_id})"
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"Day Trade reconcile failed for {ticker}: {e}")
+            return False
+
     def _save_session_error(self, today: str, error_msg: str):
         """Create or update session with error status."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = get_sqlite_conn(str(self.db_path), timeout=15)
             conn.execute("""
                 INSERT INTO day_trade_sessions (date, status, error_message)
                 VALUES (?, 'error', ?)
@@ -1135,7 +1333,7 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
         """Get today's day trade session status."""
         today = _et_now().strftime('%Y-%m-%d')
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = get_sqlite_conn(str(self.db_path), timeout=15)
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT * FROM day_trade_sessions WHERE date = ?", (today,)
@@ -1165,7 +1363,7 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
     def get_history(self, n: int = 10) -> List[Dict]:
         """Get last N day trade sessions."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = get_sqlite_conn(str(self.db_path), timeout=15)
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT * FROM day_trade_sessions ORDER BY date DESC LIMIT ?", (n,)
@@ -1178,7 +1376,7 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
     def get_stats(self) -> Dict:
         """Aggregate day trade statistics."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = get_sqlite_conn(str(self.db_path), timeout=15)
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT * FROM day_trade_sessions WHERE status = 'closed' ORDER BY date DESC"

@@ -8,11 +8,11 @@ import sqlite3
 from trading_db import get_sqlite_conn
 import json
 from datetime import datetime, timedelta
-from pathlib import Path
+
+from db_paths import ensure_db_parent
 
 # Database path
-DB_PATH = Path.home() / 'trading_data' / 'trading_history.db'
-DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+DB_PATH = ensure_db_parent()
 
 def init_database():
     """Initialize SQLite database with complete schema"""
