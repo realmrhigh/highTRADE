@@ -42,6 +42,18 @@ class SignalMonitor:
         self.defcon_hold_cycles = 0
         self.is_winding_down = False
 
+    def disconnect(self):
+        """No-op — kept for backwards compatibility after connection-per-query refactor."""
+        pass
+
+    def connect(self):
+        """No-op — kept for backwards compatibility after connection-per-query refactor."""
+        pass
+
+    def cursor(self):
+        """No-op — kept for backwards compatibility after connection-per-query refactor."""
+        pass
+
     def fetch_bond_yield(self):
         """Fetch 10-year bond yield from FRED API"""
         try:
