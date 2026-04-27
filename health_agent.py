@@ -4,7 +4,7 @@ health_agent.py — Bi-weekly system health + meta-learning check.
 
 Fires every other Thursday (or on demand) and does four things:
 
-  1. API Health   — ping yfinance, FRED, Gemini CLI, Capitol Trades
+  1. API Health   — ping Unusual Whales, Alpaca, FRED, Gemini CLI, Claude CLI, xAI/Grok, Capitol Trades
   2. Signal Check — verify monitoring cycles are running, DB write recency
   3. Gap Dedup    — scan data_gaps_json across all tables, surface recurring
                    gaps (≥2 appearances in 14 days) and flag them for coding
@@ -119,20 +119,75 @@ def _save_state(state: Dict) -> None:
 def _check_apis(fred_api_key: Optional[str]) -> Tuple[List[str], List[str]]:
     """
     Returns (ok_list, down_list).
-    Checks: yfinance, FRED, Gemini CLI, Capitol Trades.
+    Checks: Unusual Whales, Alpaca, FRED, Gemini CLI, Claude CLI, xAI/Grok, Capitol Trades.
     """
     ok, down = [], []
+    import requests as _req
+    from pathlib import Path as _Path
 
-    # --- yfinance ---
+    def _uw_key():
+        try:
+            for line in (_Path.home() / '.openclaw/creds/unusualwhales.env').read_text().splitlines():
+                if line.startswith('UW_API_KEY='):
+                    return line.split('=',1)[1].strip()
+        except Exception:
+            pass
+        return ''
+
+    def _xai_key():
+        try:
+            for line in (_Path.home() / '.openclaw/creds/xai.env').read_text().splitlines():
+                if line.startswith('XAI_API_KEY='):
+                    return line.split('=',1)[1].strip()
+        except Exception:
+            pass
+        return ''
+
+    # --- Unusual Whales ---
     try:
-        import yfinance as yf
-        hist = yf.Ticker('SPY').history(period='1d')
-        if len(hist) > 0:
-            ok.append('yfinance')
+        uw_key = _uw_key()
+        if uw_key:
+            r = _req.get('https://api.unusualwhales.com/api/market/market-tide',
+                headers={'Authorization': f'Bearer {uw_key}', 'UW-CLIENT-API-ID': '100001'}, timeout=10)
+            if r.ok and r.json().get('data'):
+                ok.append('Unusual Whales')
+            else:
+                down.append(f'Unusual Whales (HTTP {r.status_code})')
         else:
-            down.append('yfinance (empty response)')
+            down.append('Unusual Whales (no API key)')
     except Exception as e:
-        down.append(f'yfinance ({e})')
+        down.append(f'Unusual Whales ({e})')
+
+    # --- Alpaca Paper ---
+    try:
+        alpaca_key = os.environ.get('ALPACA_API_KEY', '')
+        alpaca_secret = os.environ.get('ALPACA_SECRET_KEY', '')
+        if alpaca_key and alpaca_secret:
+            r = _req.get('https://paper-api.alpaca.markets/v2/account',
+                headers={'APCA-API-KEY-ID': alpaca_key, 'APCA-API-SECRET-KEY': alpaca_secret}, timeout=10)
+            a = r.json()
+            if 'equity' in a:
+                ok.append(f'Alpaca (${float(a["equity"]):,.0f} equity)')
+            else:
+                down.append(f'Alpaca ({a.get("message", "unknown error")})')
+        else:
+            down.append('Alpaca (no API key)')
+    except Exception as e:
+        down.append(f'Alpaca ({e})')
+
+    # --- xAI / Grok ---
+    try:
+        xai_key = _xai_key()
+        if xai_key:
+            r = _req.post('https://api.x.ai/v1/chat/completions',
+                headers={'Authorization': f'Bearer {xai_key}', 'Content-Type': 'application/json'},
+                json={'model': 'grok-3-mini', 'messages': [{'role': 'user', 'content': 'ping'}], 'max_tokens': 5},
+                timeout=15)
+            ok.append('xAI/Grok') if r.ok else down.append(f'xAI/Grok (HTTP {r.status_code})')
+        else:
+            down.append('xAI/Grok (no API key)')
+    except Exception as e:
+        down.append(f'xAI/Grok ({e})')
 
     # --- FRED ---
     if fred_api_key:
@@ -169,6 +224,21 @@ def _check_apis(fred_api_key: Optional[str]) -> Tuple[List[str], List[str]]:
         down.append('Gemini CLI (timeout)')
     except Exception as e:
         down.append(f'Gemini CLI ({e})')
+
+    # --- Claude CLI ---
+    try:
+        result = subprocess.run(
+            ['/usr/local/bin/claude', '--version'],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            ok.append(f'Claude CLI ({result.stdout.strip()[:30]})')
+        else:
+            down.append('Claude CLI (non-zero exit)')
+    except FileNotFoundError:
+        down.append('Claude CLI (binary not found)')
+    except Exception as e:
+        down.append(f'Claude CLI ({e})')
 
     # --- Capitol Trades ---
     try:

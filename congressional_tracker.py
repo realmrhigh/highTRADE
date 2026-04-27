@@ -1,15 +1,13 @@
-from trading_db import get_sqlite_conn
 #!/usr/bin/env python3
 """
 Congressional Trading Tracker
-Fetches House/Senate stock disclosures via Capitol Trades API
+Fetches House/Senate stock disclosures via Unusual Whales API
 and SEC EDGAR Form 4 insider trading filings.
 
-Data sources (both free, no auth required):
-  - Capitol Trades: https://www.capitoltrades.com/api/trades (HTML scrape fallback)
+Data sources:
+  - Unusual Whales: https://api.unusualwhales.com/api/congress/recent-trades
+  - Unusual Whales: https://api.unusualwhales.com/api/politician-portfolios/recent_trades
   - SEC EDGAR: https://efts.sec.gov/LATEST/search-index?q=%22Form+4%22&dateRange=custom
-  - House Stock Watcher JSON: https://house-stock-watcher-data.s3-us-west-2.amazonaws.com/data/all_transactions.json
-  - Senate Stock Watcher JSON: https://senate-stock-watcher-data.s3-us-west-2.amazonaws.com/aggregate/all_transactions.json
 
 Signals generated:
   - Cluster buys: 3+ politicians buy same stock within 30 days → BULLISH
@@ -28,16 +26,35 @@ from typing import Dict, List, Optional, Tuple
 
 import requests
 
+from trading_db import get_sqlite_conn
+
 logger = logging.getLogger(__name__)
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
 DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
 
-# Endpoints
-HOUSE_WATCHER_URL = "https://house-stock-watcher-data.s3-us-west-2.amazonaws.com/data/all_transactions.json"
-SENATE_WATCHER_URL = "https://senate-stock-watcher-data.s3-us-west-2.amazonaws.com/aggregate/all_transactions.json"
-CAPITOL_TRADES_API = "https://www.capitoltrades.com/api/trades"
+# Unusual Whales endpoints
+UW_RECENT_TRADES_URL = "https://api.unusualwhales.com/api/congress/recent-trades"
+UW_PORTFOLIO_TRADES_URL = "https://api.unusualwhales.com/api/politician-portfolios/recent_trades"
+UW_CLIENT_ID = "100001"
+UW_CREDS_FILE = Path.home() / ".openclaw" / "creds" / "unusualwhales.env"
+
 SEC_EDGAR_SEARCH = "https://efts.sec.gov/LATEST/search-index"
+
+
+def _load_uw_api_key() -> Optional[str]:
+    """Load UW_API_KEY from ~/.openclaw/creds/unusualwhales.env"""
+    try:
+        for line in UW_CREDS_FILE.read_text().splitlines():
+            line = line.strip()
+            if line.startswith('#') or '=' not in line:
+                continue
+            key, _, val = line.partition('=')
+            if key.strip() == 'UW_API_KEY':
+                return val.strip().strip('"').strip("'")
+    except Exception as e:
+        logger.warning(f"Could not load UW API key from {UW_CREDS_FILE}: {e}")
+    return None
 
 # Committee power map: which committee members have early intel on which sectors
 COMMITTEE_INTEL_MAP = {
@@ -59,7 +76,7 @@ CLUSTER_MIN_COUNT = 3
 
 
 def _safe_get(url: str, params: dict = None, timeout: int = 15) -> Optional[dict]:
-    """Safe HTTP GET with error handling"""
+    """Safe HTTP GET with error handling (unauthenticated, for SEC EDGAR)"""
     try:
         headers = {
             'User-Agent': 'HighTrade Research Bot (research purposes)',
@@ -76,218 +93,180 @@ def _safe_get(url: str, params: dict = None, timeout: int = 15) -> Optional[dict
         return None
 
 
+def _uw_get(url: str, api_key: str, params: dict = None, timeout: int = 15) -> Optional[dict]:
+    """Authenticated GET to Unusual Whales API"""
+    try:
+        headers = {
+            'Authorization': f'Bearer {api_key}',
+            'UW-CLIENT-API-ID': UW_CLIENT_ID,
+            'Accept': 'application/json',
+        }
+        resp = requests.get(url, params=params, headers=headers, timeout=timeout)
+        if resp.status_code == 200:
+            return resp.json()
+        else:
+            logger.warning(f"UW API HTTP {resp.status_code} from {url}: {resp.text[:200]}")
+            return None
+    except Exception as e:
+        logger.warning(f"UW API request failed for {url}: {e}")
+        return None
+
+
 class CongressionalTracker:
     """Tracks congressional stock trades and generates alpha signals"""
 
     def __init__(self, db_path: str = None):
         self.db_path = db_path or str(DB_PATH)
-        self._house_cache = []
-        self._senate_cache = []
+        self._api_key: Optional[str] = None
         self._last_fetch_time = None
         self._cache_minutes = 60  # Re-fetch at most once per hour
 
-    def fetch_house_trades(self, days_back: int = 30) -> List[Dict]:
+    def _get_api_key(self) -> Optional[str]:
+        if self._api_key is None:
+            self._api_key = _load_uw_api_key()
+        return self._api_key
+
+    def _parse_uw_trade(self, item: dict) -> Optional[Dict]:
         """
-        Fetch recent House of Representatives stock disclosures.
-        Source: House Stock Watcher S3 bucket (updated daily).
-        Falls back to empty list on 403/error (S3 bucket access varies).
+        Map an Unusual Whales trade object to our internal trade dict.
+        UW fields: politician_name, full_name, party, chamber, ticker, asset_ticker,
+                   transaction_type, type, amount, range, disclosure_date, traded_at,
+                   transaction_date, asset_description, state, district, committees
         """
-        data = _safe_get(HOUSE_WATCHER_URL)
-        if not data:
-            logger.debug("House watcher S3 returned no data, using Capitol Trades fallback")
-            return self._fetch_capitol_trades('house', days_back)
+        try:
+            ticker = (
+                item.get('ticker') or item.get('asset_ticker') or ''
+            ).strip().upper()
+            if not ticker or ticker in ('N/A', '--', ''):
+                return None
 
-        cutoff = datetime.now() - timedelta(days=days_back)
-        trades = []
+            tx_type = (
+                item.get('transaction_type') or item.get('type') or ''
+            ).lower()
+            if 'purchase' in tx_type or 'buy' in tx_type:
+                direction = 'buy'
+            elif 'sale' in tx_type or 'sell' in tx_type:
+                direction = 'sell'
+            else:
+                direction = 'unknown'
 
-        for item in (data if isinstance(data, list) else []):
-            try:
-                # Parse disclosure date
-                disclosure_str = item.get('disclosure_date', '') or item.get('transaction_date', '')
-                if not disclosure_str:
-                    continue
-                # Handle MM/DD/YYYY format
-                for fmt in ('%m/%d/%Y', '%Y-%m-%d', '%Y/%m/%d'):
-                    try:
-                        disclosure_dt = datetime.strptime(disclosure_str.strip(), fmt)
-                        break
-                    except ValueError:
-                        continue
-                else:
-                    continue
+            # Amount: UW may return a numeric value or a range string
+            amount_raw = item.get('amount') or item.get('range') or item.get('value') or ''
+            if isinstance(amount_raw, (int, float)):
+                amount = float(amount_raw)
+            else:
+                amount = self._parse_amount_range(str(amount_raw))
 
-                if disclosure_dt < cutoff:
-                    continue
+            # Dates
+            disclosure_raw = (
+                item.get('disclosure_date') or item.get('filed_at') or ''
+            )[:10]
+            tx_raw = (
+                item.get('transaction_date') or item.get('traded_at') or
+                item.get('tx_date') or disclosure_raw
+            )[:10]
 
-                ticker = (item.get('ticker', '') or '').strip().upper()
-                if not ticker or ticker in ('N/A', '--', ''):
-                    continue
+            if not disclosure_raw:
+                return None
 
-                trade_type = (item.get('type', '') or '').lower()
-                if 'purchase' in trade_type or 'buy' in trade_type:
-                    direction = 'buy'
-                elif 'sale' in trade_type or 'sell' in trade_type:
-                    direction = 'sell'
-                else:
-                    direction = 'unknown'
+            # Politician name and party
+            name = (
+                item.get('politician_name') or item.get('full_name') or
+                item.get('name') or 'Unknown'
+            )
+            party = (item.get('party') or '?')[:1].upper() if item.get('party') else '?'
 
-                # Parse amount range to midpoint
-                amount_str = item.get('amount', '') or ''
-                amount = self._parse_amount_range(amount_str)
+            chamber = (item.get('chamber') or '').lower()
+            source = 'house' if 'house' in chamber or 'rep' in chamber else \
+                     'senate' if 'senate' in chamber or 'sen' in chamber else \
+                     chamber or 'congress'
 
-                trades.append({
-                    'source': 'house',
-                    'politician': item.get('representative', 'Unknown'),
-                    'party': item.get('party', '?'),
-                    'ticker': ticker,
-                    'direction': direction,
-                    'amount': amount,
-                    'disclosure_date': disclosure_dt.strftime('%Y-%m-%d'),
-                    'transaction_date': item.get('transaction_date', disclosure_str),
-                    'asset_description': item.get('asset_description', ticker),
-                    'district': item.get('district', ''),
-                    'committee_hint': ''
-                })
+            committees = item.get('committees') or []
+            committee_hint = ', '.join(committees) if isinstance(committees, list) else str(committees)
 
-            except Exception:
-                continue
+            return {
+                'source': source,
+                'politician': name,
+                'party': party,
+                'ticker': ticker,
+                'direction': direction,
+                'amount': amount,
+                'disclosure_date': disclosure_raw,
+                'transaction_date': tx_raw or disclosure_raw,
+                'asset_description': item.get('asset_description') or item.get('company') or ticker,
+                'district': item.get('district') or item.get('state') or '',
+                'committee_hint': committee_hint,
+            }
+        except Exception:
+            return None
 
-        logger.info(f"  🏛️ House trades fetched: {len(trades)} in last {days_back} days")
-        return trades
-
-    def fetch_senate_trades(self, days_back: int = 30) -> List[Dict]:
-        """
-        Fetch recent Senate stock disclosures.
-        Source: Senate Stock Watcher S3 bucket (updated daily).
-        """
-        data = _safe_get(SENATE_WATCHER_URL)
-        if not data:
-            logger.debug("Senate watcher S3 returned no data, using Capitol Trades fallback")
-            return self._fetch_capitol_trades('senate', days_back)
-
-        cutoff = datetime.now() - timedelta(days=days_back)
-        trades = []
-
-        for item in (data if isinstance(data, list) else []):
-            try:
-                tx_date_str = item.get('transaction_date', '')
-                if not tx_date_str:
-                    continue
-
-                for fmt in ('%Y-%m-%dT%H:%M:%S', '%Y-%m-%d', '%m/%d/%Y'):
-                    try:
-                        tx_dt = datetime.strptime(tx_date_str[:10], '%Y-%m-%d')
-                        break
-                    except ValueError:
-                        continue
-                else:
-                    continue
-
-                if tx_dt < cutoff:
-                    continue
-
-                ticker = (item.get('ticker', '') or '').strip().upper()
-                if not ticker or ticker in ('N/A', '--', ''):
-                    continue
-
-                tx_type = (item.get('type', '') or '').lower()
-                if 'purchase' in tx_type or 'buy' in tx_type:
-                    direction = 'buy'
-                elif 'sale' in tx_type or 'sell' in tx_type:
-                    direction = 'sell'
-                else:
-                    direction = 'unknown'
-
-                amount = self._parse_amount_range(item.get('amount', ''))
-
-                trades.append({
-                    'source': 'senate',
-                    'politician': item.get('senator', 'Unknown'),
-                    'party': item.get('party', '?'),
-                    'ticker': ticker,
-                    'direction': direction,
-                    'amount': amount,
-                    'disclosure_date': tx_dt.strftime('%Y-%m-%d'),
-                    'transaction_date': tx_dt.strftime('%Y-%m-%d'),
-                    'asset_description': item.get('asset_description', ticker),
-                    'district': item.get('state', ''),
-                    'committee_hint': ''
-                })
-
-            except Exception:
-                continue
-
-        logger.info(f"  🏛️ Senate trades fetched: {len(trades)} in last {days_back} days")
-        return trades
-
-    def _fetch_capitol_trades(self, chamber: str, days_back: int) -> List[Dict]:
-        """Fallback: Try Capitol Trades API (returns 200 as of testing)"""
-        params = {
-            'chamber': chamber,
-            'pageSize': 100,
-            'page': 1
-        }
-        data = _safe_get(CAPITOL_TRADES_API, params=params)
-        if not data:
+    def fetch_uw_recent_trades(self, days_back: int = 30) -> List[Dict]:
+        """Fetch from UW /api/congress/recent-trades"""
+        api_key = self._get_api_key()
+        if not api_key:
+            logger.error("  ❌ UW API key not found — skipping recent trades fetch")
             return []
 
         cutoff = datetime.now() - timedelta(days=days_back)
+        params = {'limit': 200}
+        data = _uw_get(UW_RECENT_TRADES_URL, api_key, params=params)
+        if not data:
+            logger.warning("  ⚠️ UW recent-trades returned no data")
+            return []
+
+        items = data.get('data', data) if isinstance(data, dict) else data
+        if not isinstance(items, list):
+            logger.warning(f"  ⚠️ Unexpected UW recent-trades response shape: {type(items)}")
+            return []
+
         trades = []
-
-        # Capitol Trades returns data.trades or similar structure
-        items = []
-        if isinstance(data, dict):
-            items = data.get('trades', data.get('data', data.get('results', [])))
-        elif isinstance(data, list):
-            items = data
-
         for item in items:
+            trade = self._parse_uw_trade(item)
+            if not trade:
+                continue
             try:
-                date_str = item.get('publishedAt', item.get('transactionDate', ''))[:10]
-                if not date_str:
-                    continue
-                dt = datetime.strptime(date_str, '%Y-%m-%d')
+                dt = datetime.strptime(trade['disclosure_date'], '%Y-%m-%d')
                 if dt < cutoff:
                     continue
-
-                ticker = (item.get('issuerTicker', item.get('ticker', '')) or '').upper().strip()
-                if not ticker:
-                    continue
-
-                tx_type = (item.get('type', '') or '').lower()
-                direction = 'buy' if 'purchase' in tx_type or 'buy' in tx_type else 'sell'
-
-                amount_str = item.get('amount', item.get('value', ''))
-                if isinstance(amount_str, (int, float)):
-                    amount = float(amount_str)
-                else:
-                    amount = self._parse_amount_range(str(amount_str))
-
-                politician = item.get('politician', {})
-                if isinstance(politician, dict):
-                    name = politician.get('name', 'Unknown')
-                    party = politician.get('party', '?')
-                else:
-                    name = str(politician)
-                    party = '?'
-
-                trades.append({
-                    'source': chamber,
-                    'politician': name,
-                    'party': party,
-                    'ticker': ticker,
-                    'direction': direction,
-                    'amount': amount,
-                    'disclosure_date': date_str,
-                    'transaction_date': date_str,
-                    'asset_description': item.get('issuerName', ticker),
-                    'district': '',
-                    'committee_hint': ''
-                })
-            except Exception:
+            except ValueError:
                 continue
+            trades.append(trade)
 
-        logger.info(f"  🏛️ Capitol Trades ({chamber}): {len(trades)} recent trades")
+        logger.info(f"  🏛️ UW recent trades: {len(trades)} in last {days_back} days")
+        return trades
+
+    def fetch_uw_portfolio_trades(self, days_back: int = 30) -> List[Dict]:
+        """Fetch from UW /api/politician-portfolios/recent_trades"""
+        api_key = self._get_api_key()
+        if not api_key:
+            return []
+
+        cutoff = datetime.now() - timedelta(days=days_back)
+        params = {'limit': 200}
+        data = _uw_get(UW_PORTFOLIO_TRADES_URL, api_key, params=params)
+        if not data:
+            logger.warning("  ⚠️ UW portfolio-trades returned no data")
+            return []
+
+        items = data.get('data', data) if isinstance(data, dict) else data
+        if not isinstance(items, list):
+            logger.warning(f"  ⚠️ Unexpected UW portfolio-trades response shape: {type(items)}")
+            return []
+
+        trades = []
+        for item in items:
+            trade = self._parse_uw_trade(item)
+            if not trade:
+                continue
+            try:
+                dt = datetime.strptime(trade['disclosure_date'], '%Y-%m-%d')
+                if dt < cutoff:
+                    continue
+            except ValueError:
+                continue
+            trades.append(trade)
+
+        logger.info(f"  🏛️ UW portfolio trades: {len(trades)} in last {days_back} days")
         return trades
 
     def fetch_sec_form4(self, tickers: List[str] = None, days_back: int = 7) -> List[Dict]:
@@ -551,19 +530,25 @@ class CongressionalTracker:
 
         all_trades = []
 
-        # Fetch House
+        # Fetch from Unusual Whales /api/congress/recent-trades
         try:
-            house_trades = self.fetch_house_trades(days_back=days_back)
-            all_trades.extend(house_trades)
+            recent_trades = self.fetch_uw_recent_trades(days_back=days_back)
+            all_trades.extend(recent_trades)
         except Exception as e:
-            logger.warning(f"  ⚠️ House trades fetch error: {e}")
+            logger.warning(f"  ⚠️ UW recent-trades fetch error: {e}")
 
-        # Fetch Senate
+        # Fetch from Unusual Whales /api/politician-portfolios/recent_trades
         try:
-            senate_trades = self.fetch_senate_trades(days_back=days_back)
-            all_trades.extend(senate_trades)
+            portfolio_trades = self.fetch_uw_portfolio_trades(days_back=days_back)
+            # Deduplicate by (politician, ticker, transaction_date) against what we already have
+            seen = {(t['politician'], t['ticker'], t['transaction_date']) for t in all_trades}
+            for t in portfolio_trades:
+                key = (t['politician'], t['ticker'], t['transaction_date'])
+                if key not in seen:
+                    all_trades.append(t)
+                    seen.add(key)
         except Exception as e:
-            logger.warning(f"  ⚠️ Senate trades fetch error: {e}")
+            logger.warning(f"  ⚠️ UW portfolio-trades fetch error: {e}")
 
         logger.info(f"  🏛️ Total congressional trades found: {len(all_trades)}")
 

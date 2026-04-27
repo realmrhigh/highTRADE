@@ -49,10 +49,124 @@ from news_signals import NewsSignalGenerator
 from config_validator import ConfigValidator
 import exit_analyst
 
-# ── yfinance FD-leak guard (extracted to yf_guard.py) ─────────────────────
-import yf_guard as _yf_guard
-_yf_guard.install()
-# ── end yfinance FD-leak guard ─────────────────────────────────────────────
+# ── Unusual Whales flow alert scanner ──────────────────────────────────────
+import requests as _requests
+
+def _uw_api_key_orch() -> str:
+    key = os.environ.get('UW_API_KEY', '')
+    if key:
+        return key
+    try:
+        creds = Path.home() / '.openclaw' / 'creds' / 'unusualwhales.env'
+        for line in creds.read_text().splitlines():
+            if line.startswith('UW_API_KEY='):
+                return line.split('=', 1)[1].strip()
+    except Exception:
+        pass
+    return ''
+
+def scan_uw_flow_alerts(db_path: str, min_premium: int = 50000, big_sweep: int = 200000) -> list:
+    """Scan UW options flow for unusual sweeps not already in our watchlist."""
+    key = _uw_api_key_orch()
+    if not key:
+        return []
+    try:
+        headers = {'Authorization': f'Bearer {key}', 'UW-CLIENT-API-ID': '100001'}
+        r = _requests.get(
+            'https://api.unusualwhales.com/api/option-trades/flow-alerts',
+            headers=headers,
+            params={'limit': 100, 'min_premium': min_premium, 'size_greater_oi': 'true'},
+            timeout=10
+        )
+        if not r.ok:
+            return []
+        items = r.json().get('data', [])
+        # Aggregate by ticker
+        agg = {}
+        for item in items:
+            ticker = (item.get('ticker') or item.get('ticker_symbol') or '').upper()
+            if not ticker:
+                continue
+            premium = float(item.get('total_premium') or item.get('cost_basis') or 0)
+            side = (item.get('put_call') or item.get('type') or '').upper()
+            if ticker not in agg:
+                agg[ticker] = {'ticker': ticker, 'net_call': 0, 'net_put': 0, 'total': 0, 'count': 0}
+            agg[ticker]['total'] += premium
+            agg[ticker]['count'] += 1
+            if side == 'CALL':
+                agg[ticker]['net_call'] += premium
+            elif side == 'PUT':
+                agg[ticker]['net_put'] += premium
+        # Filter out already-watched tickers
+        try:
+            from trading_db import get_sqlite_conn
+            conn = get_sqlite_conn(db_path, timeout=10)
+            watched = set()
+            for tbl, col, filt in [
+                ('acquisition_watchlist', 'ticker', "status != 'archived'"),
+                ('conditional_tracking', 'ticker', "status = 'active'"),
+            ]:
+                try:
+                    rows = conn.execute(f'SELECT {col} FROM {tbl} WHERE {filt}').fetchall()
+                    watched.update(r[0].upper() for r in rows if r[0])
+                except Exception:
+                    pass
+            conn.close()
+        except Exception:
+            watched = set()
+        results = []
+        for t, d in agg.items():
+            if t in watched or d['total'] < 100000:
+                continue
+            sentiment = 'bullish' if d['net_call'] > d['net_put'] * 1.5 else \
+                        'bearish' if d['net_put'] > d['net_call'] * 1.5 else 'mixed'
+            results.append({
+                'ticker': t,
+                'net_call_premium': d['net_call'],
+                'net_put_premium': d['net_put'],
+                'total_premium': d['total'],
+                'sentiment': sentiment,
+                'alert_count': d['count'],
+                'big_sweep': d['total'] >= big_sweep,
+            })
+        results.sort(key=lambda x: x['total_premium'], reverse=True)
+        return results[:20]
+    except Exception as e:
+        logging.getLogger(__name__).warning(f'UW flow scan failed: {e}')
+        return []
+# ── end UW flow alert scanner ───────────────────────────────────────────────
+
+# ── Unusual Whales price helper ────────────────────────────────────────────
+def _uw_get(path: str, params: dict = None):
+    """Fetch from Unusual Whales API. Returns parsed JSON or None on failure."""
+    import requests, os, dotenv, pathlib
+    env_path = pathlib.Path.home() / ".openclaw" / "creds" / "unusualwhales.env"
+    dotenv.load_dotenv(env_path)
+    key = os.getenv("UNUSUAL_WHALES_API_KEY", "")
+    if not key:
+        return None
+    headers = {"Authorization": f"Bearer {key}", "UW-CLIENT-API-ID": "100001"}
+    url = f"https://api.unusualwhales.com{path}"
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return None
+
+
+def _uw_price(sym: str):
+    """Fetch last price for a symbol from UW stock-state. Returns float or None."""
+    try:
+        result = _uw_get(f'/api/stock/{sym}/stock-state')
+        if result and isinstance(result, dict):
+            data = result.get('data', {})
+            price = data.get('last_price') or data.get('prev_close')
+            return float(price) if price else None
+    except Exception:
+        pass
+    return None
+# ── end Unusual Whales price helper ────────────────────────────────────────
 
 # Configuration
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -246,21 +360,16 @@ class HighTradeOrchestrator:
         # Run startup health checks
         logger.info("🔍 Running startup health checks...")
 
-        # Database integrity check before anything else
-        from db_paths import verify_db_integrity
-        if not verify_db_integrity():
-            logger.error("❌ Database integrity check FAILED — attempting WAL recovery")
-            from trading_db import _try_wal_recovery
-            _try_wal_recovery(str(DB_PATH))
-            if not verify_db_integrity():
-                logger.critical("❌ Database STILL corrupt after recovery attempt!")
-            else:
-                logger.info("✅ Database recovered successfully")
-        else:
-            logger.info("✅ Database integrity OK")
+        # One-time DB initialization: WAL recovery, durable pragmas, integrity check.
+        # Handles the fragile startup sequence in a single known-good place instead
+        # of stitching together private helpers.
+        from trading_db import init_db, checkpoint_wal
+        try:
+            init_db(DB_PATH)
+        except Exception as e:
+            logger.critical(f"❌ init_db failed for {DB_PATH}: {e}")
 
         # Periodic WAL checkpoint to prevent WAL bloat
-        from trading_db import checkpoint_wal
         checkpoint_wal(str(DB_PATH))
 
         validator = ConfigValidator()
@@ -271,7 +380,9 @@ class HighTradeOrchestrator:
 
         self.monitor = SignalMonitor(DB_PATH)
         self.alerts = AlertSystem()
-        self.paper_trading = PaperTradingEngine(DB_PATH, total_capital=1000)
+        # Bootstrap paper_trading with a sensible default; the actual capital base
+        # is always sourced from Alpaca equity at runtime via _get_alpaca_account_snapshot.
+        self.paper_trading = PaperTradingEngine(DB_PATH, total_capital=862)
 
         # Initialize broker agent
         # semi_auto: executes signal-driven trades but requires Slack approval for acquisitions
@@ -316,7 +427,7 @@ class HighTradeOrchestrator:
             self.gemini_enabled = True
             self.grok_enabled = True
             self.hound_enabled = True
-            self._hound_scan_cycle = 0
+            self._hound_scan_cycle = 4
             self._hound_scan_interval = 4   # Every ~60 min (4 × 15-min cycles)
             logger.info("🤖 AI Analyzers initialized (Gemini Flash/Pro + Grok + 🐕 Hound)")
         except Exception as e:
@@ -336,7 +447,7 @@ class HighTradeOrchestrator:
             from congressional_tracker import CongressionalTracker
             self.congressional = CongressionalTracker(db_path=str(DB_PATH))
             self.congressional_enabled = True
-            self._congressional_scan_cycle = 0   # Scan every N cycles (not every cycle)
+            self._congressional_scan_cycle = 4   # Start at interval so first cycle triggers immediately
             self._congressional_scan_interval = 4  # Every ~60 min (4 × 15-min cycles)
             logger.info("🏛️ Congressional Trading Tracker initialized")
         except Exception as e:
@@ -349,7 +460,7 @@ class HighTradeOrchestrator:
             from fred_macro import FREDMacroTracker
             self.fred = FREDMacroTracker(db_path=str(DB_PATH))
             self.fred_enabled = self.fred.api_key is not None
-            self._fred_scan_cycle = 0
+            self._fred_scan_cycle = 4   # Start at interval so first cycle triggers immediately
             self._fred_scan_interval = 4   # Every ~60 min (data updates slowly)
             if self.fred_enabled:
                 logger.info("📊 FRED Macro Tracker initialized (API key found via env/.env or config)")
@@ -485,10 +596,11 @@ class HighTradeOrchestrator:
 
         # Check database connection
         try:
-            self.monitor.connect()
-            self.monitor.cursor.execute("SELECT COUNT(*) FROM crisis_events")
-            crisis_count = self.monitor.cursor.fetchone()[0]
-            self.monitor.disconnect()
+            from trading_db import db
+            with db(DB_PATH) as _conn:
+                crisis_count = _conn.execute(
+                    "SELECT COUNT(*) FROM crisis_events"
+                ).fetchone()[0]
             logger.info(f"✅ Database connected, {crisis_count} crises loaded")
         except Exception as e:
             logger.error(f"❌ Database connection failed: {e}")
@@ -622,7 +734,7 @@ class HighTradeOrchestrator:
         """
         Fetch the current market price for each open position and compute
         unrealized P&L. Updates trade_records in the DB and returns enriched list.
-        Prefers real-time WebSocket prices when available; falls back to yfinance.
+        Prefers real-time WebSocket prices when available; falls back to UW stock-state.
         Falls back gracefully - a price fetch failure never blocks the cycle.
         """
         if not positions:
@@ -645,23 +757,12 @@ class HighTradeOrchestrator:
                 if self.realtime_enabled and self.realtime_monitor:
                     current_price = self.realtime_monitor.get_price(sym)
 
-                # Fallback to yfinance if stream doesn't have it
+                # Fallback to UW stock-state if stream doesn't have it
                 if not current_price:
                     try:
-                        import yfinance as yf
-                        ticker = yf.Ticker(sym)
-                        hist = ticker.history(period='1d', interval='1m')
-                        if not hist.empty:
-                            current_price = float(hist['Close'].iloc[-1])
-                        else:
-                            # Market closed - use last close
-                            hist = ticker.history(period='5d')
-                            current_price = float(hist['Close'].iloc[-1]) if not hist.empty else None
-                    finally:
-                        try:
-                            _yf_close_cache()
-                        except Exception:
-                            pass
+                        current_price = _uw_price(sym)
+                    except Exception:
+                        pass
 
                 if current_price:
                     cost_basis = entry_price * shares
@@ -677,19 +778,17 @@ class HighTradeOrchestrator:
 
                     # Persist to DB - also advance peak_price (high-watermark for trailing stop)
                     try:
-                        from trading_db import get_sqlite_conn
-                        conn = get_sqlite_conn(str(self.paper_trading.db_path), timeout=15)
-                        conn.execute("""
-                            UPDATE trade_records
-                            SET current_price = ?, unrealized_pnl_dollars = ?,
-                                unrealized_pnl_percent = ?, last_price_updated = ?,
-                                position_size_dollars = entry_price * shares,
-                                peak_price = MAX(COALESCE(peak_price, entry_price), ?)
-                            WHERE trade_id = ? AND status = 'open'
-                        """, (current_price, upnl_dollars, upnl_pct,
-                              _dt.now().isoformat(), current_price, p.get('trade_id')))
-                        conn.commit()
-                        conn.close()
+                        from trading_db import db as _db_ctx
+                        with _db_ctx(self.paper_trading.db_path, timeout=15) as conn:
+                            conn.execute("""
+                                UPDATE trade_records
+                                SET current_price = ?, unrealized_pnl_dollars = ?,
+                                    unrealized_pnl_percent = ?, last_price_updated = ?,
+                                    position_size_dollars = entry_price * shares,
+                                    peak_price = MAX(COALESCE(peak_price, entry_price), ?)
+                                WHERE trade_id = ? AND status = 'open'
+                            """, (current_price, upnl_dollars, upnl_pct,
+                                  _dt.now().isoformat(), current_price, p.get('trade_id')))
                     except Exception:
                         pass
 
@@ -1000,7 +1099,44 @@ class HighTradeOrchestrator:
                 except Exception:
                     pass
 
-            # ── Grok Hound (every ~60 min or force-trigger file) ─────────
+            # ── UW Flow Alert Tripwire (trading hours only: Mon-Fri 9:30-16:00 ET) ─────
+            try:
+                _uw_now_et = _et_now()
+                _is_market_hours = (
+                    _uw_now_et.weekday() < 5 and
+                    (_uw_now_et.hour, _uw_now_et.minute) >= (9, 30) and
+                    _uw_now_et.hour < 16
+                )
+                if not _is_market_hours:
+                    uw_alerts = []
+                else:
+                    uw_alerts = scan_uw_flow_alerts(str(DB_PATH), min_premium=100000, big_sweep=1000000)
+                self._pending_uw_alerts = getattr(self, '_pending_uw_alerts', [])
+                big_sweeps = []
+                for alert in uw_alerts:
+                    ticker = alert['ticker']
+                    total = alert['total_premium']
+                    sentiment = alert['sentiment']
+                    logger.info(f"  🐋 UW Flow: {ticker} {sentiment} ${total:,.0f} net premium")
+                    if ticker not in self._pending_uw_alerts:
+                        self._pending_uw_alerts.append(ticker)
+                    if alert.get('big_sweep'):
+                        big_sweeps.append(alert)
+                # Send ONE digest per cycle for big sweeps, not individual pings
+                if big_sweeps:
+                    top = big_sweeps[0]
+                    summary = ', '.join(f"{a['ticker']} {'🟢' if a['sentiment']=='bullish' else '🔴'} ${a['total_premium']/1e6:.1f}M" for a in big_sweeps[:5])
+                    self.alerts.send_notify('uw_flow_sweep', {
+                        'ticker': top['ticker'],
+                        'premium': top['total_premium'],
+                        'sentiment': top['sentiment'],
+                        'digest': summary,
+                        'count': len(big_sweeps),
+                    })
+            except Exception as _uw_e:
+                logger.warning(f'  UW flow tripwire error: {_uw_e}')
+
+            # ── Grok Hound (every ~60 min or force-trigger file) ──────────────────
             _force_hound = Path(DB_PATH).parent / ".force_hound"
             _hound_forced = _force_hound.exists()
             if _hound_forced:
@@ -1032,7 +1168,8 @@ class HighTradeOrchestrator:
                         "reverse_split_alert": _reverse_split_alert,
                         "pipeline_deal_alert": _pipeline_deal_alert
                     }
-                    hound_results = self.hound.hunt(hound_state, focus_tickers=open_pos_tickers)
+                    hound_results = self.hound.hunt(hound_state, focus_tickers=open_pos_tickers + getattr(self, '_pending_uw_alerts', []))
+                    self._pending_uw_alerts = []  # consumed
                     self.hound.save_candidates(hound_results)
 
                     # Alert Slack ONLY for elite alpha (score >= 75)
@@ -1549,14 +1686,14 @@ Check dashboard for detailed analysis.
                 # If this is the morning_notify window, fetch the already-saved morning flash and send the user-facing notification
                 if label == 'morning_notify':
                     try:
+                        from trading_db import db as _db_ctx
                         import sqlite3 as _sq3
-                        conn = _sq3.connect(str(DB_PATH))
-                        conn.row_factory = _sq3.Row
-                        row = conn.execute(
-                            "SELECT headline_summary FROM daily_briefings WHERE date=? AND model_key='morning_flash' LIMIT 1",
-                            (today,)
-                        ).fetchone()
-                        conn.close()
+                        with _db_ctx(DB_PATH) as conn:
+                            conn.row_factory = _sq3.Row
+                            row = conn.execute(
+                                "SELECT headline_summary FROM daily_briefings WHERE date=? AND model_key='morning_flash' LIMIT 1",
+                                (today,)
+                            ).fetchone()
                         if row and row['headline_summary']:
                             # send notification (short headline) and mark notified
                             summary = row['headline_summary']
@@ -1633,48 +1770,34 @@ Check dashboard for detailed analysis.
 
         # Active conditionals - with live price and distance to trigger
         try:
-            import yfinance as _yf
-            conn = _sq.connect(str(DB_PATH))
-            cond_rows = conn.execute("""
-                SELECT ticker, entry_price_target, watch_tag,
-                       stop_loss, take_profit_1, thesis_summary
-                FROM conditional_tracking WHERE status = 'active'
-                ORDER BY ticker
-            """).fetchall()
-            conn.close()
+            from trading_db import db as _db_ctx
+            with _db_ctx(DB_PATH) as conn:
+                cond_rows = conn.execute("""
+                    SELECT ticker, entry_price_target, watch_tag,
+                           stop_loss, take_profit_1, thesis_summary
+                    FROM conditional_tracking WHERE status = 'active'
+                    ORDER BY ticker
+                """).fetchall()
 
-            # Batch-fetch all unique tickers in one yfinance call (fallback for non-streamed tickers)
+            # Batch-fetch all unique tickers via UW stock-state (fallback for non-streamed tickers)
             cond_tickers = list({r[0] for r in cond_rows})
-            _yf_prices = {}
+            _uw_prices = {}
             if cond_tickers:
-                try:
-                    raw = _yf.download(
-                        cond_tickers, period='1d', interval='1m',
-                        group_by='ticker', progress=False, auto_adjust=True
-                    )
-                    for sym in cond_tickers:
-                        try:
-                            if len(cond_tickers) == 1:
-                                _yf_prices[sym] = float(raw['Close'].iloc[-1])
-                            else:
-                                _yf_prices[sym] = float(raw[sym]['Close'].iloc[-1])
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-                finally:
+                for sym in cond_tickers:
                     try:
-                        _yf_close_cache()
+                        p = _uw_price(sym)
+                        if p:
+                            _uw_prices[sym] = p
                     except Exception:
                         pass
 
             def _live_price(sym):
-                # Prefer real-time WebSocket price, fall back to yfinance
+                # Prefer real-time WebSocket price, fall back to UW stock-state
                 if self.realtime_enabled and self.realtime_monitor:
                     rt_price = self.realtime_monitor.get_price(sym)
                     if rt_price:
                         return rt_price
-                return _yf_prices.get(sym)
+                return _uw_prices.get(sym)
 
             cond_lines = []
             for r in cond_rows:
@@ -1702,48 +1825,29 @@ Check dashboard for detailed analysis.
         macro_score = self._get_latest_macro_score()
         defcon = self.previous_defcon
 
-        # ── Market snapshot - index ETFs, futures, VIX, earnings ─────────
+        # ── Market snapshot - index ETFs, VIX, earnings ───────────────────
         try:
-            import yfinance as _yf2
             from datetime import date as _date
 
             _mkt_syms = [
                 ('SPY',  'SPY (S&P 500)'),
                 ('QQQ',  'QQQ (Nasdaq)'),
                 ('IWM',  'IWM (Russell)'),
-                ('ES=F', 'ES=F (S&P Fut)'),
-                ('NQ=F', 'NQ=F (NQ Fut)'),
-                ('^VIX', 'VIX'),
+                ('VIX',  'VIX'),
             ]
             mkt_lines = []
             for _sym, _lbl in _mkt_syms:
                 try:
-                    _fi    = _yf2.Ticker(_sym).fast_info
-                    _price = _fi.get('regularMarketPrice') or _fi.get('lastPrice')
-                    _prev  = _fi.get('regularMarketPreviousClose') or _fi.get('previousClose')
-                    _pre   = _fi.get('preMarketPrice')
-                    if _price and _prev and _prev != 0:
-                        _chg = (_price - _prev) / _prev * 100
-                        _line = f"  {_lbl}: ${_price:.2f} ({'+' if _chg >= 0 else ''}{_chg:.2f}%)"
-                    elif _price:
+                    _price = _uw_price(_sym)
+                    if _price:
                         _line = f"  {_lbl}: ${_price:.2f}"
                     else:
                         _line = f"  {_lbl}: unavailable"
-                    # Pre-market price if meaningfully different
-                    if _pre and _prev and _price and abs(_pre - _price) > 0.02:
-                        _pre_chg = (_pre - _prev) / _prev * 100
-                        _line += f"  [pre-mkt ${_pre:.2f} {'+' if _pre_chg >= 0 else ''}{_pre_chg:.2f}%]"
                     mkt_lines.append(_line)
                 except Exception:
                     mkt_lines.append(f"  {_lbl}: unavailable")
 
-            # Close yfinance cache after market snapshot to prevent FD leaks
-            try:
-                _yf_close_cache()
-            except Exception:
-                pass
-
-            # Earnings within ±1 day for any held or watched ticker
+            # Earnings within ±1 day for any held or watched ticker (via UW earnings endpoint)
             _watch_syms = set()
             try:
                 for _p in open_positions:
@@ -1757,27 +1861,21 @@ Check dashboard for detailed analysis.
                 pass
 
             _today = _date.today()
-            # ETFs (GLD, TLT, USO, ITA, XLE, etc.) never have earnings calendars -
-            # yfinance logs a 404 ERROR for them internally before raising. Silence
-            # the yfinance logger to CRITICAL during .calendar calls so those harmless
-            # 404s don't pollute our logs.
-            import logging as _log_mod
-            _yf_log = _log_mod.getLogger('yfinance')
-            _yf_log_lvl = _yf_log.level
-
             _earnings_flags = []
             for _sym in sorted(_watch_syms):
                 try:
-                    _yf_log.setLevel(_log_mod.CRITICAL)
-                    _cal = _yf2.Ticker(_sym).calendar
-                    _yf_log.setLevel(_yf_log_lvl)
-                    if _cal is None:
+                    _earn = _uw_get(f'/api/stock/{_sym}/earnings')
+                    if not _earn:
                         continue
-                    _dates = (_cal.get('Earnings Date', [])
-                              if isinstance(_cal, dict) else list(_cal.get('Earnings Date', [])))
-                    for _d in _dates:
+                    _earn_data = _earn.get('data') or []
+                    if isinstance(_earn_data, dict):
+                        _earn_data = [_earn_data]
+                    for _e in _earn_data[:4]:
+                        _edate_str = _e.get('earnings_date') or _e.get('date') or ''
+                        if not _edate_str:
+                            continue
                         try:
-                            _dd = _d.date() if hasattr(_d, 'date') else _date.fromisoformat(str(_d)[:10])
+                            _dd = _date.fromisoformat(str(_edate_str)[:10])
                             _delta = (_dd - _today).days
                             if -1 <= _delta <= 1:
                                 _tag = 'TODAY' if _delta == 0 else ('+1d' if _delta == 1 else 'YESTERDAY')
@@ -1786,8 +1884,6 @@ Check dashboard for detailed analysis.
                             pass
                 except Exception:
                     pass
-                finally:
-                    _yf_log.setLevel(_yf_log_lvl)  # always restore
 
             _earnings_str = ', '.join(_earnings_flags) if _earnings_flags else 'none for watched/held tickers'
             mkt_lines.append(f"  Earnings ±1d: {_earnings_str}")
@@ -2219,14 +2315,12 @@ Respond in this EXACT JSON format - no prose, no markdown, no code fences:
             prox_bumped = []
             for row_id, ticker, target in rows:
                 try:
-                    # Prefer real-time WebSocket price, fall back to yfinance
+                    # Prefer real-time WebSocket price, fall back to UW stock-state
                     price = None
                     if self.realtime_enabled and self.realtime_monitor:
                         price = self.realtime_monitor.get_price(ticker)
                     if not price:
-                        import yfinance as _yf
-                        price = _yf.Ticker(ticker).fast_info.get('lastPrice') or \
-                                _yf.Ticker(ticker).fast_info.get('regularMarketPrice')
+                        price = _uw_price(ticker)
                     if price and target and abs(float(price) - float(target)) / float(target) <= 0.02:
                         conn.execute("""
                             UPDATE conditional_tracking
@@ -2240,11 +2334,6 @@ Respond in this EXACT JSON format - no prose, no markdown, no code fences:
 
             conn.commit()
             conn.close()
-            # Close yfinance cache after proximity checks
-            try:
-                _yf_close_cache()
-            except Exception:
-                pass
             if prox_bumped:
                 logger.info(f"  📍 Proximity bump (+15) applied to: {', '.join(prox_bumped)}")
         except Exception as e:
@@ -2302,15 +2391,14 @@ Respond in this EXACT JSON format - no prose, no markdown, no code fences:
                 if elapsed < 15 * 60:
                     return
 
-            import sqlite3 as _sq
-            conn = _sq.connect(str(DB_PATH))
-            pending_watchlist = conn.execute(
-                "SELECT COUNT(*) FROM acquisition_watchlist WHERE status='pending'"
-            ).fetchone()[0]
-            ready_research = conn.execute(
-                "SELECT COUNT(*) FROM stock_research_library WHERE status IN ('library_ready', 'partial')"
-            ).fetchone()[0]
-            conn.close()
+            from trading_db import db as _db_ctx
+            with _db_ctx(DB_PATH) as conn:
+                pending_watchlist = conn.execute(
+                    "SELECT COUNT(*) FROM acquisition_watchlist WHERE status='pending'"
+                ).fetchone()[0]
+                ready_research = conn.execute(
+                    "SELECT COUNT(*) FROM stock_research_library WHERE status IN ('library_ready', 'partial')"
+                ).fetchone()[0]
 
             self._last_pending_pipeline_check = now
 
@@ -2697,9 +2785,43 @@ Respond in this EXACT JSON format - no prose, no markdown, no code fences:
             except Exception as e:
                 logger.warning(f"⚠️  Real-time stream start failed: {e}")
 
+        # ── Hang watchdog ────────────────────────────────────────────────
+        # If the cycle heartbeat goes stale for >WATCHDOG_TIMEOUT_SEC, the
+        # main loop is almost certainly stuck inside a network call with no
+        # timeout (historically yfinance). Log loudly and exit non-zero so
+        # launchd restarts us cleanly. A normal cycle takes <5 min; the sleep
+        # loop refreshes the heartbeat every 2s, so stale >15 min = hung.
+        WATCHDOG_TIMEOUT_SEC = 15 * 60
+        self._cycle_heartbeat = time.time()
+
+        def _watchdog():
+            import os as _os
+            while not self.cmd_processor.should_stop:
+                time.sleep(30)
+                stale = time.time() - self._cycle_heartbeat
+                if stale > WATCHDOG_TIMEOUT_SEC:
+                    logger.error(
+                        f"🚨 WATCHDOG: cycle heartbeat stale for {stale:.0f}s "
+                        f"(> {WATCHDOG_TIMEOUT_SEC}s) — main loop hung. Exiting "
+                        f"for launchd to restart."
+                    )
+                    try:
+                        self.alerts.send_slack(
+                            f"🚨 HighTrade watchdog: main loop hung {stale:.0f}s — forcing restart",
+                            defcon_level=2,
+                        )
+                    except Exception:
+                        pass
+                    _os._exit(1)
+
+        import threading as _th
+        _th.Thread(target=_watchdog, name="hightrade_watchdog", daemon=True).start()
+
         cycle = 0
         try:
             while True:
+                self._cycle_heartbeat = time.time()
+
                 # Check for commands before each cycle
                 self.cmd_processor.check_for_commands()
 
@@ -2712,6 +2834,7 @@ Respond in this EXACT JSON format - no prose, no markdown, no code fences:
 
                 # Run monitoring (always runs, even on hold)
                 self.run_monitoring_cycle()
+                self._cycle_heartbeat = time.time()
 
                 # Update dashboard every 3 cycles
                 if cycle % 3 == 0:
@@ -2732,6 +2855,7 @@ Respond in this EXACT JSON format - no prose, no markdown, no code fences:
                 while elapsed < sleep_seconds:
                     time.sleep(check_interval)
                     elapsed += check_interval
+                    self._cycle_heartbeat = time.time()
 
                     # Check for commands during sleep
                     cmds = self.cmd_processor.check_for_commands()

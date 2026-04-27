@@ -37,7 +37,6 @@ import subprocess
 import threading
 import time
 import requests
-from trading_db import get_sqlite_conn
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Tuple
@@ -68,41 +67,12 @@ except ImportError:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
-OPENROUTER_API_BASE = "https://openrouter.ai/api/v1/chat/completions"
-
-# OpenRouter model IDs mapping to our Gemini model registry
-OPENROUTER_MODEL_MAP = {
-    'gemini-3.1-pro-preview':        'google/gemini-3-flash-preview',
-    'gemini-3-flash-preview':        'google/gemini-3-flash-preview',
-    'gemini-2.5-pro':                'google/gemini-3-flash-preview',
-    'gemini-3.1-flash-lite-preview': 'google/gemini-3-flash-preview',
-}
 
 
 def _google_search_grounding_enabled() -> bool:
     """Return True when Gemini REST calls should include Google Search grounding."""
     val = os.environ.get("GEMINI_ENABLE_GOOGLE_SEARCH", "").strip().lower()
     return val in {"1", "true", "yes", "on"}
-
-def _get_openrouter_key() -> str:
-    """Re-read OPENROUTER_API_KEY from creds file or .env (hot-reload without restart)."""
-    creds_file = Path.home() / '.openclaw' / 'creds' / 'openrouter.env'
-    if creds_file.exists():
-        for line in creds_file.read_text().splitlines():
-            line = line.strip()
-            if line.startswith('OPENROUTER_API_KEY=') and not line.startswith('#'):
-                val = line.split('=', 1)[1].strip()
-                if val:
-                    os.environ['OPENROUTER_API_KEY'] = val
-                    return val
-    # Fallback: check project .env
-    try:
-        from dotenv import load_dotenv as _ld
-        _ld(Path(__file__).parent / '.env', override=True)
-    except ImportError:
-        pass
-    return os.environ.get('OPENROUTER_API_KEY', '')
-
 
 def _get_api_key() -> str:
     """Re-read GEMINI_API_KEY from .env on every call (hot-reload without restart)."""
@@ -177,24 +147,23 @@ MODEL_TIERS = {
 FALLBACK_CHAINS = {
     # Reasoning: pro → flash (cli) → flash-lite (rest) → 2.5-pro (rest)
     'gemini-3.1-pro-preview': [
-        ('gemini-3-flash-preview',        'cli'),
-        ('gemini-3.1-pro-preview',        'openrouter'),
-        ('gemini-3-flash-preview',        'openrouter'),
+        ('gemini-3-flash-preview',       'cli'),
+        ('gemini-3.1-flash-lite-preview', 'rest'),
+        ('gemini-2.5-pro',               'rest'),
     ],
-    # Fast/balanced: flash → 2.5-pro (cli) → flash (openrouter) → flash-lite (openrouter)
+    # Fast/balanced: flash → 2.5-pro (cli) → flash-lite (rest) → 2.5-pro (rest)
     'gemini-3-flash-preview': [
-        ('gemini-2.5-pro',                'cli'),
-        ('gemini-3-flash-preview',        'openrouter'),
-        ('gemini-3.1-flash-lite-preview', 'openrouter'),
+        ('gemini-2.5-pro',               'cli'),
+        ('gemini-3.1-flash-lite-preview', 'rest'),
+        ('gemini-2.5-pro',               'rest'),
     ],
     # CLI fallbacks that themselves fail:
     'gemini-2.5-pro': [
-        ('gemini-2.5-pro',                'openrouter'),
-        ('gemini-3-flash-preview',        'openrouter'),
+        ('gemini-3.1-flash-lite-preview', 'rest'),
     ],
-    # REST/OpenRouter fallback
+    # REST fallback
     'gemini-3.1-flash-lite-preview': [
-        ('gemini-2.5-pro',               'openrouter'),
+        ('gemini-2.5-pro',               'rest'),
     ],
 }
 
@@ -249,7 +218,7 @@ class QuotaTracker:
 
     @classmethod
     def _conn(cls) -> sqlite3.Connection:
-        conn = get_sqlite_conn(str(cls._DB_PATH), timeout=15)
+        conn = sqlite3.connect(str(cls._DB_PATH), timeout=10)
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -289,17 +258,15 @@ class QuotaTracker:
         try:
             with cls._lock:
                 conn = cls._conn()
-                try:
-                    cls._ensure_schema(conn)
-                    conn.execute(
-                        "INSERT INTO gemini_call_log "
-                        "(model_id, model_key, caller, auth_method, tokens_in, tokens_out, downgraded) "
-                        "VALUES (?,?,?,?,?,?,?)",
-                        (model_id, model_key, caller, auth_method, tokens_in, tokens_out, int(downgraded))
-                    )
-                    conn.commit()
-                finally:
-                    conn.close()
+                cls._ensure_schema(conn)
+                conn.execute(
+                    "INSERT INTO gemini_call_log "
+                    "(model_id, model_key, caller, auth_method, tokens_in, tokens_out, downgraded) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (model_id, model_key, caller, auth_method, tokens_in, tokens_out, int(downgraded))
+                )
+                conn.commit()
+                conn.close()
         except Exception:
             pass  # logging must never crash a caller
 
@@ -326,16 +293,14 @@ class QuotaTracker:
         try:
             with cls._lock:
                 conn = cls._conn()
-                try:
-                    cls._ensure_schema(conn)
-                    row = conn.execute(
-                        "SELECT created_at FROM gemini_call_log "
-                        "WHERE model_id = ? AND tokens_in >= 0 "
-                        "ORDER BY created_at DESC LIMIT 1",
-                        (model_id,)
-                    ).fetchone()
-                finally:
-                    conn.close()
+                cls._ensure_schema(conn)
+                row = conn.execute(
+                    "SELECT created_at FROM gemini_call_log "
+                    "WHERE model_id = ? AND tokens_in >= 0 "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (model_id,)
+                ).fetchone()
+                conn.close()
 
             if not row:
                 return
@@ -373,15 +338,13 @@ class QuotaTracker:
         try:
             since = cls._last_reset_utc(model_id).strftime('%Y-%m-%d %H:%M:%S')
             conn = cls._conn()
-            try:
-                cls._ensure_schema(conn)
-                row = conn.execute(
-                    "SELECT COUNT(*) AS calls FROM gemini_call_log "
-                    "WHERE model_id = ? AND created_at >= ? AND tokens_in >= 0",
-                    (model_id, since)
-                ).fetchone()
-            finally:
-                conn.close()
+            cls._ensure_schema(conn)
+            row = conn.execute(
+                "SELECT COUNT(*) AS calls FROM gemini_call_log "
+                "WHERE model_id = ? AND created_at >= ? AND tokens_in >= 0",
+                (model_id, since)
+            ).fetchone()
+            conn.close()
             calls = row['calls'] if row else 0
             ratio = calls / daily_limit
             if ratio >= QUOTA_BLOCK_PCT:
@@ -403,16 +366,14 @@ class QuotaTracker:
         rpm = model['rpm']
         try:
             conn = cls._conn()
-            try:
-                cls._ensure_schema(conn)
-                row = conn.execute(
-                    "SELECT COUNT(*) AS calls FROM gemini_call_log "
-                    "WHERE model_id = ? AND created_at >= datetime('now', '-60 seconds') "
-                    "AND tokens_in >= 0",
-                    (model_id,)
-                ).fetchone()
-            finally:
-                conn.close()
+            cls._ensure_schema(conn)
+            row = conn.execute(
+                "SELECT COUNT(*) AS calls FROM gemini_call_log "
+                "WHERE model_id = ? AND created_at >= datetime('now', '-60 seconds') "
+                "AND tokens_in >= 0",
+                (model_id,)
+            ).fetchone()
+            conn.close()
             return (row['calls'] if row else 0) >= rpm
         except Exception:
             return False
@@ -436,21 +397,19 @@ class QuotaTracker:
         """Call counts and token totals per model_id for the last N hours."""
         try:
             conn = cls._conn()
-            try:
-                cls._ensure_schema(conn)
-                rows = conn.execute("""
-                    SELECT model_id,
-                           COUNT(*)        AS calls,
-                           SUM(tokens_in)  AS tokens_in,
-                           SUM(tokens_out) AS tokens_out,
-                           MIN(created_at) AS oldest_call_at
-                    FROM gemini_call_log
-                    WHERE created_at >= datetime('now', ?)
-                      AND tokens_in >= 0
-                    GROUP BY model_id
-                """, (f'-{hours} hours',)).fetchall()
-            finally:
-                conn.close()
+            cls._ensure_schema(conn)
+            rows = conn.execute("""
+                SELECT model_id,
+                       COUNT(*)        AS calls,
+                       SUM(tokens_in)  AS tokens_in,
+                       SUM(tokens_out) AS tokens_out,
+                       MIN(created_at) AS oldest_call_at
+                FROM gemini_call_log
+                WHERE created_at >= datetime('now', ?)
+                  AND tokens_in >= 0
+                GROUP BY model_id
+            """, (f'-{hours} hours',)).fetchall()
+            conn.close()
             return {r['model_id']: dict(r) for r in rows}
         except Exception:
             return {}
@@ -460,17 +419,15 @@ class QuotaTracker:
         """Call counts per model_id for the last N seconds."""
         try:
             conn = cls._conn()
-            try:
-                cls._ensure_schema(conn)
-                rows = conn.execute("""
-                    SELECT model_id, COUNT(*) AS calls
-                    FROM gemini_call_log
-                    WHERE created_at >= datetime('now', ?)
-                      AND tokens_in >= 0
-                    GROUP BY model_id
-                """, (f'-{seconds} seconds',)).fetchall()
-            finally:
-                conn.close()
+            cls._ensure_schema(conn)
+            rows = conn.execute("""
+                SELECT model_id, COUNT(*) AS calls
+                FROM gemini_call_log
+                WHERE created_at >= datetime('now', ?)
+                  AND tokens_in >= 0
+                GROUP BY model_id
+            """, (f'-{seconds} seconds',)).fetchall()
+            conn.close()
             return {r['model_id']: {'calls': r['calls']} for r in rows}
         except Exception:
             return {}
@@ -484,9 +441,8 @@ class QuotaTracker:
         result = {}
         try:
             conn = cls._conn()
-            try:
-              cls._ensure_schema(conn)
-              for model_id, model in MODELS.items():
+            cls._ensure_schema(conn)
+            for model_id, model in MODELS.items():
                 daily_limit = model['rpd']
                 last_reset  = cls._last_reset_utc(model_id)
                 next_reset  = cls._next_reset_utc(model_id)
@@ -530,8 +486,7 @@ class QuotaTracker:
                     'role':        model['role'],
                     'auth_breakdown': auth_breakdown,
                 }
-            finally:
-                conn.close()
+            conn.close()
         except Exception:
             pass
         return result
@@ -541,17 +496,15 @@ class QuotaTracker:
         """Return {auth_method: call_count} for the last N hours."""
         try:
             conn = cls._conn()
-            try:
-                cls._ensure_schema(conn)
-                rows = conn.execute("""
-                    SELECT COALESCE(auth_method, 'unknown') AS auth, COUNT(*) AS cnt
-                    FROM gemini_call_log
-                    WHERE created_at >= datetime('now', ?)
-                      AND tokens_in >= 0
-                    GROUP BY auth
-                """, (f'-{hours} hours',)).fetchall()
-            finally:
-                conn.close()
+            cls._ensure_schema(conn)
+            rows = conn.execute("""
+                SELECT COALESCE(auth_method, 'unknown') AS auth, COUNT(*) AS cnt
+                FROM gemini_call_log
+                WHERE created_at >= datetime('now', ?)
+                  AND tokens_in >= 0
+                GROUP BY auth
+            """, (f'-{hours} hours',)).fetchall()
+            conn.close()
             return {r['auth']: r['cnt'] for r in rows}
         except Exception:
             return {}
@@ -594,7 +547,6 @@ _cli_path: Optional[str] = None
 _cli_authenticated: Optional[bool] = None
 _cli_auth_retry_after: Optional[datetime] = None
 _last_cli_error: str = ''
-_cli_quota_cooldown_until: Optional[datetime] = None  # process-level quota backoff
 
 def _get_cli_status() -> Tuple[bool, str]:
     """
@@ -602,16 +554,7 @@ def _get_cli_status() -> Tuple[bool, str]:
     CLI is usable if 'gemini' is on PATH and OAuth creds exist.
     Auto-retries after 10 minutes if OAuth previously failed.
     """
-    global _cli_path, _cli_authenticated, _cli_auth_retry_after, _cli_quota_cooldown_until
-
-    # Quota cooldown: skip CLI entirely until cooldown expires
-    if _cli_quota_cooldown_until is not None:
-        if datetime.now() < _cli_quota_cooldown_until:
-            mins_left = (_cli_quota_cooldown_until - datetime.now()).seconds // 60
-            return False, f'CLI quota cooldown ({mins_left}m remaining)'
-        else:
-            _cli_quota_cooldown_until = None
-            logger.info("Gemini CLI quota cooldown expired -- resuming CLI attempts")
+    global _cli_path, _cli_authenticated, _cli_auth_retry_after
 
     # Auto-recover: retry CLI auth after timer expires
     if _cli_authenticated is False and _cli_auth_retry_after is not None:
@@ -725,7 +668,7 @@ def _call_via_cli(prompt: str, model_id: str, temperature: float,
         ]
         result = subprocess.run(
             cmd,
-            capture_output=True, text=True, timeout=90,
+            capture_output=True, text=True, timeout=180,
             stdin=subprocess.DEVNULL,
             env={**os.environ, 'GEMINI_API_KEY': ''},  # force OAuth
         )
@@ -785,26 +728,7 @@ def _call_via_cli(prompt: str, model_id: str, temperature: float,
         return text, in_tok, out_tok
 
     except subprocess.TimeoutExpired:
-        logger.error("CLI call timed out after 90s")
-        # Check for quota error JSON files written by the CLI before it hung
-        try:
-            import glob, os as _os
-            tmp_dir = _os.environ.get('TMPDIR', '/tmp')
-            err_files = sorted(
-                glob.glob(_os.path.join(tmp_dir, 'gemini-client-error-*.json')),
-                key=_os.path.getmtime, reverse=True
-            )[:3]
-            for ef in err_files:
-                if _os.path.getmtime(ef) > (__import__('time').time() - 180):
-                    with open(ef) as _f:
-                        _ej = json.load(_f)
-                    _emsg = _ej.get('error', {}).get('message', '')
-                    if _is_quota_error(_emsg):
-                        _last_cli_error = _emsg
-                        logger.warning(f"CLI quota error detected from error file: {_emsg[:100]}")
-                        break
-        except Exception:
-            pass
+        logger.error("CLI call timed out after 180s")
         return None, 0, 0
     except json.JSONDecodeError as e:
         logger.error(f"CLI JSON parse error: {e}")
@@ -812,69 +736,6 @@ def _call_via_cli(prompt: str, model_id: str, temperature: float,
     except Exception as e:
         logger.error(f"CLI call error: {e}")
         return None, 0, 0
-
-
-def _call_via_openrouter(prompt: str, model_id: str, temperature: float,
-                         thinking_budget: int, max_output_tokens: int) -> Tuple[Optional[str], int, int]:
-    """Call Gemini via OpenRouter (OpenAI-compatible). Returns (text, in_tok, out_tok)."""
-    api_key = _get_openrouter_key()
-    if not api_key:
-        logger.debug("OpenRouter skipped -- no OPENROUTER_API_KEY set")
-        return None, 0, 0
-
-    or_model = OPENROUTER_MODEL_MAP.get(model_id)
-    if not or_model:
-        logger.warning(f"OpenRouter: no model mapping for {model_id}")
-        return None, 0, 0
-
-    headers = {
-        'Authorization': f'Bearer {api_key}',
-        'Content-Type':  'application/json',
-        'HTTP-Referer':  'https://github.com/highTRADE',
-        'X-Title':       'highTRADE',
-    }
-    payload = {
-        'model':       or_model,
-        'messages':    [{'role': 'user', 'content': prompt}],
-        'temperature': temperature,
-        'max_tokens':  max_output_tokens,
-    }
-
-    resp = None
-    try:
-        resp = requests.post(OPENROUTER_API_BASE, headers=headers, json=payload, timeout=180)
-        if not resp.ok:
-            try:
-                err = resp.json().get('error', {})
-                logger.error(f"OpenRouter HTTP {resp.status_code} ({or_model}): {err.get('message', resp.text[:200])}")
-            except Exception:
-                logger.error(f"OpenRouter HTTP {resp.status_code}: {resp.text[:200]}")
-            resp.raise_for_status()
-
-        data    = resp.json()
-        choices = data.get('choices', [])
-        if not choices:
-            logger.warning(f"OpenRouter: empty choices for {or_model}")
-            return None, 0, 0
-
-        text    = choices[0].get('message', {}).get('content', '').strip()
-        usage   = data.get('usage', {})
-        in_tok  = usage.get('prompt_tokens', 0)
-        out_tok = usage.get('completion_tokens', 0)
-
-        if not text:
-            logger.warning(f"OpenRouter: empty content for {or_model}")
-            return None, 0, 0
-
-        logger.info(f"OpenRouter OK {or_model} (mapped from {model_id}) | in={in_tok} out={out_tok}")
-        return text, in_tok, out_tok
-
-    except Exception as e:
-        logger.error(f"OpenRouter call failed ({or_model}): {e}")
-        return None, 0, 0
-    finally:
-        if resp is not None:
-            resp.close()
 
 
 def _call_via_api(prompt: str, model_id: str, temperature: float,
@@ -999,11 +860,6 @@ def call(
             logger.debug(f"Skipping {attempt_model} (cli) -- CLI unavailable")
             continue
 
-        # Skip OpenRouter if no key configured
-        if attempt_auth == 'openrouter' and not _get_openrouter_key():
-            logger.debug(f"Skipping {attempt_model} (openrouter) -- no API key")
-            continue
-
         # Skip if we already know this model's quota is exhausted
         if attempt_model in quota_exhausted_models:
             logger.debug(f"Skipping {attempt_model} -- quota already exhausted")
@@ -1043,8 +899,6 @@ def call(
         # Attempt the call
         if attempt_auth == 'cli':
             result = _call_via_cli(prompt, attempt_model, att_temp, att_thinking, att_max_out)
-        elif attempt_auth == 'openrouter':
-            result = _call_via_openrouter(prompt, attempt_model, att_temp, att_thinking, att_max_out)
         else:
             result = _call_via_api(prompt, attempt_model, att_temp, att_thinking, att_max_out)
 
@@ -1067,14 +921,7 @@ def call(
                 cli_ok = False  # skip all remaining CLI attempts
             elif _is_quota_error(_last_cli_error):
                 quota_exhausted_models.add(attempt_model)
-                # Set process-level cooldown: back off CLI for 30 minutes
-                global _cli_quota_cooldown_until
-                _cli_quota_cooldown_until = datetime.now() + timedelta(minutes=30)
-                cli_ok = False  # skip all remaining CLI attempts this cycle
-                logger.warning(
-                    f"  {attempt_model} quota exhausted (CLI) -- "
-                    f"backing off CLI for 30 minutes"
-                )
+                logger.warning(f"  {attempt_model} quota exhausted (CLI) -- skipping to next")
             else:
                 logger.warning(f"  {attempt_model} failed ({attempt_auth}) -- trying next fallback")
         else:
@@ -1095,14 +942,7 @@ try:
 except ImportError:
     _ET_ZONE = None
 
-def market_context_block(vix: Optional[float] = None,
-                         after_hours_price: Optional[float] = None,
-                         after_hours_chg_pct: Optional[float] = None,
-                         after_hours_type: Optional[str] = None,
-                         gld_price: Optional[float] = None,
-                         gld_flow_trend_pct: Optional[float] = None,
-                         gold_spot_price: Optional[float] = None,
-                         gold_30d_chg_pct: Optional[float] = None) -> str:
+def market_context_block(vix: Optional[float] = None) -> str:
     """
     Formatted string describing the current market session state.
     Inject into every AI prompt so models know whether markets are open.
@@ -1142,19 +982,6 @@ def market_context_block(vix: Optional[float] = None,
 
         vix_str = f"  VIX reference: {vix:.2f}\n" if vix is not None else ""
 
-        # After-hours / gold context lines
-        extra_lines = ""
-        if after_hours_price is not None:
-            ah_type = after_hours_type or 'extended'
-            ah_chg  = f" ({after_hours_chg_pct:+.2f}%)" if after_hours_chg_pct is not None else ""
-            extra_lines += f"  SPY {ah_type}: ${after_hours_price:.2f}{ah_chg}\n"
-        if gld_price is not None:
-            flow_str = f" | flow trend {gld_flow_trend_pct:+.1f}%" if gld_flow_trend_pct is not None else ""
-            extra_lines += f"  GLD (gold ETF): ${gld_price:.2f}{flow_str}\n"
-        if gold_spot_price is not None:
-            chg_str = f" | 30d chg {gold_30d_chg_pct:+.2f}%" if gold_30d_chg_pct is not None else ""
-            extra_lines += f"  Gold spot (GC=F): ${gold_spot_price:.2f}{chg_str}\n"
-
         if market_open:
             status_line  = 'OPEN -- regular US session (NYSE/NASDAQ 09:30-16:00 ET)'
             freshness    = 'Live -- prices and VIX are current'
@@ -1183,7 +1010,6 @@ def market_context_block(vix: Optional[float] = None,
             + (f'  Next open:      {next_open_str}\n' if not market_open else '')
             + f'  Data freshness: {freshness}\n'
             + vix_str
-            + extra_lines
             + warning_text
             + '===================================================================\n'
         )

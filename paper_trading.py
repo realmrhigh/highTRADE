@@ -40,6 +40,38 @@ DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
 
 logger = logging.getLogger(__name__)
 
+
+def _uw_get(path: str, params: dict = None):
+    """Fetch from Unusual Whales API. Returns parsed JSON or None on failure."""
+    import os, dotenv, pathlib
+    env_path = pathlib.Path.home() / ".openclaw" / "creds" / "unusualwhales.env"
+    dotenv.load_dotenv(env_path)
+    key = os.getenv("UNUSUAL_WHALES_API_KEY", "")
+    if not key:
+        return None
+    headers = {"Authorization": f"Bearer {key}", "UW-CLIENT-API-ID": "100001"}
+    url = f"https://api.unusualwhales.com{path}"
+    try:
+        r = _requests.get(url, headers=headers, params=params, timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return None
+
+
+def _uw_price(sym: str):
+    """Fetch last price for a symbol from UW stock-state. Returns float or None."""
+    try:
+        result = _uw_get(f'/api/stock/{sym}/stock-state')
+        if result and isinstance(result, dict):
+            data = result.get('data', {})
+            price = data.get('last_price') or data.get('prev_close')
+            return float(price) if price else None
+    except Exception:
+        pass
+    return None
+
+
 # Module-level session reuses TCP connections to Alpaca across all broker calls,
 # preventing socket exhaustion under rapid order sequences.
 _BROKER_SESSION = _requests.Session()
@@ -1041,23 +1073,19 @@ class PaperTradingEngine:
     def _get_current_price(self, asset_symbol: str) -> Optional[float]:
         """
         Get current price for an asset.
-        Tries yfinance, then Alpha Vantage, then Alpaca position current_price,
+        Tries UW stock-state, then Alpha Vantage, then Alpaca position current_price,
         then Alpaca market data API.
         Returns None if all fail — callers already handle None gracefully.
         Never returns simulated/random prices to avoid phantom P&L.
         """
-        # Primary: yfinance (free, no key, reliable)
+        # Primary: UW stock-state (no FD leaks, no rate-limit surprises)
         try:
-            import yfinance as yf
-            ticker = yf.Ticker(asset_symbol)
-            hist = ticker.history(period='5d')
-            if not hist.empty:
-                price = float(hist['Close'].iloc[-1])
-                if price > 0:
-                    logger.debug(f"Fetched yfinance price for {asset_symbol}: ${price:.2f}")
-                    return price
+            price = _uw_price(asset_symbol)
+            if price and price > 0:
+                logger.debug(f"Fetched UW price for {asset_symbol}: ${price:.2f}")
+                return price
         except Exception as e:
-            logger.debug(f"yfinance price fetch failed for {asset_symbol}: {e}")
+            logger.debug(f"UW price fetch failed for {asset_symbol}: {e}")
 
         # Fallback: Alpha Vantage (key from env — never hardcoded)
         try:

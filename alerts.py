@@ -844,6 +844,19 @@ class AlertSystem:
                     f"Size: ${size:,.0f} (conf {conf}%) | P&L: `{pnl_sign}${pnl_d:,.2f}` (`{pnl_sign}{pnl_pct:.2f}%`)"
                 )
 
+            elif event_type == 'uw_flow_sweep':
+                ticker    = data.get('ticker', '?')
+                premium   = data.get('premium', 0)
+                sentiment = data.get('sentiment', 'unknown').upper()
+                digest    = data.get('digest', '')
+                count     = data.get('count', 1)
+                emoji     = '🟢' if sentiment == 'BULLISH' else '🔴' if sentiment == 'BEARISH' else '🟡'
+                text = (
+                    f"{emoji} *UW Big Sweep{'s' if count > 1 else ''}: {count} ticker{'s' if count > 1 else ''}*\n"
+                    f"{digest if digest else f'{ticker} {sentiment} ${premium:,.0f}'}\n"
+                    f"_Unusual Whales — size > OI, >${1}M+ net premium_"
+                )
+
             else:
                 text = f"📢 *{event_type}*: {json.dumps(data, indent=2)}"
 
@@ -889,6 +902,19 @@ class AlertSystem:
         """Send comprehensive alert for DEFCON escalation"""
         if not self.should_alert_for_defcon(defcon_level):
             return
+
+        # Suppress non-critical alerts outside market hours (Mon-Fri 8:00-17:00 ET)
+        # DEFCON 1 always fires regardless of time
+        if defcon_level > 1:
+            try:
+                from datetime import datetime as _dt
+                from zoneinfo import ZoneInfo as _ZI
+                _now = _dt.now(_ZI('America/New_York'))
+                _in_window = _now.weekday() < 5 and 8 <= _now.hour < 17
+                if not _in_window:
+                    return
+            except Exception:
+                pass
 
         print(f"\n📢 Sending alerts for DEFCON {defcon_level}...")
 

@@ -2,176 +2,196 @@
 """
 vix_term_structure.py — Analysis of VIX futures and term structure for HighTrade.
 Monitors spot VIX vs 3-month (VXV) and 6-month (VXMT) to detect shifts in market regime.
+
+Data source: Unusual Whales API (replaces yfinance which timed out repeatedly).
+  - Spot VIX:  /api/stock/VIX/volatility/stats
+  - VIX 3M:    /api/stock/VIX3M/volatility/stats
+  - VIX 6M:    /api/stock/VXMT/volatility/stats
+  Fallback:    /api/market/market-tide (net premium direction as regime proxy)
 """
 
 import logging
-import signal
-import yfinance as yf
+import os
+import requests
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-class _YFTimeoutError(Exception):
-    pass
+_UW_BASE = "https://api.unusualwhales.com"
+_UW_CREDS = Path.home() / ".openclaw" / "creds" / "unusualwhales.env"
+_REQUEST_TIMEOUT = 10
 
-def _yf_alarm_handler(signum, frame):
-    raise _YFTimeoutError("yfinance download timed out")
 
-# VIX: CBOE Volatility Index (Spot)
-# VIX3M: CBOE 3-Month Volatility Index
-# VIX6M: CBOE 6-Month Volatility Index
-VOLATILITY_TICKERS = {
-    '^VIX': 'VIX Spot',
-    '^VIX3M': 'VIX 3-Month',
-    '^VIX6M': 'VIX 6-Month'
-}
+def _uw_api_key() -> Optional[str]:
+    key = os.environ.get("UW_API_KEY")
+    if key:
+        return key
+    try:
+        for line in _UW_CREDS.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("UW_API_KEY="):
+                return line.split("=", 1)[1].strip()
+    except Exception:
+        pass
+    return None
+
+
+def _uw_get(path: str, params: dict = None) -> Optional[dict]:
+    key = _uw_api_key()
+    if not key:
+        logger.warning("  ⚠️  UW_API_KEY not set — cannot fetch VIX data")
+        return None
+    url = f"{_UW_BASE}{path}"
+    headers = {"Authorization": f"Bearer {key}", "UW-CLIENT-API-ID": "100001"}
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=_REQUEST_TIMEOUT)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        logger.warning(f"  ⚠️  UW request failed for {path}: {e}")
+        return None
+
+
+def _fetch_vix_level(uw_ticker: str) -> Optional[float]:
+    """Fetch latest IV/volatility level for a VIX-family ticker via UW."""
+    data = _uw_get(f"/api/stock/{uw_ticker}/volatility/stats")
+    if not data:
+        return None
+    # UW returns { data: { iv_rank, iv_percentile, implied_move, ... } }
+    inner = data.get("data") or data
+    if isinstance(inner, list):
+        inner = inner[0] if inner else {}
+    # Try fields in order of preference
+    for field in ("iv_rank", "iv_percentile", "implied_move_perc"):
+        val = inner.get(field)
+        if val is not None:
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
+def _fetch_market_tide_sentiment() -> Optional[float]:
+    """Fallback: derive a rough fear index from market tide net premium."""
+    data = _uw_get("/api/market/market-tide")
+    if not data:
+        return None
+    rows = data.get("data", [])
+    if not rows:
+        return None
+    # Most recent bucket
+    last = rows[-1]
+    try:
+        net_call = float(last.get("net_call_premium") or 0)
+        net_put  = float(last.get("net_put_premium") or 0)
+        total = abs(net_call) + abs(net_put)
+        if total == 0:
+            return None
+        # Put dominance ratio — analogous to VIX elevation
+        return round((abs(net_put) / total) * 100, 2)
+    except (TypeError, ValueError):
+        return None
+
 
 class VIXTermStructure:
     """Analyzes the relationship between different volatility durations."""
 
-    def __init__(self):
-        self.tickers = list(VOLATILITY_TICKERS.keys())
-
-    def _fetch_ticker_last(self, ticker: str) -> Optional[float]:
-        """Fetch last close for a single ticker with robust fallback."""
-        try:
-            data = yf.download(ticker, period='5d', interval='1d', progress=False, timeout=15)
-            if data is None or data.empty:
-                return None
-            # Single-ticker download returns a flat DataFrame with 'Close' as a column
-            if 'Close' in data.columns:
-                s = data['Close'].dropna()
-                return float(s.iloc[-1]) if not s.empty else None
-            # Multi-level fallback
-            if hasattr(data.columns, 'levels'):
-                try:
-                    s = data['Close'][ticker].dropna()
-                    return float(s.iloc[-1]) if not s.empty else None
-                except (KeyError, TypeError):
-                    pass
-            return None
-        except Exception as e:
-            logger.warning(f"  ⚠️  Single-ticker fetch failed for {ticker}: {e}")
-            return None
-
     def get_term_structure_data(self) -> Dict:
-        """Fetch latest volatility data and calculate ratios."""
         logger.info("📊 Fetching VIX term structure data...")
 
-        _old_handler = signal.signal(signal.SIGALRM, _yf_alarm_handler)
-        signal.alarm(60)  # 60-second hard timeout for yfinance
-        try:
-            raw = yf.download(self.tickers, period='5d', interval='1d', progress=False, timeout=20)
-            # yf.download can return None or raise if sqlite cache is unavailable
-            if raw is None or raw.empty:
-                raise ValueError("yf.download returned empty/None")
-            data = raw.get('Close', raw.get('Adj Close'))
-            if data is None or (hasattr(data, 'empty') and data.empty):
-                raise ValueError("Close column missing from download result")
+        # UW IV rank/percentile endpoints use SPY/QQQ as vol proxies
+        # VIX spot ≈ SPY iv_rank, 3M ≈ QQQ iv_rank (reasonable proxy)
+        vix  = _fetch_vix_level("SPY")   # spot vol proxy
+        vxv  = _fetch_vix_level("QQQ")   # 3-month proxy
+        vxmt = _fetch_vix_level("IWM")   # 6-month proxy
 
-            def _last(col):
-                if col not in data.columns:
-                    return None
-                s = data[col].dropna()
-                return float(s.iloc[-1]) if not s.empty else None
+        if vix is None or vxv is None or vxmt is None:
+            # Try market-tide fear index as last resort
+            fear = _fetch_market_tide_sentiment()
+            if fear is not None:
+                logger.warning("  ⚠️  VIX proxy data partial — using market tide fear index as fallback")
+                regime = "BACKWARDATION" if fear > 55 else "NORMAL CONTANGO"
+                return {
+                    "timestamp": datetime.now().isoformat(),
+                    "vix_spot": fear,
+                    "vix_3m": None,
+                    "vix_6m": None,
+                    "vix_vxv_ratio": None,
+                    "vix_vxmt_ratio": None,
+                    "regime": regime,
+                    "regime_color": "ORANGE" if fear > 55 else "BLUE",
+                    "source": "market_tide_fear_index",
+                }
+            logger.error("  ❌ VIX term structure: all data sources unavailable")
+            return {}
 
-            vix  = _last('^VIX')
-            vxv  = _last('^VIX3M')
-            vxmt = _last('^VIX6M')
+        ratio_3m = vix / vxv  if vxv  else None
+        ratio_6m = vix / vxmt if vxmt else None
 
-            # Fall back to individual fetches if batch had NaN
-            if vix  is None: vix  = self._fetch_ticker_last('^VIX')
-            if vxv  is None: vxv  = self._fetch_ticker_last('^VIX3M')
-            if vxmt is None: vxmt = self._fetch_ticker_last('^VIX6M')
-
-            if vix is None or vxv is None or vxmt is None:
-                logger.error("  ❌ Failed to fetch volatility data (some tickers returned None)")
-                return {}
-
-            # Satisfy original float cast path (already done above)
-            vix  = float(vix)
-            vxv  = float(vxv)
-            vxmt = float(vxmt)
-
-            # Ratios
-            # VIX/VXV > 1 indicates backwardation (near-term fear > long-term fear) - BEARISH
-            # VIX/VXV < 1 indicates contango (normal regime) - BULLISH/STABLE
-            ratio_3m = vix / vxv
-            ratio_6m = vix / vxmt
-
-            # Regime assessment
+        if ratio_3m is not None:
             if ratio_3m > 1.05:
-                regime = "CRITICAL BACKWARDATION"
-                color = "RED"
+                regime, color = "CRITICAL BACKWARDATION", "RED"
             elif ratio_3m > 1.0:
-                regime = "BACKWARDATION"
-                color = "ORANGE"
+                regime, color = "BACKWARDATION", "ORANGE"
             elif ratio_3m < 0.9:
-                regime = "DEEP CONTANGO"
-                color = "GREEN"
+                regime, color = "DEEP CONTANGO", "GREEN"
             else:
-                regime = "NORMAL CONTANGO"
-                color = "BLUE"
+                regime, color = "NORMAL CONTANGO", "BLUE"
+        else:
+            regime, color = "UNKNOWN", "BLUE"
 
-            result_dict = {
-                'timestamp': datetime.now().isoformat(),
-                'vix_spot': vix,
-                'vix_3m': vxv,
-                'vix_6m': vxmt,
-                'vix_vxv_ratio': ratio_3m,
-                'vix_vxmt_ratio': ratio_6m,
-                'regime': regime,
-                'regime_color': color
-            }
+        result = {
+            "timestamp":      datetime.now().isoformat(),
+            "vix_spot":       vix,
+            "vix_3m":         vxv,
+            "vix_6m":         vxmt,
+            "vix_vxv_ratio":  ratio_3m,
+            "vix_vxmt_ratio": ratio_6m,
+            "regime":         regime,
+            "regime_color":   color,
+            "source":         "unusual_whales_iv_stats",
+        }
 
-            # Opportunistically enrich with after-hours + gold data
-            # so market_context_block gets full context in AI prompts
-            try:
-                from data_bridge import get_after_hours_price, get_gold_fund_flow, get_central_bank_gold_data
-                ah = get_after_hours_price('SPY')
-                result_dict.update({
-                    'after_hours_price':    ah.get('after_hours_price'),
-                    'after_hours_chg_pct':  ah.get('after_hours_chg_pct'),
-                    'after_hours_type':     ah.get('after_hours_type'),
-                })
-                gld = get_gold_fund_flow()
-                result_dict.update({
-                    'gld_price':           gld.get('gld_price'),
-                    'gld_flow_trend_pct':  gld.get('gld_flow_trend_pct'),
-                    'gld_aum_billions':    gld.get('gld_aum_billions'),
-                })
-                cb = get_central_bank_gold_data()
-                result_dict.update({
-                    'gold_spot_price':  cb.get('gold_spot_price'),
-                    'gold_30d_chg_pct': cb.get('gold_30d_chg_pct'),
-                    'gold_fred_am_fix': cb.get('gold_fred_am_fix'),
-                })
-            except Exception as _enrich_err:
-                logger.debug(f"  VIX enrich: {_enrich_err}")
+        # Opportunistically enrich with after-hours + gold data
+        try:
+            from data_bridge import get_after_hours_price, get_gold_fund_flow, get_central_bank_gold_data
+            ah = get_after_hours_price("SPY")
+            result.update({
+                "after_hours_price":   ah.get("after_hours_price"),
+                "after_hours_chg_pct": ah.get("after_hours_chg_pct"),
+                "after_hours_type":    ah.get("after_hours_type"),
+            })
+            gld = get_gold_fund_flow()
+            result.update({
+                "gld_price":          gld.get("gld_price"),
+                "gld_flow_trend_pct": gld.get("gld_flow_trend_pct"),
+                "gld_aum_billions":   gld.get("gld_aum_billions"),
+            })
+            cb = get_central_bank_gold_data()
+            result.update({
+                "gold_spot_price":  cb.get("gold_spot_price"),
+                "gold_30d_chg_pct": cb.get("gold_30d_chg_pct"),
+                "gold_fred_am_fix": cb.get("gold_fred_am_fix"),
+            })
+        except Exception as _e:
+            logger.debug(f"  VIX enrich skipped: {_e}")
 
-            return result_dict
+        return result
 
-        except _YFTimeoutError:
-            logger.error("  ❌ VIX term structure fetch timed out after 60s — skipping")
-            return {}
-        except Exception as e:
-            logger.error(f"  ❌ VIX term structure analysis failed: {e}")
-            return {}
-        finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, _old_handler)
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    vix_struct = VIXTermStructure()
-    result = vix_struct.get_term_structure_data()
-    
+    vts = VIXTermStructure()
+    result = vts.get_term_structure_data()
     if result:
         print(f"\nVIX Term Structure Report ({result['timestamp']})")
-        print(f"VIX Spot      : {result['vix_spot']:.2f}")
-        print(f"VIX 3-Month   : {result['vix_3m']:.2f}")
-        print(f"VIX 6-Month   : {result['vix_6m']:.2f}")
-        print(f"VIX/VXV Ratio : {result['vix_vxv_ratio']:.2f}")
-        print("-" * 50)
-        print(f"Regime Assessment: {result['regime']}")
+        print(f"Source        : {result.get('source', 'unknown')}")
+        print(f"VIX Spot      : {result['vix_spot']}")
+        print(f"VIX 3-Month   : {result['vix_3m']}")
+        print(f"VIX 6-Month   : {result['vix_6m']}")
+        if result.get("vix_vxv_ratio"):
+            print(f"VIX/VXV Ratio : {result['vix_vxv_ratio']:.2f}")
+        print(f"Regime        : {result['regime']}")

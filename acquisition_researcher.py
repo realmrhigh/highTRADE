@@ -11,8 +11,8 @@ Flow:
       ↓ [broker_agent.py conditional checking]
   trade_records
 
-Data sources (all free, no extra API keys):
-  - yfinance  : price history, fundamentals, analyst targets, earnings
+Data sources:
+  - Unusual Whales API : price, fundamentals, analyst targets, earnings
   - SEC EDGAR : latest 10-K/10-Q/8-K filings (data.sec.gov, no key)
   - SQLite DB : news_signals, congressional_cluster_signals, macro_indicators
   - FRED      : already in macro_indicators table
@@ -202,97 +202,121 @@ def _ensure_library_table(conn: sqlite3.Connection):
     conn.commit()
 
 
-# ── yfinance research ──────────────────────────────────────────────────────────
+# ── UW research ───────────────────────────────────────────────────────────────
+
+def _uw_get(path: str, params: dict = None):
+    """Fetch from Unusual Whales API. Returns parsed JSON or None on failure."""
+    import os, dotenv, pathlib
+    env_path = pathlib.Path.home() / ".openclaw" / "creds" / "unusualwhales.env"
+    dotenv.load_dotenv(env_path)
+    key = os.getenv("UNUSUAL_WHALES_API_KEY", "")
+    if not key:
+        return None
+    headers = {"Authorization": f"Bearer {key}", "UW-CLIENT-API-ID": "100001"}
+    url = f"https://api.unusualwhales.com{path}"
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return None
+
 
 def _fetch_yfinance(ticker: str) -> Dict:
-    """Pull fundamentals, price history, analyst data from yfinance."""
+    """Pull fundamentals, price, and analyst data from Unusual Whales API."""
     try:
-        import yfinance as yf
-        stock = yf.Ticker(ticker)
+        # Fetch stock state (price, market cap, basic info)
+        state_resp = _uw_get(f'/api/stock/{ticker}/stock-state')
+        state = state_resp.get('data', {}) if (state_resp and isinstance(state_resp, dict)) else {}
 
-        info = stock.info or {}
+        # Fetch financials
+        fin_resp = _uw_get(f'/api/stock/{ticker}/financials')
+        fin = {}
+        if fin_resp and isinstance(fin_resp, dict):
+            fin_data = fin_resp.get('data') or []
+            if isinstance(fin_data, list) and fin_data:
+                fin = fin_data[0] if isinstance(fin_data[0], dict) else {}
+            elif isinstance(fin_data, dict):
+                fin = fin_data
 
-        # Price history — last 30 trading days
-        hist = stock.history(period='1mo', auto_adjust=True)
-        price_now  = float(hist['Close'].iloc[-1])  if len(hist) > 0 else None
-        price_1w   = float(hist['Close'].iloc[-6])  if len(hist) >= 6 else None
-        price_1m   = float(hist['Close'].iloc[0])   if len(hist) > 0 else None
+        # Fetch earnings history
+        earn_resp = _uw_get(f'/api/stock/{ticker}/earnings')
+        earn_list = []
+        if earn_resp and isinstance(earn_resp, dict):
+            earn_data = earn_resp.get('data') or []
+            if isinstance(earn_data, list):
+                earn_list = earn_data
+            elif isinstance(earn_data, dict):
+                earn_list = [earn_data]
 
-        chg_1w = ((price_now - price_1w) / price_1w * 100) if (price_now and price_1w) else None
-        chg_1m = ((price_now - price_1m) / price_1m * 100) if (price_now and price_1m) else None
+        # Fetch stock info
+        info_resp = _uw_get(f'/api/stock/{ticker}/info')
+        info = {}
+        if info_resp and isinstance(info_resp, dict):
+            info = info_resp.get('data', {}) or {}
 
-        avg_vol = int(hist['Volume'].tail(20).mean()) if len(hist) >= 20 else None
+        # Extract current price
+        price_now = None
+        try:
+            price_now = float(state.get('last_price') or state.get('prev_close') or 0) or None
+        except Exception:
+            pass
 
-        # Earnings calendar — handled by data_bridge.get_earnings_date() below;
-        # leave as None here so the bridge can fill it with its multi-method logic.
-        next_earnings = None
-
-        # Last EPS surprise
+        # Last EPS surprise from earnings history
         eps_surprise = None
         try:
-            earnings_hist = stock.earnings_history
-            if earnings_hist is not None and not earnings_hist.empty:
-                last = earnings_hist.iloc[0]
-                if 'Surprise(%)' in last:
-                    eps_surprise = float(last['Surprise(%)'])
-        except Exception:
-            pass
-
-        # Analyst targets
-        targets = {}
-        try:
-            rec = stock.analyst_price_targets
-            if rec is not None:
-                targets = {
-                    'mean': float(rec.get('mean', 0) or 0),
-                    'high': float(rec.get('high', 0) or 0),
-                    'low':  float(rec.get('low',  0) or 0),
-                }
-        except Exception:
-            pass
-
-        # Analyst recommendations count
-        buy_c = hold_c = sell_c = 0
-        try:
-            recs = stock.upgrades_downgrades
-            if recs is not None and not recs.empty:
-                recent = recs.tail(30)
-                buy_c  = int((recent['ToGrade'].str.lower().str.contains('buy|outperform|overweight')).sum())
-                hold_c = int((recent['ToGrade'].str.lower().str.contains('hold|neutral|market')).sum())
-                sell_c = int((recent['ToGrade'].str.lower().str.contains('sell|underperform|underweight')).sum())
+            if earn_list:
+                last_e = earn_list[0]
+                surprise = last_e.get('eps_surprise_pct') or last_e.get('surprise_pct')
+                if surprise is not None:
+                    eps_surprise = float(surprise)
         except Exception:
             pass
 
         return {
             'current_price':       price_now,
-            'price_1w_chg_pct':    chg_1w,
-            'price_1m_chg_pct':    chg_1m,
-            'price_52w_high':      info.get('fiftyTwoWeekHigh'),
-            'price_52w_low':       info.get('fiftyTwoWeekLow'),
-            'avg_volume_20d':      avg_vol,
-            'market_cap':          info.get('marketCap'),
-            'pe_ratio':            info.get('trailingPE'),
-            'forward_pe':          info.get('forwardPE'),
-            'peg_ratio':           info.get('pegRatio'),
-            'price_to_book':       info.get('priceToBook'),
-            'profit_margin':       info.get('profitMargins'),
-            'revenue_growth_yoy':  info.get('revenueGrowth'),
-            'earnings_growth_yoy': info.get('earningsGrowth'),
-            'debt_to_equity':      info.get('debtToEquity'),
-            'free_cash_flow':      info.get('freeCashflow'),
-            'analyst_target_mean': targets.get('mean'),
-            'analyst_target_high': targets.get('high'),
-            'analyst_target_low':  targets.get('low'),
-            'analyst_buy_count':   buy_c,
-            'analyst_hold_count':  hold_c,
-            'analyst_sell_count':  sell_c,
-            'next_earnings_date':  next_earnings,
+            'price_1w_chg_pct':    None,
+            'price_1m_chg_pct':    None,
+            'price_52w_high':      _safe_float(state.get('week_52_high') or info.get('week_52_high')),
+            'price_52w_low':       _safe_float(state.get('week_52_low') or info.get('week_52_low')),
+            'avg_volume_20d':      _safe_int(state.get('avg_volume') or info.get('avg_volume')),
+            'market_cap':          _safe_float(state.get('market_cap') or info.get('market_cap')),
+            'pe_ratio':            _safe_float(state.get('pe') or fin.get('pe_ratio')),
+            'forward_pe':          _safe_float(state.get('forward_pe') or fin.get('forward_pe')),
+            'peg_ratio':           _safe_float(fin.get('peg_ratio')),
+            'price_to_book':       _safe_float(fin.get('price_to_book')),
+            'profit_margin':       _safe_float(fin.get('profit_margin') or fin.get('net_margin')),
+            'revenue_growth_yoy':  _safe_float(fin.get('revenue_growth') or fin.get('revenue_growth_yoy')),
+            'earnings_growth_yoy': _safe_float(fin.get('earnings_growth') or fin.get('earnings_growth_yoy')),
+            'debt_to_equity':      _safe_float(fin.get('debt_to_equity')),
+            'free_cash_flow':      _safe_float(fin.get('free_cash_flow')),
+            'analyst_target_mean': _safe_float(info.get('analyst_mean_target')),
+            'analyst_target_high': _safe_float(info.get('analyst_high_target')),
+            'analyst_target_low':  _safe_float(info.get('analyst_low_target')),
+            'analyst_buy_count':   _safe_int(info.get('analyst_buy_count')),
+            'analyst_hold_count':  _safe_int(info.get('analyst_hold_count')),
+            'analyst_sell_count':  _safe_int(info.get('analyst_sell_count')),
+            'next_earnings_date':  None,
             'last_eps_surprise_pct': eps_surprise,
-            'info':                info,
+            'info':                {**state, **info},
         }
     except Exception as e:
-        logger.warning(f"yfinance failed for {ticker}: {e}")
+        logger.warning(f"UW research failed for {ticker}: {e}")
         return {'error': str(e)}
+
+
+def _safe_float(val):
+    try:
+        return float(val) if val is not None else None
+    except Exception:
+        return None
+
+
+def _safe_int(val):
+    try:
+        return int(val) if val is not None else None
+    except Exception:
+        return None
 
 
 # ── SEC EDGAR research ─────────────────────────────────────────────────────────
@@ -492,10 +516,10 @@ def research_ticker(ticker: str, date_str: str, conn: sqlite3.Connection) -> boo
 
     errors = []
 
-    # 1. yfinance fundamentals
+    # 1. UW fundamentals (via _fetch_yfinance, now UW-backed)
     yf_data = _fetch_yfinance(ticker)
     if 'error' in yf_data:
-        errors.append(f"yfinance: {yf_data['error']}")
+        errors.append(f"uw_research: {yf_data['error']}")
 
     # 1b. data_bridge — fills recurring gaps (earnings, short interest, options,
     #     pre-market, VIX, analyst consensus, insider activity, news coverage)
@@ -645,69 +669,72 @@ def run_research_cycle() -> List[str]:
     logger.info(f"🔬 Acquisition Researcher: starting cycle for {date_str}")
 
     conn = _get_conn()
-    _ensure_library_table(conn)
-    _expire_stale_research(conn)
-
-    # Pull pending tickers (most recent dates first, capped)
     try:
-        cursor = conn.execute("""
-            SELECT ticker, date_added, entry_conditions, model_confidence
-            FROM acquisition_watchlist
-            WHERE status = 'pending'
-            ORDER BY date_added DESC, model_confidence DESC
-            LIMIT ?
-        """, (MAX_TICKERS,))
-        pending = [dict(r) for r in cursor.fetchall()]
-    except Exception as e:
-        logger.error(f"Failed to fetch pending watchlist: {e}")
-        conn.close()
-        return []
+        _ensure_library_table(conn)
+        _expire_stale_research(conn)
 
-    if not pending:
-        logger.info("  📭 No pending tickers in acquisition_watchlist")
-        conn.close()
-        return []
+        # Pull pending tickers (most recent dates first, capped)
+        try:
+            cursor = conn.execute("""
+                SELECT ticker, date_added, entry_conditions, model_confidence
+                FROM acquisition_watchlist
+                WHERE status = 'pending'
+                ORDER BY date_added DESC, model_confidence DESC
+                LIMIT ?
+            """, (MAX_TICKERS,))
+            pending = [dict(r) for r in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Failed to fetch pending watchlist: {e}")
+            return []
 
-    logger.info(f"  📋 {len(pending)} tickers pending research: {[r['ticker'] for r in pending]}")
+        if not pending:
+            logger.info("  📭 No pending tickers in acquisition_watchlist")
+            return []
 
-    researched = []
-    for row in pending:
-        ticker = row['ticker']
-        success = _research_ticker_with_timeout(ticker, date_str, conn, timeout_secs=45)
+        logger.info(f"  📋 {len(pending)} tickers pending research: {[r['ticker'] for r in pending]}")
 
-        if success:
-            # Mark as researched in watchlist — prepend status prefix but preserve any
-            # existing notes (e.g. exit_review tags set by the missing-framework monitor)
-            conn.execute("""
-                UPDATE acquisition_watchlist
-                SET status = 'researched',
-                    notes = CASE
-                        WHEN notes IS NULL OR notes = '' THEN ?
-                        ELSE ? || ' | ' || notes
-                    END
-                WHERE ticker = ? AND status = 'pending'
-            """, (f"Researched {date_str}", f"Researched {date_str}", ticker))
-            conn.commit()
-            researched.append(ticker)
-        else:
-            # Mark as error but don't block pipeline
-            conn.execute("""
-                UPDATE acquisition_watchlist
-                SET status = 'research_error',
-                    notes = CASE
-                        WHEN notes IS NULL OR notes = '' THEN ?
-                        ELSE ? || ' | ' || notes
-                    END
-                WHERE ticker = ? AND status = 'pending'
-            """, (f"Research failed {date_str}", f"Research failed {date_str}", ticker))
-            conn.commit()
+        researched = []
+        for row in pending:
+            ticker = row['ticker']
+            success = _research_ticker_with_timeout(ticker, date_str, conn, timeout_secs=45)
 
-        # Polite delay between tickers
-        time.sleep(1.0)
+            if success:
+                # Mark as researched in watchlist — prepend status prefix but preserve any
+                # existing notes (e.g. exit_review tags set by the missing-framework monitor)
+                conn.execute("""
+                    UPDATE acquisition_watchlist
+                    SET status = 'researched',
+                        notes = CASE
+                            WHEN notes IS NULL OR notes = '' THEN ?
+                            ELSE ? || ' | ' || notes
+                        END
+                    WHERE ticker = ? AND status = 'pending'
+                """, (f"Researched {date_str}", f"Researched {date_str}", ticker))
+                conn.commit()
+                researched.append(ticker)
+            else:
+                # Mark as error but don't block pipeline
+                conn.execute("""
+                    UPDATE acquisition_watchlist
+                    SET status = 'research_error',
+                        notes = CASE
+                            WHEN notes IS NULL OR notes = '' THEN ?
+                            ELSE ? || ' | ' || notes
+                        END
+                    WHERE ticker = ? AND status = 'pending'
+                """, (f"Research failed {date_str}", f"Research failed {date_str}", ticker))
+                conn.commit()
 
-    conn.close()
-    logger.info(f"✅ Research cycle complete: {len(researched)}/{len(pending)} tickers ready → {researched}")
-    return researched
+            # Polite delay between tickers
+            time.sleep(1.0)
+
+        logger.info(f"✅ Research cycle complete: {len(researched)}/{len(pending)} tickers ready → {researched}")
+        return researched
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 if __name__ == '__main__':

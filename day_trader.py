@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from grok_client import GrokClient
+from uw_seasonality import SeasonalityAdvisor
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +26,50 @@ def _et_now():
     return datetime.now(ZoneInfo("America/New_York"))
 
 
+# ── Unusual Whales API helper ─────────────────────────────────────────────────
+
+def _uw_get(path: str, timeout: int = 8):
+    """
+    Make an authenticated GET request to the Unusual Whales API.
+    Loads UW_API_KEY from ~/.openclaw/creds/unusualwhales.env.
+    Returns the parsed JSON dict on success, or None on any failure.
+    """
+    import requests as _req
+    try:
+        env_path = Path.home() / '.openclaw' / 'creds' / 'unusualwhales.env'
+        api_key = None
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                line = line.strip()
+                if line.startswith('#') or '=' not in line:
+                    continue
+                k, _, v = line.partition('=')
+                if k.strip() == 'UW_API_KEY':
+                    api_key = v.strip().strip('"').strip("'")
+                    break
+        if not api_key:
+            import os as _os
+            api_key = _os.environ.get('UW_API_KEY')
+        if not api_key:
+            return None
+        url = f'https://api.unusualwhales.com{path}'
+        resp = _req.get(url, headers={
+            'Authorization': f'Bearer {api_key}',
+            'UW-CLIENT-API-ID': '100001',
+        }, timeout=timeout)
+        if resp.status_code == 200:
+            return resp.json()
+        logger.debug(f"_uw_get({path}): HTTP {resp.status_code}")
+    except Exception as e:
+        logger.debug(f"_uw_get({path}): {e}")
+    return None
+
+
 # ── Clamp helpers for Grok-returned targets ──────────────────────────────────
 _STOP_MIN, _STOP_MAX = 0.005, 0.02       # 0.5% – 2%
 _TP_MIN, _TP_MAX     = 0.015, 0.06       # 1.5% – 6%
 _STRETCH_MIN, _STRETCH_MAX = 0.04, 0.10  # 4% – 10%
-_MIN_CONFIDENCE = 85                       # Below this → daily skip / no trade
+_MIN_CONFIDENCE = 78                       # Below this → daily skip / no trade
 _MIN_POSITION = 500                        # Don't trade if sized below $500
 _MAX_RISK_PER_TRADE_PCT = 0.02             # Max 2% risk on the very best setups
 _MIN_RISK_PER_TRADE_PCT = 0.005            # Bare minimum risk on marginal-but-allowed setups
@@ -219,7 +259,7 @@ class DayTrader:
     # ── Live price helper ─────────────────────────────────────────────────────
 
     def _get_live_price(self, ticker: str) -> Optional[float]:
-        """Get live price — prefer realtime stream, fallback to yfinance."""
+        """Get live price — prefer realtime stream, fallback to Unusual Whales."""
         # Try realtime monitor first
         if self.realtime_monitor:
             try:
@@ -228,13 +268,22 @@ class DayTrader:
                     return float(price)
             except Exception:
                 pass
-        # Fallback: yfinance
+        # Fallback: Unusual Whales stock-state
         try:
-            import yfinance as yf
-            fi = yf.Ticker(ticker).fast_info
-            price = fi.get('lastPrice') or fi.get('regularMarketPrice')
-            if price and price > 0:
-                return float(price)
+            data = _uw_get(f'/api/stock/{ticker}/stock-state')
+            if data:
+                payload = data.get('data') or data
+                if isinstance(payload, list):
+                    payload = payload[0] if payload else {}
+                # Try live price fields first, then fall back to close/prev_close
+                price = (
+                    payload.get('last_price') or
+                    payload.get('last_trade_price') or
+                    payload.get('close') or
+                    payload.get('prev_close')
+                )
+                if price and float(price) > 0:
+                    return float(price)
         except Exception:
             pass
         return None
@@ -291,8 +340,78 @@ class DayTrader:
         calibrated = max(0, min(100, raw - penalty))
         return calibrated
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # CHECKPOINT 1: Pre-market Scan (7:00 AM ET)
+    # ── Hound bridge ──────────────────────────────────────────────────────────
+
+    def _get_hound_candidates_for_today(self) -> List[Dict]:
+        """Query hound candidates relevant to today's session.
+
+        Returns up to 5 candidates where breakout_window suggests today, or
+        high-alpha fallbacks (score >= 80) with no window set.
+        """
+        today = _et_now().strftime('%Y-%m-%d')
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=72)).strftime('%Y-%m-%d %H:%M:%S')
+        results = []
+        try:
+            conn = get_sqlite_conn(str(self.db_path), timeout=15)
+            conn.row_factory = sqlite3.Row
+            try:
+                rows = conn.execute("""
+                    SELECT ticker, alpha_score, why_next, signals, breakout_window, action_suggestion
+                    FROM grok_hound_candidates
+                    WHERE status IN ('pending', 'watched')
+                      AND created_at > ?
+                    ORDER BY alpha_score DESC
+                """, (cutoff,)).fetchall()
+            except Exception:
+                rows = []
+            finally:
+                conn.close()
+
+            today_keywords = [today, 'today', 'premarket', 'this week']
+            for row in rows:
+                bw = (row['breakout_window'] or '').lower()
+                score = row['alpha_score'] or 0
+                # Include if breakout_window matches today context, or if no window but high alpha
+                if any(kw in bw for kw in today_keywords):
+                    include = True
+                elif not bw and score >= 80:
+                    include = True
+                else:
+                    include = False
+
+                if include:
+                    results.append({
+                        'ticker': row['ticker'],
+                        'alpha_score': score,
+                        'why_next': row['why_next'] or '',
+                        'signals': row['signals'] or '',
+                        'breakout_window': row['breakout_window'] or '',
+                        'action_suggestion': row['action_suggestion'] or '',
+                    })
+                    if len(results) >= 5:
+                        break
+        except Exception as e:
+            logger.debug(f'_get_hound_candidates_for_today failed: {e}')
+        return results
+
+    def _mark_hound_candidate_consumed(self, ticker: str):
+        """Mark a hound candidate as day_traded after it was picked."""
+        if not ticker:
+            return
+        try:
+            conn = get_sqlite_conn(str(self.db_path), timeout=15)
+            conn.execute(
+                "UPDATE grok_hound_candidates SET status = 'day_traded' WHERE ticker = ? AND status IN ('pending', 'watched')",
+                (ticker.upper().strip(),)
+            )
+            conn.commit()
+            conn.close()
+            logger.info(f'  🐕→📈 Marked hound candidate {ticker} as day_traded')
+        except Exception as e:
+            logger.debug(f'_mark_hound_candidate_consumed failed for {ticker}: {e}')
+
+    # ── Pre-market Scan ───────────────────────────────────────────────────────
+
     # ══════════════════════════════════════════════════════════════════════════
 
     def check_premarket_scan(self):
@@ -503,6 +622,33 @@ Respond with ONLY valid JSON:
 
 Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to avoid NO TRADE). If truly nothing qualifies, return empty picks array with no_trade_reason."""
 
+        # ── Hound pre-research injection ──────────────────────────────────────
+        hound_candidates = self._get_hound_candidates_for_today()
+        if hound_candidates:
+            hound_lines = []
+            for hc in hound_candidates:
+                signals_raw = hc.get('signals', '')
+                try:
+                    signals_str = ', '.join(json.loads(signals_raw)) if signals_raw else 'n/a'
+                except Exception:
+                    signals_str = str(signals_raw) or 'n/a'
+                hound_lines.append(
+                    f"\u2022 {hc['ticker']} (Alpha: {hc['alpha_score']}/100) \u2014 {hc['why_next']}\n"
+                    f"  Signals: {signals_str}\n"
+                    f"  Estimated window: {hc['breakout_window'] or 'unspecified'}\n"
+                    f"  Suggested action: {hc['action_suggestion']}"
+                )
+            hound_block = (
+                "\n\nHOUND PRE-RESEARCH (from overnight flow + dark pool scan):\n"
+                "The following tickers were flagged by our options flow / dark pool scanner as setups "
+                "worth watching today. Use these as starting points for your research \u2014 verify they still "
+                "look good with fresh eyes before including as a pick.\n\n"
+                + "\n".join(hound_lines)
+            )
+            system_prompt = system_prompt.rstrip() + hound_block + "\n"
+            logger.info(f"  \U0001f415 Injecting {len(hound_candidates)} hound candidate(s) into day trader prompt")
+        # ─────────────────────────────────────────────────────────────────────
+
         day_name = now.strftime('%A')
         # Compute dynamic time-to-open string
         from datetime import time as _time
@@ -589,6 +735,21 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
             edge_summary=edge_summary,
         )
         primary['_raw_confidence'] = raw_confidence
+
+        # ── Seasonality adjustment ────────────────────────────────────────────
+        try:
+            _season = SeasonalityAdvisor()
+            month_score = _season.get_current_month_score()
+            if month_score > 65:
+                confidence = min(99, confidence + 2)
+                logger.info(f"  📅 Seasonality boost +2 (month score {month_score:.1f} > 65) → confidence now {confidence}")
+            elif month_score < 35:
+                confidence = max(0, confidence - 2)
+                logger.info(f"  📅 Seasonality drag -2 (month score {month_score:.1f} < 35) → confidence now {confidence}")
+        except Exception as _se:
+            logger.debug(f"Seasonality adjustment skipped: {_se}")
+        # ─────────────────────────────────────────────────────────────────────
+
         primary['_calibrated_confidence'] = confidence
         tech = primary.get('key_technical_levels') or {}
         try:
@@ -694,6 +855,12 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
             f"  📋 {len(alternatives)} backup pick(s) queued if primary stops out "
             f"(raw_conf={raw_confidence}% → calibrated={confidence}%)"
         )
+
+        # ── Mark hound candidate as consumed if ticker matches ──────────────────────
+        if status == 'scanned':
+            self._mark_hound_candidate_consumed(ticker)
+        # ───────────────────────────────────────────────────────────────
+
         return primary
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -764,18 +931,24 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
         actual_size = round(shares * price, 2)
 
         # Load session for thesis
+        thesis = ''
+        conn = None
         try:
             conn = get_sqlite_conn(str(self.db_path), timeout=15)
             research_row = conn.execute(
                 "SELECT scan_research FROM day_trade_sessions WHERE date = ?", (today,)
             ).fetchone()
-            conn.close()
-            thesis = ''
             if research_row and research_row[0]:
                 pick = json.loads(research_row[0])
                 thesis = pick.get('catalyst', '') or pick.get('thesis', '')
         except Exception:
-            thesis = ''
+            pass
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
         result = self.paper_trading.manual_buy(
             ticker, shares,
@@ -916,6 +1089,7 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
                     f"  🚀 Day Trade TP1 HIT EARLY ({now.strftime('%H:%M')}): "
                     f"{ticker} ${price:.2f} >= ${tp1_price:.2f} — upgrading to STRETCH mode"
                 )
+                conn = None
                 try:
                     conn = get_sqlite_conn(str(self.db_path), timeout=15)
                     conn.execute("""
@@ -925,9 +1099,14 @@ Return picks ranked #1 (best) to #3. Include as many as qualify (minimum 1 to av
                         WHERE date = ?
                     """, (now.strftime('%H:%M:%S'), today))
                     conn.commit()
-                    conn.close()
                 except Exception:
                     pass
+                finally:
+                    if conn is not None:
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
                 return
             else:
                 # Late hit → sell now

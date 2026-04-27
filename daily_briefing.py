@@ -603,6 +603,16 @@ def _parse_briefing_response(text: str) -> Dict:
 def _save_to_db(date_str: str, ctx: Dict, results: Dict):
     """Save daily briefing results to database."""
     conn = get_sqlite_conn(str(DB_PATH))
+    try:
+        _save_to_db_impl(date_str, ctx, results, conn)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _save_to_db_impl(date_str: str, ctx: Dict, results: Dict, conn):
     conn.execute("PRAGMA journal_mode=WAL")
     cursor = conn.cursor()
 
@@ -685,7 +695,6 @@ def _save_to_db(date_str: str, ctx: Dict, results: Dict):
             logger.warning(f"DB save failed for {model_key}: {e}")
 
     conn.commit()
-    conn.close()
     logger.info(f"  💾 Daily briefings saved to DB for {len(results)} models")
 
     # Push watchlist tickers to acquisition queue (reasoning tier is authoritative)
@@ -777,6 +786,7 @@ def _queue_acquisition_watchlist(date_str: str, results: Dict):
     risk             = result.get('biggest_risk_today', '')
     opportunity      = result.get('biggest_opportunity_today', '')
 
+    conn = None
     try:
         conn = get_sqlite_conn(str(DB_PATH))
         conn.execute("PRAGMA journal_mode=WAL")
@@ -812,11 +822,16 @@ def _queue_acquisition_watchlist(date_str: str, results: Dict):
                   entry_conditions, risk, opportunity))
 
         conn.commit()
-        conn.close()
         logger.info(f"  📥 Acquisition queue: {len(tickers)} tickers added for {date_str} → {tickers}")
 
     except Exception as e:
         logger.warning(f"Acquisition watchlist queue failed: {e}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 def _send_slack_summary(date_str: str, ctx: Dict, results: Dict):
     """Post daily briefing to #logs-silent. Production: reasoning tier only. Compare: all tiers."""

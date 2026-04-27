@@ -1,23 +1,45 @@
 #!/usr/bin/env python3
 """
 sector_rotation.py — Real-time sector rotation analysis for HighTrade.
-Fetches major sector ETFs and calculates relative strength.
+Primary data source: Unusual Whales API (sector-etfs + market-tide endpoints).
 """
 
 import logging
-import signal
-import yfinance as yf
-import pandas as pd
+import os
+import requests
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-class _YFTimeoutError(Exception):
-    pass
+# ── Unusual Whales API config ─────────────────────────────────────────────────
+_UW_SECTOR_ETFS_URL = "https://api.unusualwhales.com/api/market/sector-etfs"
+_UW_MARKET_TIDE_URL = "https://api.unusualwhales.com/api/market/market-tide"
+_UW_CLIENT_ID = "100001"
+_UW_CREDS_FILE = Path.home() / ".openclaw" / "creds" / "unusualwhales.env"
 
-def _yf_alarm_handler(signum, frame):
-    raise _YFTimeoutError("yfinance download timed out")
+
+def _load_uw_api_key() -> Optional[str]:
+    """Load UW API key from env or ~/.openclaw/creds/unusualwhales.env."""
+    key = os.environ.get("UW_API_KEY")
+    if key:
+        return key.strip()
+    if _UW_CREDS_FILE.exists():
+        for line in _UW_CREDS_FILE.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("UW_API_KEY="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    return None
+
+
+def _uw_headers(api_key: str) -> Dict:
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "UW-CLIENT-API-ID": _UW_CLIENT_ID,
+        "Accept": "application/json",
+    }
+
 
 SECTOR_ETFS = {
     'XLK': 'Technology',
@@ -78,92 +100,138 @@ class SectorRotationAnalyzer:
         self.sectors = SECTOR_ETFS
         self.benchmark = BENCHMARK
 
+    # ── Public entry point ────────────────────────────────────────────────────
+
     def get_rotation_data(self) -> Dict:
-        """Fetch latest performance data for all sectors."""
-        logger.info("📊 Fetching sector rotation data...")
+        """Fetch latest sector performance data.
 
-        symbols = list(self.sectors.keys()) + [self.benchmark]
-        _old_handler = signal.signal(signal.SIGALRM, _yf_alarm_handler)
-        signal.alarm(60)  # 60-second hard timeout for yfinance
+        Tries Unusual Whales API first (faster, no timeout issues).
+        Falls back to yfinance 3-month download on failure.
+        """
+        logger.info("📊 Fetching sector rotation data (Unusual Whales)...")
+        result = self._fetch_uw_rotation_data()
+        if result:
+            logger.info(f"  ✅ UW sector data: {len(result.get('sectors', []))} sectors loaded")
+            return result
+        logger.warning("  ⚠️  UW fetch failed — falling back to yfinance")
+        return self._get_rotation_data_yf()
+
+    # ── Unusual Whales data source ────────────────────────────────────────────
+
+    def _fetch_uw_rotation_data(self) -> Optional[Dict]:
+        """Fetch sector rotation data from Unusual Whales API."""
+        api_key = _load_uw_api_key()
+        if not api_key:
+            logger.warning("  ⚠️  UW_API_KEY not found in env or ~/.openclaw/creds/unusualwhales.env")
+            return None
+
+        headers = _uw_headers(api_key)
+
+        # Fetch sector ETFs
         try:
-            # Fetch last 3 months to get enough context for 1w/1m/3m changes
-            raw = yf.download(symbols, period='3mo', interval='1d', progress=False, auto_adjust=True, timeout=20)
+            resp = requests.get(_UW_SECTOR_ETFS_URL, headers=headers, timeout=15)
+            resp.raise_for_status()
+            raw = resp.json()
+        except requests.RequestException as e:
+            logger.warning(f"  ⚠️  UW sector-etfs request failed: {e}")
+            return None
 
-            # yfinance 1.2+ returns MultiIndex columns for multi-ticker downloads.
-            # Extract 'Close' safely; fall back to per-ticker download for any missing/None columns.
-            if raw.empty:
-                logger.error("  ❌ Failed to fetch sector data from yfinance (empty response)")
-                return {}
-
-            if isinstance(raw.columns, pd.MultiIndex):
-                # Standard multi-ticker result: columns are (field, ticker)
-                if 'Close' in raw.columns.get_level_values(0):
-                    data = raw['Close']
-                else:
-                    logger.error("  ❌ 'Close' level missing from MultiIndex columns")
-                    return {}
-            else:
-                # Single-ticker fallback (shouldn't happen with multiple symbols)
-                data = raw[['Close']] if 'Close' in raw.columns else raw
-
-            # For any symbols that are all-NaN or missing, attempt individual download fallback
-            missing_syms = [s for s in symbols if s not in data.columns or data[s].dropna().empty]
-            if missing_syms:
-                logger.warning(f"  ⚠️ Falling back to per-ticker download for: {missing_syms}")
-                for sym in missing_syms:
-                    try:
-                        sym_raw = yf.download(sym, period='3mo', interval='1d', progress=False, auto_adjust=True)
-                        if not sym_raw.empty and 'Close' in sym_raw.columns:
-                            data[sym] = sym_raw['Close']
-                    except Exception as sym_e:
-                        logger.warning(f"  ⚠️ Per-ticker fallback failed for {sym}: {sym_e}")
-
-            results = {}
-            if self.benchmark not in data.columns or data[self.benchmark].dropna().empty:
-                logger.error(f"  ❌ Benchmark {self.benchmark} data unavailable")
-                return {}
-
-            bench_perf = self._calculate_perf(data[self.benchmark])
-            
-            sector_results = []
-            for sym, name in self.sectors.items():
-                if sym not in data.columns or data[sym].dropna().empty:
-                    logger.warning(f"  ⚠️ Skipping {sym} — no valid data")
-                    continue
-                
-                perf = self._calculate_perf(data[sym])
-                last_valid = data[sym].dropna().iloc[-1]
-                rel_strength = {
-                    'symbol': sym,
-                    'name': name,
-                    'perf_1w': perf['1w'],
-                    'perf_1m': perf['1m'],
-                    'rel_1w': perf['1w'] - bench_perf['1w'],
-                    'rel_1m': perf['1m'] - bench_perf['1m'],
-                    'current_price': float(last_valid)
-                }
-                sector_results.append(rel_strength)
-
-            # Sort by 1-week relative strength
-            sector_results.sort(key=lambda x: x['rel_1w'], reverse=True)
-
-            return {
-                'timestamp': datetime.now().isoformat(),
-                'benchmark_perf': bench_perf,
-                'sectors': sector_results,
-                'top_sector_1w': sector_results[0]['name'] if sector_results else None,
-                'bottom_sector_1w': sector_results[-1]['name'] if sector_results else None
-            }
-
-        except _YFTimeoutError:
-            logger.error("  ❌ Sector rotation fetch timed out after 60s — skipping")
-            return {}
+        # Fetch market tide (optional — used for context, non-fatal on failure)
+        tide_data = None
+        try:
+            tide_resp = requests.get(_UW_MARKET_TIDE_URL, headers=headers, timeout=10)
+            tide_resp.raise_for_status()
+            tide_data = tide_resp.json()
         except Exception as e:
-            logger.error(f"  ❌ Sector rotation analysis failed: {e}")
-            return {}
-        finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, _old_handler)
+            logger.debug(f"  UW market-tide fetch skipped: {e}")
+
+        # Normalise response — UW may wrap in {"data": [...]} or return a list directly
+        items = raw.get('data', raw) if isinstance(raw, dict) else raw
+        if not items or not isinstance(items, (list, dict)):
+            logger.warning("  ⚠️  UW sector-etfs returned unexpected format")
+            return None
+        if isinstance(items, dict):
+            items = list(items.values())
+
+        sector_results = []
+        spy_1w: Optional[float] = None
+        spy_1m: Optional[float] = None
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            ticker = (item.get('ticker') or item.get('symbol') or '').upper()
+            if not ticker:
+                continue
+
+            # Accept multiple possible field names across UW API versions
+            def _pct(item, *keys):
+                for k in keys:
+                    v = item.get(k)
+                    if v is not None:
+                        try:
+                            f = float(v)
+                            # Normalise ratio → percentage (e.g. 0.023 → 2.3%)
+                            return f * 100 if abs(f) < 2.0 and f != 0 else f
+                        except (TypeError, ValueError):
+                            pass
+                return 0.0
+
+            perf_1w = _pct(item, 'week_change_percent', 'percent_change_1w',
+                           'week_perf', 'weekly_return', 'change_1w')
+            perf_1m = _pct(item, 'month_change_percent', 'percent_change_1m',
+                           'month_perf', 'monthly_return', 'change_1m')
+            price = 0.0
+            for pk in ('close', 'price', 'last_price', 'current_price'):
+                pv = item.get(pk)
+                if pv:
+                    try:
+                        price = float(pv)
+                        break
+                    except (TypeError, ValueError):
+                        pass
+
+            if ticker == self.benchmark:
+                spy_1w = perf_1w
+                spy_1m = perf_1m
+            elif ticker in self.sectors:
+                sector_results.append({
+                    'symbol': ticker,
+                    'name': self.sectors[ticker],
+                    'perf_1w': perf_1w,
+                    'perf_1m': perf_1m,
+                    'current_price': price,
+                })
+
+        if not sector_results:
+            logger.warning("  ⚠️  UW sector-etfs: no matching sector ETFs found in response")
+            return None
+
+        bench_1w = spy_1w if spy_1w is not None else 0.0
+        bench_1m = spy_1m if spy_1m is not None else 0.0
+        for s in sector_results:
+            s['rel_1w'] = s['perf_1w'] - bench_1w
+            s['rel_1m'] = s['perf_1m'] - bench_1m
+        sector_results.sort(key=lambda x: x['rel_1w'], reverse=True)
+
+        result: Dict = {
+            'timestamp': datetime.now().isoformat(),
+            'benchmark_perf': {'1w': bench_1w, '1m': bench_1m},
+            'sectors': sector_results,
+            'top_sector_1w': sector_results[0]['name'] if sector_results else None,
+            'bottom_sector_1w': sector_results[-1]['name'] if sector_results else None,
+            'source': 'unusual_whales',
+        }
+        if tide_data:
+            result['market_tide'] = tide_data
+        return result
+
+    # ── yfinance fallback (disabled — UW is primary) ──────────────────────────
+
+    def _get_rotation_data_yf(self) -> Dict:
+        """Disabled — yfinance removed. UW is the only sector data source."""
+        logger.warning("  ⚠️  yfinance fallback disabled — UW unavailable, returning empty")
+        return {}
 
     def get_sector_context(self, crisis_type: str, defcon_level: int,
                            is_winding_down: bool = False,

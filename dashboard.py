@@ -5,6 +5,14 @@ Queries SQLite and produces a rich, self-contained HTML dashboard.
 Run:  python dashboard.py [--open]
 """
 
+# Load .env first so ALPACA_API_KEY etc. are available to all modules
+from pathlib import Path as _Path
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv(_Path(__file__).parent / '.env', override=True)
+except Exception:
+    pass
+
 from trading_db import get_sqlite_conn
 import sqlite3
 import json
@@ -16,6 +24,7 @@ from zoneinfo import ZoneInfo
 from pathlib import Path
 
 from paper_trading import PaperTradingEngine
+import requests as _requests
 
 _ET = ZoneInfo('America/New_York')       # trading schedule — always Eastern
 _LOCAL_TZ = None                          # display timezone — auto-detected below
@@ -32,6 +41,24 @@ except Exception:
     pass
 if _LOCAL_TZ is None:
     _LOCAL_TZ = _ET  # fallback to ET if detection fails
+
+def _uw_get(path: str, params: dict = None):
+    """Fetch from Unusual Whales API. Returns parsed JSON or None on failure."""
+    import dotenv, pathlib
+    env_path = pathlib.Path.home() / ".openclaw" / "creds" / "unusualwhales.env"
+    dotenv.load_dotenv(env_path)
+    key = os.getenv("UNUSUAL_WHALES_API_KEY", "")
+    if not key:
+        return None
+    headers = {"Authorization": f"Bearer {key}", "UW-CLIENT-API-ID": "100001"}
+    url = f"https://api.unusualwhales.com{path}"
+    try:
+        r = _requests.get(url, headers=headers, params=params, timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return None
+
 
 def _et_now() -> datetime:
     """Current time in ET — used for trading schedule logic."""
@@ -2849,7 +2876,7 @@ def run_server(host='0.0.0.0', port=5055):
 
     @app.before_request
     def _require_auth():
-        if flask_request.path in ('/login', '/health'):
+        if flask_request.path in ('/login', '/health', '/tiktok-callback', '/privacy', '/terms', '/tiktokThTbv4SLhkZtzprOy9eUC5Jtq6eWE1rE') or flask_request.path.startswith('/tiktok'):
             return
         # Allow ?token= one-tap login
         token_param = flask_request.args.get('token')
@@ -3072,20 +3099,34 @@ color:#000;font-weight:bold;border-radius:4px;cursor:pointer;font-size:15px}}</s
     @app.route('/api/history/<ticker>')
     def handle_history(ticker):
         try:
-            import yfinance as yf
-            period = flask_request.args.get('period', '1mo') # 1d, 5d, 1mo, 1y
-            interval = '15m' if period == '1d' else '1h' if period == '5d' else '1d'
-            
-            stock = yf.Ticker(ticker)
-            hist = stock.history(period=period, interval=interval)
-            
-            if hist.empty:
+            period = flask_request.args.get('period', '1mo')  # 1d, 5d, 1mo, 1y
+            # Map period to UW chart timeframe param
+            timeframe_map = {'1d': '1D', '5d': '5D', '1mo': '1M', '1y': '1Y'}
+            uw_timeframe = timeframe_map.get(period, '1M')
+
+            result = _uw_get(f'/api/stock/{ticker}/chart', params={'timeframe': uw_timeframe})
+            if not result or not isinstance(result, dict):
                 return {'ok': False, 'message': 'No data found'}, 404
-                
-            # Format for Chart.js
-            labels = [ts.strftime('%Y-%m-%d %H:%M') for ts in hist.index]
-            prices = [round(float(p), 2) for p in hist['Close']]
-            
+
+            candles = result.get('data') or []
+            if not candles:
+                return {'ok': False, 'message': 'No data found'}, 404
+
+            labels = []
+            prices = []
+            for c in candles:
+                try:
+                    ts = c.get('time') or c.get('date') or c.get('timestamp') or ''
+                    close = float(c.get('close') or c.get('c') or 0)
+                    if ts and close:
+                        labels.append(str(ts)[:16])
+                        prices.append(round(close, 2))
+                except Exception:
+                    pass
+
+            if not prices:
+                return {'ok': False, 'message': 'No data found'}, 404
+
             return {
                 'ok': True,
                 'ticker': ticker,
@@ -3096,6 +3137,54 @@ color:#000;font-weight:bold;border-radius:4px;cursor:pointer;font-size:15px}}</s
             }
         except Exception as e:
             return {'ok': False, 'message': str(e)}, 500
+
+    @app.route('/privacy')
+    def privacy_policy():
+        return '''<!DOCTYPE html><html><head><title>Privacy Policy - highTRADE</title>
+        <style>body{font-family:sans-serif;max-width:800px;margin:40px auto;padding:0 20px;color:#333}</style></head>
+        <body><h1>Privacy Policy</h1><p>Last updated: April 2026</p>
+        <p>This application is a personal creative tool used to automate content posting to TikTok. 
+        It does not collect, store, or share any personal data from third parties. 
+        Any data accessed via TikTok API is used solely to post content on behalf of the authorized account owner.</p>
+        <p>For questions, contact: stantonhigh@gmail.com</p></body></html>'''
+
+    @app.route('/terms')
+    def terms_of_service():
+        return '''<!DOCTYPE html><html><head><title>Terms of Service - highTRADE</title>
+        <style>body{font-family:sans-serif;max-width:800px;margin:40px auto;padding:0 20px;color:#333}</style></head>
+        <body><h1>Terms of Service</h1><p>Last updated: April 2026</p>
+        <p>This is a personal tool for automating TikTok content. By using this service, you agree that 
+        it is provided as-is for personal use only. The service is not intended for commercial distribution.</p>
+        <p>For questions, contact: stantonhigh@gmail.com</p></body></html>'''
+
+    @app.route('/tiktokThTbv4SLhkZtzprOy9eUC5Jtq6eWE1rE')
+    @app.route('/tiktokThTbv4SLhkZtzprOy9eUC5Jtq6eWE1rE.txt')
+    @app.route('/tiktokThTbv4SLhkZtzprOy9eUC5Jtq6eWE1rE---2c515ef4-3b91-492e-871c-9ca4d7b6fd9f.txt')
+    def tiktok_verify():
+        return 'tiktok-developers-site-verification=ThTbv4SLhkZtzprOy9eUC5Jtq6eWE1rE', 200, {'Content-Type': 'text/plain'}
+
+    @app.route('/tiktokbsKckh5KS6sUMBNUwRRZw63PdvwIcY0w')
+    @app.route('/tiktokbsKckh5KS6sUMBNUwRRZw63PdvwIcY0w.txt')
+    @app.route('/tiktokbsKckh5KS6sUMBNUwRRZw63PdvwIcY0w---4cc31c67-7ca0-4a8c-aeee-a11b331f0f52.txt')
+    def tiktok_verify2():
+        return 'tiktok-developers-site-verification=bsKckh5KS6sUMBNUwRRZw63PdvwIcY0w', 200, {'Content-Type': 'text/plain'}
+
+    @app.route('/tiktok-callback')
+    @app.route('/tiktok-callback/')
+    def tiktok_callback():
+        """TikTok OAuth callback — captures the auth code and saves it."""
+        import json as _json
+        code = flask_request.args.get('code', '')
+        state = flask_request.args.get('state', '')
+        error = flask_request.args.get('error', '')
+        if error:
+            return f'<h2>TikTok Auth Error: {error}</h2>', 400
+        if code:
+            creds_path = Path.home() / '.openclaw' / 'creds' / 'tiktok_auth_code.txt'
+            creds_path.parent.mkdir(parents=True, exist_ok=True)
+            creds_path.write_text(code)
+            return '<h2>✅ TikTok auth code captured! You can close this tab.</h2><p>Echo has the code and will exchange it for tokens.</p>'
+        return '<h2>No code received.</h2>', 400
 
     @app.route('/health')
     def health():

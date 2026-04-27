@@ -28,6 +28,38 @@ DB_PATH = SCRIPT_DIR / 'trading_data' / 'trading_history.db'
 
 logger = logging.getLogger(__name__)
 
+
+def _uw_get(path: str, params: dict = None):
+    """Fetch from Unusual Whales API. Returns parsed JSON or None on failure."""
+    import requests, os, dotenv, pathlib
+    env_path = pathlib.Path.home() / ".openclaw" / "creds" / "unusualwhales.env"
+    dotenv.load_dotenv(env_path)
+    key = os.getenv("UNUSUAL_WHALES_API_KEY", "")
+    if not key:
+        return None
+    headers = {"Authorization": f"Bearer {key}", "UW-CLIENT-API-ID": "100001"}
+    url = f"https://api.unusualwhales.com{path}"
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return None
+
+
+def _uw_price(sym: str):
+    """Fetch last price for a symbol from UW stock-state. Returns float or None."""
+    try:
+        result = _uw_get(f'/api/stock/{sym}/stock-state')
+        if result and isinstance(result, dict):
+            data = result.get('data', {})
+            price = data.get('last_price') or data.get('prev_close')
+            return float(price) if price else None
+    except Exception:
+        pass
+    return None
+
+
 # Trailing stop: exit if current_price drops more than this % below the position's peak price.
 # Primary exit mechanism — replaces the old fixed entry-based stop.
 # Analyst's stop_loss field is now the THESIS FLOOR (immediate exit, no gate).
@@ -134,6 +166,7 @@ def _queue_rebound_watchlist(exit: dict) -> None:
         f"Loss to recover: ${abs(loss_dollars):,.0f} ({abs(loss_pct):.1f}%)"
     )
 
+    conn = None
     try:
         conn = get_sqlite_conn(str(DB_PATH))
         conn.execute("PRAGMA journal_mode=WAL")
@@ -170,7 +203,6 @@ def _queue_rebound_watchlist(exit: dict) -> None:
             notes,
         ))
         conn.commit()
-        conn.close()
         logger.info(
             f"  📥 Rebound watchlist: {ticker} queued for recovery research "
             f"(loss: {loss_pct:.1f}%, ${abs(loss_dollars):,.0f})"
@@ -191,6 +223,12 @@ def _queue_rebound_watchlist(exit: dict) -> None:
 
     except Exception as e:
         logger.warning(f"Rebound watchlist insert failed for {ticker}: {e}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ─── Briefing Context Retrieval (module-level) ──────────────────────────────
@@ -212,6 +250,7 @@ def get_latest_briefing_context(db_path: str = None, scope: str = 'all') -> Tupl
     today = _et_now().strftime('%Y-%m-%d')
     yesterday = (_et_now() - timedelta(days=1)).strftime('%Y-%m-%d')
 
+    conn = None
     try:
         conn = get_sqlite_conn(str(_db), timeout=15)
         conn.row_factory = sqlite3.Row
@@ -322,13 +361,21 @@ def get_latest_briefing_context(db_path: str = None, scope: str = 'all') -> Tupl
     except Exception as e:
         logger.warning(f"Briefing context query failed: {e}")
         return {}, "BRIEFING CONTEXT: Query failed — no briefing data available."
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 class BrokerDecisionEngine:
     """Makes autonomous trading decisions"""
 
     def __init__(self):
-        self.paper_trading = PaperTradingEngine()
+        # Default total_capital=862 matches actual account; overridden at runtime
+        # by live Alpaca equity via _calculate_available_cash().
+        self.paper_trading = PaperTradingEngine(total_capital=862)
         self.alerts = AlertSystem()
         self.quick_money = QuickMoneyResearch()
         self.decision_history = []
@@ -442,8 +489,8 @@ class BrokerDecisionEngine:
             return 0
 
         adjusted = 0
+        conn = None
         try:
-            import yfinance as _yf
             conn = get_sqlite_conn(str(DB_PATH), timeout=5)
             conn.execute("PRAGMA journal_mode=WAL")
 
@@ -470,8 +517,7 @@ class BrokerDecisionEngine:
 
                 # Get live price for stop calculation
                 try:
-                    stock = _yf.Ticker(ticker)
-                    live_price = stock.fast_info.get('lastPrice') or stock.info.get('currentPrice')
+                    live_price = _uw_price(ticker)
                 except Exception:
                     live_price = None
 
@@ -520,10 +566,15 @@ class BrokerDecisionEngine:
                         )
 
             conn.commit()
-            conn.close()
 
         except Exception as e:
             logger.warning(f"apply_briefing_position_actions failed: {e}")
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
         return adjusted
 
@@ -1076,8 +1127,10 @@ class BrokerDecisionEngine:
             conn.close()
 
     def _calculate_available_cash(self) -> float:
-        """Calculate actual available cash: total_capital + realized_pnl - open_exposure.
-        Accounts for realized P&L from closed trades so we don't over-size positions."""
+        """Calculate actual available cash using Alpaca equity as the capital base when
+        available, falling back to DB total_capital.  This ensures position sizing and
+        acquisition notifications always reflect the real account value ($862) rather
+        than the hardcoded paper-trading initialisation figure."""
         conn = get_sqlite_conn(str(DB_PATH))
         try:
             cursor = conn.cursor()
@@ -1097,7 +1150,16 @@ class BrokerDecisionEngine:
             ''')
             open_exposure = cursor.fetchone()[0]
 
-            available = self.paper_trading.total_capital + realized_pnl - open_exposure
+            # Use live Alpaca equity as capital base when available — single source of truth.
+            # Alpaca cash already reflects settled funds; we still subtract open_exposure
+            # (local DB cost basis) because paper trades aren't mirrored to Alpaca.
+            alpaca_snapshot = self.paper_trading._get_alpaca_account_snapshot()
+            if alpaca_snapshot and alpaca_snapshot.get('equity', 0) > 0:
+                base_capital = alpaca_snapshot['equity']
+            else:
+                base_capital = self.paper_trading.total_capital
+
+            available = base_capital + realized_pnl - open_exposure
             return max(0, available)
         finally:
             conn.close()
@@ -1360,7 +1422,7 @@ class BrokerDecisionEngine:
         live_state: optional dict with {defcon, news_score, macro_score} from orchestrator.
         """
         from trading_db import get_sqlite_conn
-        import yfinance as yf
+        from data_bridge import get_vix
         from pathlib import Path
 
         live_state = live_state or {}
@@ -1370,8 +1432,8 @@ class BrokerDecisionEngine:
 
         # Fetch live VIX once for all conditionals this cycle
         try:
-            vix_hist = yf.Ticker('^VIX').history(period='1d')
-            live_state.setdefault('vix', float(vix_hist['Close'].iloc[-1]) if len(vix_hist) > 0 else 'N/A')
+            _vix_val = get_vix()
+            live_state.setdefault('vix', _vix_val if _vix_val is not None else 'N/A')
         except Exception:
             live_state.setdefault('vix', 'N/A')
 
@@ -1438,11 +1500,11 @@ class BrokerDecisionEngine:
 
             # Get current price
             try:
-                stock = yf.Ticker(ticker)
-                hist = stock.history(period='1d')
-                current_price = float(hist['Close'].iloc[-1]) if len(hist) > 0 else None
+                current_price = _uw_price(ticker)
             except Exception as e:
                 logger.warning(f"  ⚠️  Price fetch failed for {ticker}: {e}")
+                current_price = None
+            if current_price is None:
                 continue
 
             if not current_price or not entry_target:
@@ -1577,8 +1639,8 @@ class BrokerDecisionEngine:
                         existing_row = conn.execute(
                             "SELECT data_gaps_json FROM conditional_tracking WHERE id=?", (cond_id,)
                         ).fetchone()
-                        existing_gaps = json.loads((existing_row or {}).get('data_gaps_json') or '[]') \
-                            if existing_row else []
+                        existing_gaps = json.loads(existing_row['data_gaps_json'] or '[]') \
+                            if existing_row and existing_row['data_gaps_json'] else []
                         seen = {g.lower().strip() for g in existing_gaps}
                         merged_gaps = list(existing_gaps)
                         for g in gate_gaps:

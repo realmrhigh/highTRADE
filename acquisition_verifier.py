@@ -172,27 +172,39 @@ def _fetch_recent_news_for_ticker(ticker: str, conn: sqlite3.Connection) -> List
 
 
 def _close_yf_cache():
-    """Close the yfinance peewee cache DBs to prevent FD leaks."""
+    """No-op: yfinance removed; kept for backwards compatibility."""
+    pass
+
+
+def _uw_get(path: str, params: dict = None):
+    """Fetch from Unusual Whales API. Returns parsed JSON or None on failure."""
+    import requests, os, dotenv, pathlib
+    env_path = pathlib.Path.home() / ".openclaw" / "creds" / "unusualwhales.env"
+    dotenv.load_dotenv(env_path)
+    key = os.getenv("UNUSUAL_WHALES_API_KEY", "")
+    if not key:
+        return None
+    headers = {"Authorization": f"Bearer {key}", "UW-CLIENT-API-ID": "100001"}
+    url = f"https://api.unusualwhales.com{path}"
     try:
-        from yfinance.cache import _TzDBManager, _CookieDBManager, _ISINDBManager
-        for manager in [_TzDBManager, _CookieDBManager, _ISINDBManager]:
-            db = manager.get_database()
-            if db and not db.is_closed():
-                db.close()
+        r = requests.get(url, headers=headers, params=params, timeout=10)
+        r.raise_for_status()
+        return r.json()
     except Exception:
-        pass
+        return None
 
 
 def _get_current_price(ticker: str) -> Optional[float]:
-    """Fetch current price via yfinance."""
+    """Fetch current price via UW stock-state."""
     try:
-        import yfinance as yf
-        hist = yf.Ticker(ticker).history(period='1d')
-        return float(hist['Close'].iloc[-1]) if len(hist) > 0 else None
+        result = _uw_get(f'/api/stock/{ticker}/stock-state')
+        if result and isinstance(result, dict):
+            data = result.get('data', {})
+            price = data.get('last_price') or data.get('prev_close')
+            return float(price) if price else None
     except Exception:
-        return None
-    finally:
-        _close_yf_cache()
+        pass
+    return None
 
 
 def _get_latest_macro(conn: sqlite3.Connection) -> Dict:
